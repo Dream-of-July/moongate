@@ -1,7 +1,7 @@
 #!/bin/zsh
 # 编译并安装 月之门.app 到 /Applications。
-# 注意：本项目位于 iCloud 同步的 ~/Documents 下，构建产物若留在项目内会破坏 codesign，
-# 因此 scratch path 与 .app 全部放在 iCloud 之外。
+# 构建产物不要留在项目目录里，避免同步目录或残留文件影响 codesign。
+# scratch path 与 .app 都放到项目目录之外。
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"

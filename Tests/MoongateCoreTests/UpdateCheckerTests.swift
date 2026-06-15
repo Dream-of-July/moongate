@@ -22,7 +22,7 @@ final class UpdateCheckerTests: XCTestCase {
                 "prerelease": true,
                 "assets": e.assets.map { name -> [String: Any] in
                     ["name": name,
-                     "browser_download_url": "https://github.com/Dream-of-July/video-downloader-app/releases/download/\(e.tag)/\(name)"]
+                     "browser_download_url": "https://github.com/Dream-of-July/moongate/releases/download/\(e.tag)/\(name)"]
                 },
             ]
         }
@@ -82,9 +82,9 @@ final class UpdateCheckerTests: XCTestCase {
     }
 
     func testTrustedDMGURLWhitelist() {
-        let owner = "Dream-of-July", repo = "video-downloader-app"
+        let owner = "Dream-of-July", repo = "moongate"
         XCTAssertTrue(UpdateChecker.isTrustedDMGURL(
-            URL(string: "https://github.com/Dream-of-July/video-downloader-app/releases/download/v0.5.0/x.dmg")!,
+            URL(string: "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/x.dmg")!,
             owner: owner, repo: repo))
         // 只信任规范的 github.com 仓库 releases 下载路径。
         // objects.githubusercontent.com 任意路径不再放行（之前无脑 return true 是漏洞，
@@ -93,11 +93,11 @@ final class UpdateCheckerTests: XCTestCase {
             URL(string: "https://objects.githubusercontent.com/abc/x.dmg")!, owner: owner, repo: repo))
         // 非 https / 非 GitHub / 非 dmg / 错仓库 → 拒绝。
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
-            URL(string: "http://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
+            URL(string: "http://github.com/Dream-of-July/moongate/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
             URL(string: "https://evil.com/x.dmg")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
-            URL(string: "https://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.zip")!, owner: owner, repo: repo))
+            URL(string: "https://github.com/Dream-of-July/moongate/releases/download/v1/x.zip")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
             URL(string: "https://github.com/someone-else/evil/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
     }

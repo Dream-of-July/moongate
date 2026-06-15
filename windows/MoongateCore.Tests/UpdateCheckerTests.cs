@@ -30,7 +30,7 @@ public class UpdateCheckerTests
             {
                 ["name"] = name,
                 ["browser_download_url"] =
-                    $"https://github.com/Dream-of-July/video-downloader-app/releases/download/{e.Tag}/{name}",
+                    $"https://github.com/Dream-of-July/moongate/releases/download/{e.Tag}/{name}",
             }).ToArray(),
         }).ToArray();
         return JsonSerializer.Serialize(arr);
@@ -81,19 +81,19 @@ public class UpdateCheckerTests
     [Fact]
     public void TrustedSetupUrlWhitelist()
     {
-        const string owner = "Dream-of-July", repo = "video-downloader-app";
+        const string owner = "Dream-of-July", repo = "moongate";
         Assert.True(UpdateChecker.IsTrustedSetupUrl(
-            "https://github.com/Dream-of-July/video-downloader-app/releases/download/v0.5.0/x.exe", owner, repo));
+            "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/x.exe", owner, repo));
         // objects.githubusercontent.com 任意路径不再放行（与 macOS 一致：之前 return true 是漏洞，
         // 且 SetupUrl 实际只会是 github.com 规范地址，CDN 重定向由 HttpClient 内部跟随）。
         Assert.False(UpdateChecker.IsTrustedSetupUrl(
             "https://objects.githubusercontent.com/abc/x.exe", owner, repo));
         // 非 https / 非 GitHub / 非 exe / 错仓库 → 拒绝。
         Assert.False(UpdateChecker.IsTrustedSetupUrl(
-            "http://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.exe", owner, repo));
+            "http://github.com/Dream-of-July/moongate/releases/download/v1/x.exe", owner, repo));
         Assert.False(UpdateChecker.IsTrustedSetupUrl("https://evil.com/x.exe", owner, repo));
         Assert.False(UpdateChecker.IsTrustedSetupUrl(
-            "https://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.zip", owner, repo));
+            "https://github.com/Dream-of-July/moongate/releases/download/v1/x.zip", owner, repo));
         Assert.False(UpdateChecker.IsTrustedSetupUrl(
             "https://github.com/someone-else/evil/releases/download/v1/x.exe", owner, repo));
     }

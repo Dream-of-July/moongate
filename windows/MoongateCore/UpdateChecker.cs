@@ -67,7 +67,7 @@ public sealed class UpdateChecker
     public string Owner { get; }
     public string Repo { get; }
 
-    public UpdateChecker(string owner = "Dream-of-July", string repo = "video-downloader-app")
+    public UpdateChecker(string owner = "Dream-of-July", string repo = "moongate")
     {
         Owner = owner;
         Repo = repo;
@@ -195,4 +195,3 @@ public sealed class UpdateChecker
         return url.AbsolutePath.StartsWith($"/{owner}/{repo}/releases/download/", StringComparison.Ordinal);
     }
 }
-

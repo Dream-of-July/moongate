@@ -1,11 +1,11 @@
 # 月之门 · Moongate
 
-**月之门**：通向视频、字幕与本地收藏的入口。
+**月之门 · Moongate** 是一款桌面视频工具。它负责把在线视频、字幕翻译、AI 总结和本地收藏串起来，尽量少打扰你。
 
 > 关于名称：本产品于 0.4 版本正式定名为「月之门」，英文标识 `Moongate`。
 > Bundle 标识 `com.moongate.app`，应用安装为 `月之门.app`。
 
-当前可说明的桌面版本是 macOS / Windows 原生 App：粘贴视频链接 → 解析清晰度与字幕 → 下载、（可选）AI 总结 / 翻译 / 烧录字幕 → 保存到本地。
+当前发布的是 macOS / Windows 桌面版：粘贴视频链接 → 解析清晰度与字幕 → 下载、（可选）AI 总结 / 翻译 / 烧录字幕 → 保存到本地。
 
 ## 工作方式
 
@@ -16,14 +16,14 @@
 
 ## 主要功能
 
-- **AI 视频总结**：选片页一键生成中文内容概述，数据源优先字幕、无字幕时用视频简介。
+- **AI 视频总结**：选片页一键生成中文概述，优先读字幕，没有字幕时再读视频简介。
 - **HDR / 杜比视界下载**：识别 HDR 片源，选片页可开「HDR」开关；HDR 默认 mkv 封装保真。
 - **格式转码**：可把下载结果转码 / remux 到 MP4(H.264/H.265) 或 MKV；HDR 转 H.265 用 10-bit 保留 HDR，转 H.264 会 tonemap 成 SDR 并提示。
 - **HDR 保真烧字幕**：在 HDR 画面上烧录中文字幕（libx265 10-bit + HDR10 元数据透传），字幕本身为 SDR 颜色。
 - **字幕翻译**：Anthropic / OpenAI 兼容 API，或 Apple 本地引擎（见下）。
 - **统一 AI 设置**：翻译与总结共享一份默认 AI 配置，各自可「跟随默认」或单独配置。
 - **未登录引导**：检测到 YouTube / B 站等需要登录时，失败页给「去登录」按钮，弹站点登录页保存 cookies 后重试。
-- **远程更新**：设置 → 更新可检查新版，从 GitHub Releases 全自动下载安装并重启。
+- **远程更新**：设置 → 更新可检查新版，从 GitHub Releases 下载、校验并安装。
 
 ## 依赖
 
@@ -40,7 +40,7 @@ macOS App：
 ./build.sh
 ```
 
-编译产物放在 `~/Library/Caches/moongate-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
+编译产物放在 `~/Library/Caches/moongate-build`，避免把临时产物写进项目目录影响签名或同步。App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
 
 Windows 安装包：
 
@@ -89,7 +89,7 @@ swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm -
 设置 → 更新可检查并安装新版：
 
 - 来源是本仓库的 GitHub Releases（公开，匿名访问）；选取含 macOS DMG 资产、版本号高于当前的最新发布。
-- 全自动：App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
+- App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
 - 自下载的 DMG 不带隔离属性，ad-hoc 签名也能替换；失败时提供「去 GitHub 下载」兜底。
 - 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.4.0.dmg`）。
 

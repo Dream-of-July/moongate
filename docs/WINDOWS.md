@@ -2,9 +2,9 @@
 
 Windows 版是一个独立的原生实现，位于 `windows/`：
 
-- **MoongateCore**（C#，.NET 10）— 从 Swift 版 `MoongateCore` + `QueueManager` 逐行为基准移植的核心库：
+- **MoongateCore**（C#，.NET 10）— 对齐 Swift 版 `MoongateCore` + `QueueManager` 的核心库：
   yt-dlp 封装、字幕解析/清洗/翻译、ffmpeg 烧录、队列与并发槽位、暂停/取消、设置与 cookies。
-  附 144 个单元测试，在 macOS 上即可全量运行。
+  核心逻辑有单元测试覆盖，在 macOS 上也能跑。
 - **MoongateApp**（WPF）— 与 macOS 版同结构、同文案的图形界面：粘贴解析（含多链接批量入队）、
   画质/字幕选择、中文字幕翻译+烧录、队列（每任务独立暂停/取消/重试）、设置（协议选择、
   拉取模型、并发数、烧录上限）、WebView2 站点登录、首次启动自动下载依赖。
@@ -14,7 +14,7 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 > ⚠️ **状态：GUI 与安装器未在真实 Windows 机器上运行验证。**
 > 全部代码在 macOS 上交叉编译通过、核心逻辑有单测覆盖，但 WPF 界面、进程树挂起
 > （NtSuspendProcess）、依赖自动下载、WebView2 登录属于运行时行为，首次真机使用
-> 可能需要一轮修正。发现问题带截图/报错回来即可。
+> 可能需要一轮修正。发现问题时，带截图或报错回来最好定位。
 
 ## 在 macOS 上构建安装器
 

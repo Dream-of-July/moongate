@@ -62,7 +62,7 @@ public struct UpdateChecker: Sendable {
     public let owner: String
     public let repo: String
 
-    public init(owner: String = "Dream-of-July", repo: String = "video-downloader-app") {
+    public init(owner: String = "Dream-of-July", repo: String = "moongate") {
         self.owner = owner
         self.repo = repo
     }
@@ -178,4 +178,3 @@ public struct UpdateChecker: Sendable {
         """
     }
 }
-

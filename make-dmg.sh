@@ -1,6 +1,6 @@
 #!/bin/zsh
 # 打包分发用 DMG：先跑 build.sh 确保 App 最新（含图标），再生成压缩镜像。
-# 输出默认到 ~/Downloads（避免 iCloud 同步的 ~/Documents）；可传参覆盖输出路径。
+# 输出默认到 ~/Downloads；也可以传参覆盖输出路径。
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"

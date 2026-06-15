@@ -1,6 +1,6 @@
 #!/bin/zsh
 # 在 macOS 上交叉构建 Windows 版：单测 → publish win-x64（自包含，用户无需装 .NET）→ NSIS 安装器。
-# 产物输出到 ~/Downloads（避免 iCloud 同步的 ~/Documents）。
+# 产物默认输出到 ~/Downloads，避免把安装包写进项目目录。
 # 注意：GUI 无法在 macOS 上运行验证，只有编译与核心库单测两道关。
 set -euo pipefail
 

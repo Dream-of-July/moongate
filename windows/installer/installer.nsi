@@ -48,7 +48,7 @@ Section "安装"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\${EXENAME}"
-  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "本地个人工具"
+  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "月之门 · Moongate"
   WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
