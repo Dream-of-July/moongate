@@ -47,9 +47,13 @@ final class ViewModel: ObservableObject {
     @Published var stage: Stage = .idle
     @Published var selectedFormatID: String?
     /// 用户是否选择下载 HDR（仅当所选档有 HDR 源时生效）。
-    @Published var preferHDR: Bool = false
+    @Published var preferHDR: Bool = false {
+        didSet { persistCurrentDownloadOptions() }
+    }
     /// 下载后输出格式（转码/remux）；.original 不转码。
-    @Published var selectedOutputFormat: OutputFormat = .original
+    @Published var selectedOutputFormat: OutputFormat = .original {
+        didSet { persistCurrentDownloadOptions() }
+    }
     @Published var selectedSubtitleIDs: Set<String> = [] {
         didSet {
             // 中文字幕依赖至少勾选一条字幕；全部取消勾选时强制回「不需要」
@@ -57,9 +61,12 @@ final class ViewModel: ObservableObject {
                 chineseMode = .off
             }
             refreshTranslationRuntimeReadiness()
+            persistCurrentDownloadOptions()
         }
     }
-    @Published var chineseMode: ChineseSubtitleMode = .off
+    @Published var chineseMode: ChineseSubtitleMode = .off {
+        didSet { persistCurrentDownloadOptions() }
+    }
     @Published var settings = AppSettings.load() {
         didSet {
             queue.syncConcurrency(from: settings)
@@ -519,15 +526,9 @@ final class ViewModel: ObservableObject {
         )
         queue.enqueue(info: info, request: request, chineseMode: mode, settings: currentSettings)
 
-        // 记住本次下载选项，下次选档页沿用（字幕按语言代码记忆，下个视频做匹配恢复）。
-        rememberDownloadOptions(
-            mode: mode,
-            subtitleLangs: chosen.map(\.id),
-            outputFormat: outputFormatSnapshot,
-            preferHDR: preferHDRSnapshot
-        )
-
-        // 回到可输入态，方便粘贴下一条
+        // 回到可输入态，方便粘贴下一条。先切到 idle 再清空选项，避免清空触发 didSet 把
+        // 已记住的「上次选项」误清（持久化只在 stage == .ready 时发生）。
+        stage = .idle
         session += 1
         parseTask?.cancel()
         parseTask = nil
@@ -541,41 +542,56 @@ final class ViewModel: ObservableObject {
         failedNeedsLogin = nil
         failedNeedsDependency = false
         enqueueNotice = "已加入队列：\(info.title)"
-        stage = .idle
         // 入队即铺满队列（新任务落位可见），重新聚焦输入框方便直接粘贴下一条。
         queueExpanded = true
         requestUrlFocus += 1
     }
 
-    /// 记住本次下载选项到设置（持久化），供下次选档页恢复。
-    private func rememberDownloadOptions(
-        mode: ChineseSubtitleMode,
-        subtitleLangs: [String],
-        outputFormat: OutputFormat,
-        preferHDR: Bool
-    ) {
+    /// 把当前选档页的选择即时记住（持久化为「上次下载选项」），供下次选档页恢复。
+    /// 仅在 ready（用户正在选档）时记：恢复发生在 analyzing 阶段、入队后的清空发生在 idle 阶段，
+    /// 都不会触发记忆，避免「恢复值/清空值」污染记忆。无变化时不落盘，避免每次切换都写磁盘。
+    private func persistCurrentDownloadOptions() {
+        guard case .ready = stage else { return }
+        if settings.lastSubtitleMode == chineseMode.rawValue,
+           settings.lastOutputFormat == selectedOutputFormat,
+           settings.lastPreferHDR == preferHDR,
+           Set(settings.lastSubtitleLangs) == selectedSubtitleIDs {
+            return
+        }
         var updated = settings
-        updated.lastSubtitleMode = mode.rawValue
-        updated.lastSubtitleLangs = subtitleLangs
-        updated.lastOutputFormat = outputFormat
+        updated.lastSubtitleMode = chineseMode.rawValue
+        updated.lastSubtitleLangs = Array(selectedSubtitleIDs)
+        updated.lastOutputFormat = selectedOutputFormat
         updated.lastPreferHDR = preferHDR
         settings = updated
         _ = saveSettings()
     }
 
-    /// 选档页恢复上次的下载选项：输出格式 / HDR 直接套用；字幕按语言代码在本视频可用字幕里匹配，
-    /// 字幕处理方式在字幕恢复之后再设，避免 selectedSubtitleIDs 的 didSet 把它打回 .off。
+    /// 字幕 id 归一成语言代码：小写、取首个 `-` 前的部分。
+    /// 这样上次选「ja」能匹配下个视频的「ja」/「ja-JP」/「ja-orig」/自动生成的日语字幕。
+    private func normalizedLang(_ id: String) -> String {
+        let lower = id.lowercased()
+        if let dash = lower.firstIndex(of: "-") {
+            return String(lower[..<dash])
+        }
+        return lower
+    }
+
+    /// 选档页恢复上次的下载选项：输出格式 / HDR 直接套用；字幕按语言代码在本视频可用字幕里匹配
+    /// （真实字幕优先于自动字幕）；字幕处理方式在字幕恢复之后再设，避免 selectedSubtitleIDs 的
+    /// didSet 把它打回 .off。本方法在 analyzing 阶段调用，期间不会触发 persist（持久化只认 .ready）。
     private func restoreDownloadOptions(for info: VideoInfo) {
         preferHDR = settings.lastPreferHDR
         selectedOutputFormat = settings.lastOutputFormat ?? .original
 
-        let wantedLangs = settings.lastSubtitleLangs
-        // 按语言代码匹配本视频实际可用的字幕（真实字幕优先于自动字幕）。
-        let matchedIDs: Set<String> = wantedLangs.isEmpty ? [] : Set(
-            info.subtitles
-                .filter { wantedLangs.contains($0.id) }
-                .map(\.id)
-        )
+        let wantedLangs = Set(settings.lastSubtitleLangs.map { normalizedLang($0) })
+        var matchedIDs: Set<String> = []
+        for lang in wantedLangs {
+            let group = info.subtitles.filter { normalizedLang($0.id) == lang }
+            if let best = group.first(where: { !$0.isAuto }) ?? group.first {
+                matchedIDs.insert(best.id)
+            }
+        }
         selectedSubtitleIDs = matchedIDs
 
         // 仅当字幕成功恢复、且记录的处理方式不是「不需要」时才恢复 mode（否则保持 didSet 设好的 .off）。
