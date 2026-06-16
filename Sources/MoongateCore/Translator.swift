@@ -287,7 +287,7 @@ func sendConfiguredMessage(
             maxTokens: maxTokens
         )
     case .openAICompatible:
-        return try await sendOpenAIResponse(
+        return try await sendOpenAIChatCompletion(
             settings: settings,
             instructions: system,
             input: userContent,
@@ -494,6 +494,109 @@ func sendAnthropicMessage(
                 }
                 let text = reply.content.filter { $0.type == "text" }.compactMap(\.text).joined()
                 return ModelReply(text: text, reachedOutputLimit: reply.stop_reason == "max_tokens")
+            }
+            let retryable = http.statusCode == 429 || (500...599).contains(http.statusCode)
+            if retryable, attempt < backoffNanoseconds.count {
+                try await Task.sleep(nanoseconds: backoffNanoseconds[attempt])
+                attempt += 1
+                continue
+            }
+            throw MoongateError.translateFailed(requestFailureMessage(
+                statusCode: http.statusCode,
+                data: data,
+                settings: settings
+            ))
+        } catch let error as MoongateError {
+            throw error
+        } catch is CancellationError {
+            throw MoongateError.cancelled
+        } catch let error as URLError {
+            if error.code == .cancelled { throw MoongateError.cancelled }
+            throw MoongateError.translateFailed("无法连接到翻译服务，请检查服务地址和网络。")
+        } catch {
+            throw MoongateError.translateFailed(error.localizedDescription)
+        }
+    }
+}
+
+/// 调一次 OpenAI Chat Completions API（POST {baseURL}/v1/chat/completions）。
+/// 这是 OpenAI 协议里最通用的端点：官方、Azure、以及绝大多数"OpenAI 兼容"网关
+/// （DeepSeek / OpenRouter / Ollama / vLLM / LM Studio 等）都实现它；
+/// 而 /v1/responses 是 OpenAI 的私有新端点，多数兼容服务并不提供，
+/// 之前测试连接走 responses 会在这些服务上报错。
+/// 429/5xx 指数退避重试最多 2 次（2s、8s）；其余错误映射为 MoongateError。
+func sendOpenAIChatCompletion(
+    settings: AppSettings,
+    instructions: String?,
+    input: String,
+    maxOutputTokens: Int
+) async throws -> ModelReply {
+    let model = settings.translationModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !model.isEmpty else {
+        throw MoongateError.translateFailed("尚未配置模型，请在设置里填写模型名称。")
+    }
+    let token = normalizedToken(settings.translationAuthToken)
+    guard !token.isEmpty else {
+        throw MoongateError.translateFailed("尚未配置 API 凭证，请在设置里填写。")
+    }
+
+    let url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/chat/completions")
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.timeoutInterval = 120
+    request.setValue("application/json", forHTTPHeaderField: "content-type")
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+    struct Message: Encodable {
+        let role: String
+        let content: String
+    }
+    struct Payload: Encodable {
+        let model: String
+        let messages: [Message]
+        let max_completion_tokens: Int
+    }
+    var messages: [Message] = []
+    if let instructions, !instructions.isEmpty {
+        messages.append(Message(role: "system", content: instructions))
+    }
+    messages.append(Message(role: "user", content: input))
+    do {
+        request.httpBody = try JSONEncoder().encode(Payload(
+            model: model,
+            messages: messages,
+            max_completion_tokens: maxOutputTokens
+        ))
+    } catch {
+        throw MoongateError.translateFailed("无法构造请求体：\(error.localizedDescription)")
+    }
+
+    let backoffNanoseconds: [UInt64] = [2_000_000_000, 8_000_000_000]
+    var attempt = 0
+    while true {
+        if Task.isCancelled { throw MoongateError.cancelled }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw MoongateError.translateFailed("服务返回了无法识别的响应。")
+            }
+            if http.statusCode == 200 {
+                struct Choice: Decodable {
+                    struct Msg: Decodable { let content: String? }
+                    let message: Msg?
+                    let finish_reason: String?
+                }
+                struct Reply: Decodable { let choices: [Choice] }
+                guard let reply = try? JSONDecoder().decode(Reply.self, from: data),
+                      let first = reply.choices.first else {
+                    throw MoongateError.translateFailed("服务响应不符合 OpenAI Chat Completions 协议，请检查服务地址。")
+                }
+                let text = (first.message?.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else {
+                    throw MoongateError.translateFailed("OpenAI 响应里没有文本内容，请检查模型或服务地址。")
+                }
+                return ModelReply(text: text, reachedOutputLimit: first.finish_reason == "length")
             }
             let retryable = http.statusCode == 429 || (500...599).contains(http.statusCode)
             if retryable, attempt < backoffNanoseconds.count {
@@ -731,12 +834,18 @@ public func listTranslationModels(settings: AppSettings) async throws -> [String
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     request.timeoutInterval = 20
-    // 同时带两种鉴权头以兼容网关；官方 Anthropic 只认 x-api-key + version。
-    request.setValue(token, forHTTPHeaderField: "x-api-key")
-    if host != "api.anthropic.com" {
+    // 鉴权头按协议区分，避免把 Anthropic 私有头泄漏给 OpenAI / 严格网关导致 4xx 拒绝：
+    // - OpenAI 兼容：只发 Authorization: Bearer；
+    // - 其它（Anthropic 官方 / 网关）：发 x-api-key + anthropic-version，并补 Bearer 以兼容网关。
+    if settings.translationEngine == .openAICompatible {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    } else {
+        request.setValue(token, forHTTPHeaderField: "x-api-key")
+        if host != "api.anthropic.com" {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
     }
-    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
     do {
         let (data, response) = try await URLSession.shared.data(for: request)

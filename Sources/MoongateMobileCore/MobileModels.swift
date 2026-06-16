@@ -1036,7 +1036,7 @@ public struct APICompatibleMobileTranslationProvider: MobileTranslationProvider 
             _ = try await validatedConfiguration()
             _ = try endpointURL(
                 baseURL: configuration.baseURL ?? "",
-                endpointPath: configuration.engine == .openAICompatible ? "/v1/responses" : "/v1/messages"
+                endpointPath: configuration.engine == .openAICompatible ? "/v1/chat/completions" : "/v1/messages"
             )
             return .ready
         } catch {
@@ -1096,20 +1096,26 @@ public struct APICompatibleMobileTranslationProvider: MobileTranslationProvider 
         valid: ValidConfiguration,
         translationRequest: MobileTranslationRequest
     ) throws -> MobileTranslationTransportRequest {
-        let url = try endpointURL(baseURL: valid.baseURL, endpointPath: "/v1/responses")
+        // 用最通用的 Chat Completions 端点：官方/Azure 及绝大多数"OpenAI 兼容"网关都支持，
+        // 而 /v1/responses 是 OpenAI 私有新端点，多数兼容服务不实现，会导致请求失败。
+        let url = try endpointURL(baseURL: valid.baseURL, endpointPath: "/v1/chat/completions")
+        struct Message: Encodable {
+            let role: String
+            let content: String
+        }
         struct Payload: Encodable {
             let model: String
-            let instructions: String
-            let input: String
-            let max_output_tokens: Int
-            let store: Bool
+            let messages: [Message]
+            let max_completion_tokens: Int
         }
+        let instructions = "Translate each numbered subtitle segment to \(translationRequest.context.targetLanguage). Preserve numbering as '<id>=<translation>'."
         let payload = Payload(
             model: valid.model,
-            instructions: "Translate each numbered subtitle segment to \(translationRequest.context.targetLanguage). Preserve numbering as '<id>=<translation>'.",
-            input: numberedInput(from: translationRequest.segments),
-            max_output_tokens: max(1024, translationRequest.segments.count * 128),
-            store: false
+            messages: [
+                Message(role: "system", content: instructions),
+                Message(role: "user", content: numberedInput(from: translationRequest.segments))
+            ],
+            max_completion_tokens: max(1024, translationRequest.segments.count * 128)
         )
         return MobileTranslationTransportRequest(
             url: url,
@@ -1192,27 +1198,15 @@ public struct APICompatibleMobileTranslationProvider: MobileTranslationProvider 
     private func responseText(from body: Data, engine: TranslationEngine) throws -> String {
         switch engine {
         case .openAICompatible:
-            struct Content: Decodable {
-                let type: String
-                let text: String?
-            }
-            struct OutputItem: Decodable {
-                let type: String
-                let content: [Content]?
+            struct Choice: Decodable {
+                struct Msg: Decodable { let content: String? }
+                let message: Msg?
             }
             struct Reply: Decodable {
-                let output: [OutputItem]
+                let choices: [Choice]
             }
             let reply = try JSONDecoder().decode(Reply.self, from: body)
-            var parts: [String] = []
-            for item in reply.output where item.type == "message" {
-                for content in item.content ?? [] where content.type == "output_text" || content.type == "text" {
-                    if let text = content.text {
-                        parts.append(text)
-                    }
-                }
-            }
-            let text = parts.joined()
+            let text = (reply.choices.first?.message?.content ?? "")
             guard !text.isEmpty else {
                 throw MobileTranslationProviderError.invalidResponse
             }

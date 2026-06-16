@@ -2,18 +2,13 @@
 import XCTest
 
 final class MobileTranslationProviderTests: XCTestCase {
-    func testOpenAICompatibleProviderBuildsResponsesRequestFromSecureCredentialAndParsesResponsesJSON() async throws {
+    func testOpenAICompatibleProviderBuildsChatCompletionsRequestFromSecureCredentialAndParsesJSON() async throws {
         let credential = SecureCredentialReference(service: "translation.openai", account: "default")
         let store = ReadableCredentialStore(secrets: [credential: "TEST_SECRET_VALUE_DO_NOT_STORE"])
         let transport = RecordingMobileTranslationTransport(responseText: """
         {
-          "output": [
-            {
-              "type": "message",
-              "content": [
-                { "type": "output_text", "text": "1=你好" }
-              ]
-            }
+          "choices": [
+            { "message": { "role": "assistant", "content": "1=你好" } }
           ]
         }
         """)
@@ -39,11 +34,11 @@ final class MobileTranslationProviderTests: XCTestCase {
         let body = try XCTUnwrap(String(data: recorded.body, encoding: .utf8))
 
         XCTAssertEqual(result.segments.map(\.text), ["你好"])
-        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/responses")
+        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/chat/completions")
         XCTAssertEqual(recorded.headers["Authorization"], "Bearer TEST_SECRET_VALUE_DO_NOT_STORE")
         XCTAssertNil(recorded.headers["x-api-key"])
         XCTAssertTrue(body.contains(#""model":"gpt-5-mini""#))
-        XCTAssertTrue(body.contains(#""store":false"#))
+        XCTAssertTrue(body.contains(#""messages""#))
         XCTAssertTrue(body.contains("Hello"))
 
         let encodedConfig = String(
