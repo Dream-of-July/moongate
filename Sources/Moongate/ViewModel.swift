@@ -104,6 +104,8 @@ final class ViewModel: ObservableObject {
 
     /// 并发下载队列，贯穿整个 App 生命周期。
     let queue: QueueManager
+    /// 远程更新器贯穿主界面与设置页；发现新版后用于设置按钮红点提示。
+    let updater: UpdateService
 
     private let engine: any DownloadEngine
     private let runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating
@@ -125,10 +127,12 @@ final class ViewModel: ObservableObject {
     init(
         engine: any DownloadEngine = makeDefaultEngine(),
         queue: QueueManager? = nil,
+        updater: UpdateService? = nil,
         runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating = AppleRuntimeReadinessEvaluator()
     ) {
         self.engine = engine
         self.queue = queue ?? QueueManager(engine: engine)
+        self.updater = updater ?? UpdateService()
         self.runtimeReadinessEvaluator = runtimeReadinessEvaluator
     }
 
@@ -148,8 +152,15 @@ final class ViewModel: ObservableObject {
     func onAppear() {
         prefillFromClipboardIfAppropriate()
         showDependencySetupIfNeededOnStartup()
+        checkForUpdatesIfNeeded()
         refreshTranslationRuntimeReadiness()
         refreshSummaryRuntimeReadiness()
+    }
+
+    func checkForUpdatesIfNeeded() {
+        if case .idle = updater.state {
+            updater.check(silent: true)
+        }
     }
 
     /// 视图出现或 App 激活时：处于可输入阶段且输入框为空，用剪贴板里的链接预填（不自动解析）。

@@ -16,7 +16,7 @@ struct SettingsView: View {
     typealias ModelFetchState = APIModelFetchState
 
     @State private var draft = AppSettings()
-    @StateObject private var updater = UpdateService()
+    @ObservedObject private var updater: UpdateService
     @State private var testState: TestState = .idle
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: ModelFetchState = .idle
@@ -41,6 +41,11 @@ struct SettingsView: View {
         ("zh-Hans", "简体中文"),
         ("zh-Hant", "繁体中文")
     ]
+
+    init(model: ViewModel) {
+        self.model = model
+        self._updater = ObservedObject(wrappedValue: model.updater)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -75,7 +80,7 @@ struct SettingsView: View {
         }
         .task {
             // 打开设置时静默检查一次（有新版才在更新区提示，不打扰）。
-            if case .idle = updater.state { updater.check(silent: true) }
+            model.checkForUpdatesIfNeeded()
         }
         .onDisappear {
             testTask?.cancel()

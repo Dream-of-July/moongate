@@ -6,7 +6,13 @@ import MoongateCore
 
 struct ContentView: View {
     @ObservedObject var model: ViewModel
+    @ObservedObject private var updater: UpdateService
     @FocusState private var urlFieldFocused: Bool
+
+    init(model: ViewModel) {
+        self.model = model
+        self._updater = ObservedObject(wrappedValue: model.updater)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,8 +67,8 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 解析栏放大：输入框可多行（一次粘贴多条链接逐行可见），按钮顶部对齐
-            HStack(alignment: .top, spacing: 8) {
+            // 解析栏放大：输入框可多行（一次粘贴多条链接逐行可见），按钮与输入框中心对齐。
+            HStack(alignment: .center, spacing: 8) {
                 TextField("粘贴视频链接，可一次粘贴多条", text: $model.urlText, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.large)
@@ -74,10 +80,12 @@ struct ContentView: View {
                     model.pasteAndParse()
                 } label: {
                     Image(systemName: "doc.on.clipboard")
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
+                .frame(height: 34)
                 .disabled(model.isParsing)
                 .help("粘贴并解析剪贴板链接")
                 .accessibilityLabel("粘贴并解析")
@@ -92,11 +100,18 @@ struct ContentView: View {
                     model.showSettings = true
                 } label: {
                     Image(systemName: "gearshape")
+                        .frame(width: 18, height: 18)
+                        .overlay(alignment: .topTrailing) {
+                            if updater.hasAvailableUpdate {
+                                updateBadge
+                            }
+                        }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
+                .frame(height: 34)
                 .help("设置")
-                .accessibilityLabel("打开设置")
+                .accessibilityLabel(updater.hasAvailableUpdate ? "打开设置，有可用更新" : "打开设置")
             }
             // 轻提示固定在解析栏下方：队列铺满时也不会被盖住
             // （ready 页有自己的就地提示，避免双显）
@@ -112,6 +127,18 @@ struct ContentView: View {
     private var isReadyStage: Bool {
         if case .ready = model.stage { return true }
         return false
+    }
+
+    private var updateBadge: some View {
+        Circle()
+            .fill(.red)
+            .frame(width: 8, height: 8)
+            .overlay {
+                Circle()
+                    .stroke(.white, lineWidth: 1.5)
+            }
+            .offset(x: 4, y: -4)
+            .accessibilityHidden(true)
     }
 
     /// 解析按钮：仅在 idle / failed 阶段作为主按钮，其余阶段降级为次按钮。
@@ -133,6 +160,7 @@ struct ContentView: View {
         }
         .help("解析当前输入框中的视频链接")
         .accessibilityHint("解析当前输入框中的视频链接")
+        .frame(height: 34)
         if parseButtonIsProminent {
             button.buttonStyle(.borderedProminent)
         } else {

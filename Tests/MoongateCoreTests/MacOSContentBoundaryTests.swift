@@ -117,7 +117,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let source = try contentViewSource()
 
         let settingsHeaderBody = try XCTUnwrap(functionBody(prefix: "private var header", in: source))
-        XCTAssertTrue(settingsHeaderBody.contains(".accessibilityLabel(\"打开设置\")"))
+        XCTAssertTrue(settingsHeaderBody.contains("\"打开设置\""))
 
         let candidateRowBody = try XCTUnwrap(functionBody(prefix: "private func candidateRow", in: source))
         XCTAssertTrue(candidateRowBody.contains(".accessibilityElement(children: .combine)"))
@@ -130,6 +130,29 @@ final class MacOSContentBoundaryTests: XCTestCase {
         XCTAssertTrue(formatRowBody.contains(".accessibilityHint(\"选择这个下载格式\")"))
         XCTAssertTrue(formatRowBody.contains(".accessibilityValue("))
         XCTAssertTrue(formatRowBody.contains("model.selectedFormatID == format.id ? \"已选择\" : \"未选择\""))
+    }
+
+    func testHeaderShowsUpdateBadgeOnSettingsButtonAndKeepsControlsCentered() throws {
+        let source = try contentViewSource()
+        let headerBody = try XCTUnwrap(functionBody(prefix: "private var header", in: source))
+
+        XCTAssertTrue(source.contains("@ObservedObject private var updater: UpdateService"))
+        XCTAssertTrue(source.contains("ObservedObject(wrappedValue: model.updater)"))
+        XCTAssertTrue(headerBody.contains("HStack(alignment: .center, spacing: 8)"))
+        XCTAssertFalse(headerBody.contains("HStack(alignment: .top, spacing: 8)"))
+        XCTAssertTrue(headerBody.contains("if updater.hasAvailableUpdate"))
+        XCTAssertTrue(headerBody.contains("updateBadge"))
+        XCTAssertTrue(headerBody.contains(".accessibilityLabel(updater.hasAvailableUpdate ? \"打开设置，有可用更新\" : \"打开设置\")"))
+        XCTAssertGreaterThanOrEqual(headerBody.components(separatedBy: ".frame(height: 34)").count - 1, 2)
+
+        let parseButtonBody = try XCTUnwrap(functionBody(prefix: "private var parseButton", in: source))
+        XCTAssertTrue(parseButtonBody.contains(".frame(height: 34)"))
+
+        let badgeBody = try XCTUnwrap(functionBody(prefix: "private var updateBadge", in: source))
+        XCTAssertTrue(badgeBody.contains("Circle()"))
+        XCTAssertTrue(badgeBody.contains(".fill(.red)"))
+        XCTAssertTrue(badgeBody.contains(".frame(width: 8, height: 8)"))
+        XCTAssertTrue(badgeBody.contains(".accessibilityHidden(true)"))
     }
 
     func testChineseSubtitleProcessingPickerHasAccessibleState() throws {

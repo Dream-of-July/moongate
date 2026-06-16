@@ -21,6 +21,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             || source.contains("updateSection"))
     }
 
+    func testSettingsViewReusesSharedUpdaterFromViewModel() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        XCTAssertTrue(source.contains("@ObservedObject private var updater: UpdateService"))
+        XCTAssertFalse(source.contains("@StateObject private var updater = UpdateService()"))
+        XCTAssertTrue(source.contains("init(model: ViewModel)"))
+        XCTAssertTrue(source.contains("self._updater = ObservedObject(wrappedValue: model.updater)"))
+        XCTAssertTrue(source.contains("model.checkForUpdatesIfNeeded()"))
+    }
+
+    func testUpdateServiceExposesAvailableUpdateBadgeState() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("UpdateService.swift"))
+
+        XCTAssertTrue(source.contains("var hasAvailableUpdate: Bool"))
+        XCTAssertTrue(source.contains("if case .available = state"))
+        XCTAssertTrue(source.contains("return true"))
+        XCTAssertTrue(source.contains("return false"))
+    }
+
     func testAppleTranslationReadinessUsesUserVisibleSourceLanguageContext() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")

@@ -1,6 +1,20 @@
 import XCTest
 
 final class MacOSViewModelBoundaryTests: XCTestCase {
+    func testViewModelOwnsUpdaterAndChecksSilentlyOnAppear() throws {
+        let source = try viewModelSource()
+
+        XCTAssertTrue(source.contains("let updater: UpdateService"))
+        XCTAssertTrue(source.contains("updater: UpdateService? = nil"))
+        XCTAssertTrue(source.contains("self.updater = updater ?? UpdateService()"))
+        let onAppearBody = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
+        XCTAssertTrue(onAppearBody.contains("checkForUpdatesIfNeeded()"))
+
+        let checkBody = try XCTUnwrap(functionBody(prefix: "func checkForUpdatesIfNeeded", in: source))
+        XCTAssertTrue(checkBody.contains("if case .idle = updater.state"))
+        XCTAssertTrue(checkBody.contains("updater.check(silent: true)"))
+    }
+
     func testStartDownloadSkipsTranslationReadinessGateForChineseSourceSubtitles() throws {
         let source = try viewModelSource()
         let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))

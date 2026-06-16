@@ -24,6 +24,11 @@ final class UpdateService: ObservableObject {
     private let checker = UpdateChecker()
     private var downloadTask: Task<Void, Never>?
 
+    var hasAvailableUpdate: Bool {
+        if case .available = state { return true }
+        return false
+    }
+
     /// 当前 App 版本（来自 Info.plist）。
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -205,4 +210,3 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {}
 }
-
