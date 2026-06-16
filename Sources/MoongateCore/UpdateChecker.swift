@@ -166,10 +166,22 @@ public struct UpdateChecker: Sendable {
         }
     }
 
-    /// 生成替换脚本：等旧进程退出 → 复制到临时目录 → 备份交换 → 去 quarantine → 重开。
+    /// 生成替换脚本：等旧进程退出 → 从挂载点复制新 App → 卸载 DMG → 备份交换 → 去 quarantine → 重开。
     /// 先完整准备新 App，再替换目标路径，避免失败后留下空安装。
-    public static func installScript(mountedAppPath: String, targetAppPath: String, pid: Int32) -> String {
-        let mount = mountedAppPath.replacingOccurrences(of: "'", with: "'\\''")
+    ///
+    /// DMG 的卸载由本脚本负责（复制完成后立即卸载）。调用方绝不能在 App 退出时卸载挂载点：
+    /// 脚本会先等旧 App 退出、再从挂载点 ditto；若 App 退出时（例如 `NSApp.terminate` 期间
+    /// 触发的异步卸载）抢先卸载了 DMG，ditto 会读不到源并报
+    /// “Cannot get the real path for source”，脚本中止，目标 App 永远不会被替换——
+    /// 表现为「下载成功却静默装不上」。
+    public static func installScript(
+        mountPoint: String,
+        mountedAppPath: String,
+        targetAppPath: String,
+        pid: Int32
+    ) -> String {
+        let volume = mountPoint.replacingOccurrences(of: "'", with: "'\\''")
+        let mountedApp = mountedAppPath.replacingOccurrences(of: "'", with: "'\\''")
         let target = targetAppPath.replacingOccurrences(of: "'", with: "'\\''")
         return """
         #!/bin/zsh
@@ -178,12 +190,20 @@ public struct UpdateChecker: Sendable {
           kill -0 \(pid) 2>/dev/null || break
           sleep 0.5
         done
+        # DMG 由本脚本负责卸载：复制完再卸载，避免 App 退出时过早卸载导致 ditto 读不到源。
+        detachDMG() { /usr/bin/hdiutil detach '\(volume)' -force >/dev/null 2>&1; }
         parent="$(/usr/bin/dirname '\(target)')"
         targetBase="$(/usr/bin/basename '\(target)')"
-        tmp="$(/usr/bin/mktemp -d "$parent/.moongate-update.XXXXXX")" || exit 1
+        tmp="$(/usr/bin/mktemp -d "$parent/.moongate-update.XXXXXX")" || { detachDMG; exit 1; }
         newApp="$tmp/$targetBase"
         backup="$parent/.moongate-previous-$targetBase"
-        /usr/bin/ditto '\(mount)' "$newApp" || { /bin/rm -rf "$tmp"; exit 1; }
+        if ! /usr/bin/ditto '\(mountedApp)' "$newApp"; then
+          /bin/rm -rf "$tmp"
+          detachDMG
+          exit 1
+        fi
+        # 新 App 已完整落到本地磁盘，DMG 不再需要，立即卸载。
+        detachDMG
         /usr/bin/xattr -dr com.apple.quarantine "$newApp" 2>/dev/null
         /bin/rm -rf "$backup"
         if [ -e '\(target)' ]; then

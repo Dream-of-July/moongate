@@ -122,9 +122,20 @@ final class UpdateService: ObservableObject {
 
     private func install(dmgPath: URL, expectedVersion: SemVer) async throws {
         let appURL = Bundle.main.bundleURL
+        // 安装目录必须可写：替换脚本在本进程退出后才运行，那时失败无法回传 UI，
+        // 只会表现成「下载完却没更新」。在退出前就拦住不可写场景（如非管理员的 /Applications），
+        // 给出明确指引，而不是静默失败。
+        let installParent = appURL.deletingLastPathComponent()
+        guard FileManager.default.isWritableFile(atPath: installParent.path) else {
+            throw MoongateError.updateFailed("没有写入「\(installParent.path)」的权限，无法自动安装更新。请用管理员账户运行，或到 GitHub 手动下载安装。")
+        }
         // 必须在 /Applications 或可写位置；校验是同一个 App。
         let mountPoint = try await Self.attachDMG(dmgPath)
-        defer { Task { await Self.detachDMG(mountPoint) } }
+        // 默认任何提前返回/抛错都由本进程卸载 DMG；一旦把卸载职责交给替换脚本（成功路径），置 false。
+        // 关键：成功路径绝不能由本进程卸载——脚本是先等本进程退出再从挂载点 ditto，
+        // 若 NSApp.terminate 期间触发卸载会让源消失，ditto 失败、静默装不上。
+        var ownsMount = true
+        defer { if ownsMount { Task { await Self.detachDMG(mountPoint) } } }
 
         // 找挂载点里的 .app。
         let mounted = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: mountPoint), includingPropertiesForKeys: nil)) ?? []
@@ -142,8 +153,9 @@ final class UpdateService: ObservableObject {
             throw MoongateError.downloadFailed("更新包版本与目标版本不一致，已停止安装。")
         }
 
-        // 写替换脚本：等本进程退出 → 覆盖 → 去隔离 → 重开。
+        // 写替换脚本：等本进程退出 → 从挂载点复制新 App → 卸载 DMG → 备份交换 → 去隔离 → 重开。
         let script = UpdateChecker.installScript(
+            mountPoint: mountPoint,
             mountedAppPath: newApp.path,
             targetAppPath: appURL.path,
             pid: ProcessInfo.processInfo.processIdentifier
@@ -156,6 +168,8 @@ final class UpdateService: ObservableObject {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [scriptURL.path]
         try process.run()
+        // 卸载职责移交脚本：它会等本进程退出后从挂载点复制，复制完再自行卸载，避免竞态。
+        ownsMount = false
         // 退出当前 App，脚本会在退出后完成替换并重开。
         NSApp.terminate(nil)
     }

@@ -98,6 +98,7 @@ final class UpdateCheckerTests: XCTestCase {
 
     func testInstallScriptWaitsForExitThenReplacesAndReopens() {
         let script = UpdateChecker.installScript(
+            mountPoint: "/Volumes/月之门",
             mountedAppPath: "/Volumes/月之门/月之门.app",
             targetAppPath: "/Applications/月之门.app",
             pid: 4242
@@ -113,13 +114,18 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(script.contains("xattr -dr com.apple.quarantine '/Applications/月之门.app'"))
         XCTAssertTrue(script.contains("open '/Applications/月之门.app'"))
         XCTAssertFalse(script.contains("rm -rf '/Applications/月之门.app'"))
-        // 先等退出，再复制到临时目录，最后原子交换，避免失败后留下空安装。
+        // DMG 卸载必须由脚本负责（复制完成后），而不是由正在退出的 App 卸载，否则 ditto 读不到源。
+        XCTAssertTrue(script.contains("hdiutil detach '/Volumes/月之门' -force"))
+        // 先等退出，再复制到临时目录，复制完才卸载 DMG，最后原子交换，避免失败后留下空安装。
         let killIdx = script.range(of: "kill -0")!.lowerBound
         let dittoIdx = script.range(of: "ditto")!.lowerBound
         let backupIdx = script.range(of: "mv '/Applications/月之门.app' \"$backup\"")!.lowerBound
         let installIdx = script.range(of: "mv \"$newApp\" '/Applications/月之门.app'")!.lowerBound
+        // 复制成功后才卸载 DMG：该注释紧贴成功路径上的 detach 调用，应在 ditto 之后、备份交换之前。
+        let postCopyDetachIdx = script.range(of: "# 新 App 已完整落到本地磁盘")!.lowerBound
         XCTAssertLessThan(killIdx, dittoIdx)
-        XCTAssertLessThan(dittoIdx, backupIdx)
+        XCTAssertLessThan(dittoIdx, postCopyDetachIdx)
+        XCTAssertLessThan(postCopyDetachIdx, backupIdx)
         XCTAssertLessThan(backupIdx, installIdx)
     }
 
@@ -134,6 +140,19 @@ final class UpdateCheckerTests: XCTestCase {
         let versionCheck = try XCTUnwrap(source.range(of: "SemVer(newVersionRaw) == expectedVersion"))
         let installScript = try XCTUnwrap(source.range(of: "UpdateChecker.installScript("))
         XCTAssertLessThan(versionCheck.lowerBound, installScript.lowerBound)
+    }
+
+    func testMacUpdateChecksInstallDirectoryWritableBeforeTerminating() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("UpdateService.swift"))
+
+        // 不可写时替换脚本会在退出后静默失败，所以必须在退出 App 之前就检查并报错。
+        XCTAssertTrue(source.contains("isWritableFile"))
+        let writeCheck = try XCTUnwrap(source.range(of: "isWritableFile"))
+        let terminate = try XCTUnwrap(source.range(of: "NSApp.terminate"))
+        XCTAssertLessThan(writeCheck.lowerBound, terminate.lowerBound)
     }
 
     func testTrustedDMGURLWhitelist() {
