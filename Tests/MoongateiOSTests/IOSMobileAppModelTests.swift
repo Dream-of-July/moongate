@@ -582,13 +582,8 @@ final class IOSMobileAppModelTests: XCTestCase {
         let store = RecordingCredentialStore()
         let transport = RecordingConnectionTestTransport(statusCode: 200, responseText: """
         {
-          "output": [
-            {
-              "type": "message",
-              "content": [
-                { "type": "output_text", "text": "connection-test=连接正常" }
-              ]
-            }
+          "choices": [
+            { "message": { "role": "assistant", "content": "connection-test=连接正常" } }
           ]
         }
         """)
@@ -612,7 +607,7 @@ final class IOSMobileAppModelTests: XCTestCase {
         let maybeRecorded = await transport.firstRecordedRequest()
         let recorded = try XCTUnwrap(maybeRecorded)
         let body = try XCTUnwrap(String(data: recorded.body, encoding: .utf8))
-        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/responses")
+        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/chat/completions")
         XCTAssertEqual(recorded.headers["Authorization"], "Bearer TEST_SECRET_VALUE_DO_NOT_STORE")
         XCTAssertTrue(body.contains("connection-test"))
     }
@@ -2686,13 +2681,8 @@ final class IOSMobileAppModelTests: XCTestCase {
         let credentialStore = RecordingCredentialStore()
         let transport = RecordingConnectionTestTransport(statusCode: 200, responseText: """
         {
-          "output": [
-            {
-              "type": "message",
-              "content": [
-                { "type": "output_text", "text": "1=你好" }
-              ]
-            }
+          "choices": [
+            { "message": { "role": "assistant", "content": "1=你好" } }
           ]
         }
         """)
@@ -2742,7 +2732,7 @@ final class IOSMobileAppModelTests: XCTestCase {
 
         let maybeRecorded = await transport.firstRecordedRequest()
         let recorded = try XCTUnwrap(maybeRecorded)
-        XCTAssertEqual(recorded.url.absoluteString, "https://api.example.com/v1/responses")
+        XCTAssertEqual(recorded.url.absoluteString, "https://api.example.com/v1/chat/completions")
         XCTAssertEqual(recorded.headers["Authorization"], "Bearer TEST_SECRET_VALUE_DO_NOT_STORE")
         XCTAssertFalse(model.lastQueueActionStatus?.contains("TEST_SECRET_VALUE_DO_NOT_STORE") == true)
         XCTAssertEqual(model.queue.first?.result?.artifacts.last?.kind, .translatedSubtitleFile)
