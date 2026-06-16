@@ -293,8 +293,8 @@ public sealed class MainViewModel : ObservableObject
         private set => SetProperty(ref _summaryText, value);
     }
 
-    /// <summary>总结是否可用：需要配置好可生成文本的云端服务（与翻译共用配置）。</summary>
-    public bool SummaryAvailable => Settings.IsTranslationConfigured;
+    /// <summary>总结是否可用：需要配置好可生成文本的云端服务，可跟随默认 AI 或单独覆盖。</summary>
+    public bool SummaryAvailable => Settings.IsSummaryConfigured;
 
     /// <summary>不可用原因（用于 idle 态提示）；可用时空。</summary>
     public string SummaryUnavailableReason =>
@@ -330,7 +330,7 @@ public sealed class MainViewModel : ObservableObject
             if (cts.IsCancellationRequested || session != _session) return;
             var source = !string.IsNullOrEmpty(subtitleText) ? subtitleText : info.Description;
             var summary = await TranslationApi.SummarizeVideoAsync(
-                info.Title, info.Uploader, info.DurationText, source, settings, handler: null, cts.Token)
+                info.Title, info.Uploader, info.DurationText, source, settings.ForSummary(), handler: null, cts.Token)
                 .ConfigureAwait(true);
             if (cts.IsCancellationRequested || session != _session) return;
             SummaryText = summary;

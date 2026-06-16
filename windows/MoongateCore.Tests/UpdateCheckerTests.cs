@@ -40,21 +40,56 @@ public class UpdateCheckerTests
     public void PicksNewestWindowsUpdateAboveCurrent()
     {
         var json = ReleasesJson(
-            ("v0.3.0", ["Moongate-macOS-v0.3.0.dmg", "月之门-Windows-Setup-v0.3.0.exe"]),
-            ("v0.5.0", ["月之门-Windows-Setup-v0.5.0.exe"]),
-            ("v0.4.0", ["月之门-Windows-Setup-v0.4.0.exe"]));
+            ("v0.3.0", ["Moongate-macOS-v0.3.0.dmg", "月之门-Windows-Setup-v0.3.0.exe", "月之门-Windows-Setup-v0.3.0.exe.sha256"]),
+            ("v0.5.0", ["月之门-Windows-Setup-v0.5.0.exe", "月之门-Windows-Setup-v0.5.0.exe.sha256"]),
+            ("v0.4.0", ["月之门-Windows-Setup-v0.4.0.exe", "月之门-Windows-Setup-v0.4.0.exe.sha256"]));
         var info = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value);
         Assert.NotNull(info);
         Assert.Equal("v0.5.0", info!.Tag);
         Assert.Equal("月之门-Windows-Setup-v0.5.0.exe", info.AssetName);
+        Assert.Equal("月之门-Windows-Setup-v0.5.0.exe.sha256", info.Sha256AssetName);
         Assert.StartsWith("https://github.com/Dream-of-July/", info.SetupUrl);
         Assert.Contains("v0.5.0", info.Notes);
     }
 
     [Fact]
+    public void IgnoresWindowsAssetWhenNameDoesNotMatchReleaseVersion()
+    {
+        var json = ReleasesJson(
+            ("v0.6.0", ["月之门-Windows-Setup-v0.5.0.exe", "月之门-Windows-Setup-v0.5.0.exe.sha256"]),
+            ("v0.5.0", ["月之门-Windows-Setup-v0.5.0.exe", "月之门-Windows-Setup-v0.5.0.exe.sha256"]));
+        var info = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value);
+        Assert.NotNull(info);
+        Assert.Equal("v0.5.0", info!.Tag);
+        Assert.Equal("月之门-Windows-Setup-v0.5.0.exe", info.AssetName);
+    }
+
+    [Fact]
+    public void IgnoresWindowsAssetWhenVersionIsOnlyPrefixMatch()
+    {
+        var json = ReleasesJson(
+            ("v0.5.0", ["月之门-Windows-Setup-v0.5.01.exe", "月之门-Windows-Setup-v0.5.01.exe.sha256"]));
+
+        Assert.Null(UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value));
+        Assert.False(UpdateChecker.AssetNameMatchesVersion(
+            "月之门-Windows-Setup-v0.5.01.exe",
+            SemVer.Parse("0.5.0")!.Value));
+    }
+
+    [Fact]
     public void ReturnsNullWhenAlreadyLatest()
     {
-        var json = ReleasesJson(("v0.4.0", ["月之门-Windows-Setup-v0.4.0.exe"]));
+        var json = ReleasesJson(("v0.4.0", ["月之门-Windows-Setup-v0.4.0.exe", "月之门-Windows-Setup-v0.4.0.exe.sha256"]));
+        Assert.Null(UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value));
+    }
+
+    [Fact]
+    public void IgnoresWindowsAssetWithoutMatchingSha256Asset()
+    {
+        var json = ReleasesJson(
+            ("v0.5.0", ["月之门-Windows-Setup-v0.5.0.exe"]),
+            ("v0.4.0", ["月之门-Windows-Setup-v0.4.0.exe", "月之门-Windows-Setup-v0.4.0.exe.sha256"]));
+
         Assert.Null(UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value));
     }
 
@@ -71,7 +106,7 @@ public class UpdateCheckerTests
     {
         var json = ReleasesJson(
             ("nightly", ["月之门-Windows-Setup-nightly.exe"]),   // 无法解析版本 → 跳过
-            ("v0.6.0", ["月之门-Windows-Setup-v0.6.0.exe"]));
+            ("v0.6.0", ["月之门-Windows-Setup-v0.6.0.exe", "月之门-Windows-Setup-v0.6.0.exe.sha256"]));
         var info = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value);
         Assert.Equal("v0.6.0", info!.Tag);
 
@@ -96,5 +131,12 @@ public class UpdateCheckerTests
             "https://github.com/Dream-of-July/moongate/releases/download/v1/x.zip", owner, repo));
         Assert.False(UpdateChecker.IsTrustedSetupUrl(
             "https://github.com/someone-else/evil/releases/download/v1/x.exe", owner, repo));
+
+        Assert.True(UpdateChecker.IsTrustedSetupChecksumUrl(
+            "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/x.exe.sha256",
+            "x.exe", owner, repo));
+        Assert.False(UpdateChecker.IsTrustedSetupChecksumUrl(
+            "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/other.exe.sha256",
+            "x.exe", owner, repo));
     }
 }

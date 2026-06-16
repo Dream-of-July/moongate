@@ -31,9 +31,14 @@ public struct Transcoder: Sendable {
         outputPath: String,
         sourceVCodec: String?,
         sourceIsHDR: Bool,
-        x265Available: Bool
+        x265Available: Bool,
+        backend: EncodeBackend = .software,
+        hevcVTAvailable: Bool = false,
+        h264VTAvailable: Bool = false
     ) -> Plan {
         let codec = (sourceVCodec ?? "").lowercased()
+        let wantHW = backend.prefersHardware
+        let q = FFmpegBurner.videoToolboxQuality
         switch format {
         case .original:
             // 不应走到这里；按 remux 处理。
@@ -57,13 +62,17 @@ public struct Transcoder: Sendable {
                     outputExtension: "mp4", isRemux: true, dropsHDR: false
                 )
             }
-            // 转 H.264：8-bit SDR，HDR 源会丢 HDR（tonemap）。
+            // 转 H.264：8-bit SDR，HDR 源会丢 HDR（tonemap）。硬件可用时用 h264_videotoolbox 恒定质量。
             var args = ["-y", "-i", inputPath]
             if sourceIsHDR {
                 args += ["-vf", "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"]
             }
-            args += ["-c:v", "libx264", "-crf", "20", "-preset", "medium",
-                     "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]
+            if wantHW && h264VTAvailable {
+                args += ["-c:v", "h264_videotoolbox", "-q:v", "\(q)", "-pix_fmt", "yuv420p"]
+            } else {
+                args += ["-c:v", "libx264", "-crf", "20", "-preset", "medium"]
+            }
+            args += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]
             return Plan(ffmpegArgs: args, outputExtension: "mp4", isRemux: false, dropsHDR: sourceIsHDR)
         case .mp4H265:
             if codec == "h265" {
@@ -72,21 +81,31 @@ public struct Transcoder: Sendable {
                     outputExtension: "mp4", isRemux: true, dropsHDR: false
                 )
             }
-            // 转 H.265：HDR 源用 libx265 10-bit 保 HDR（x265 可用时）；x265 不可用时回退 tonemap 成 SDR。
+            // 转 H.265。硬件 HEVC 可用时优先（HDR 走 main10 + 色彩元数据透传，保 HDR）；
+            // 否则软件 libx265（HDR 用 10-bit hdr-opt）。两者都不可用 HDR 时退回 libx265 8-bit（丢 HDR）。
             var args = ["-y", "-i", inputPath]
-            if sourceIsHDR && x265Available {
-                args += ["-c:v", "libx265", "-crf", "20", "-preset", "medium",
-                         "-pix_fmt", "yuv420p10le",
-                         "-x265-params", "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"]
-            } else {
-                // x265 不可用或源非 HDR：用 libx265 8-bit；HDR 源先 tonemap 降级成 SDR，避免画面发灰/偏色。
+            let keepsHDR: Bool
+            if wantHW && hevcVTAvailable {
                 if sourceIsHDR {
-                    args += ["-vf", "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"]
+                    args += ["-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-q:v", "\(q)", "-pix_fmt", "p010le"]
+                    args += FFmpegBurner.hdrColorArgs(colorPrimaries: nil, colorTransfer: nil, colorSpace: nil)
+                    keepsHDR = true
+                } else {
+                    args += ["-c:v", "hevc_videotoolbox", "-q:v", "\(q)", "-pix_fmt", "yuv420p"]
+                    keepsHDR = false
                 }
+            } else {
                 args += ["-c:v", "libx265", "-crf", "20", "-preset", "medium"]
+                if sourceIsHDR && x265Available {
+                    args += ["-pix_fmt", "yuv420p10le",
+                             "-x265-params", "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"]
+                    keepsHDR = true
+                } else {
+                    keepsHDR = false
+                }
             }
             args += ["-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outputPath]
-            return Plan(ffmpegArgs: args, outputExtension: "mp4", isRemux: false, dropsHDR: sourceIsHDR && !x265Available)
+            return Plan(ffmpegArgs: args, outputExtension: "mp4", isRemux: false, dropsHDR: sourceIsHDR && !keepsHDR)
         }
     }
 
@@ -97,6 +116,7 @@ public struct Transcoder: Sendable {
         format: OutputFormat,
         sourceVCodec: String?,
         sourceIsHDR: Bool,
+        backend: EncodeBackend = .auto,
         control: TaskControlToken?,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
@@ -104,6 +124,8 @@ public struct Transcoder: Sendable {
             throw MoongateError.burnFailed("找不到 ffmpeg，无法转码。请安装：brew install ffmpeg-full")
         }
         let x265 = FFmpegBurner.encoderAvailable("libx265", ffmpeg: ffmpeg)
+        let hevcVT = FFmpegBurner.encoderAvailable("hevc_videotoolbox", ffmpeg: ffmpeg)
+        let h264VT = FFmpegBurner.encoderAvailable("h264_videotoolbox", ffmpeg: ffmpeg)
         let stem = inputFile.deletingPathExtension().lastPathComponent
         let dir = inputFile.deletingLastPathComponent()
         // 调用方常传 nil；此时探测下载产物的真实编码，让「已是目标编码」时走 remux 而非整段重编码。
@@ -113,10 +135,18 @@ public struct Transcoder: Sendable {
         } else {
             resolvedVCodec = await FFmpegBurner.probeVideoCodec(file: inputFile)
         }
+        if format == .mp4H265,
+           (resolvedVCodec ?? "").lowercased() != "h265",
+           !hevcVT,
+           !x265 {
+            throw MoongateError.burnFailed("当前 ffmpeg 缺少 HEVC 编码器（hevc_videotoolbox 或 libx265），无法转为 H.265。请安装完整 ffmpeg，或改选 H.264/原格式。")
+        }
+        let resolvedIsHDR = await FFmpegBurner.probeVideoHDRStatus(file: inputFile) ?? sourceIsHDR
         // 先用一次 plan 求目标容器扩展名（ffmpeg 按输出扩展名推断 muxer，临时文件必须带正确扩展名）。
         let probePlan = Self.plan(
             format: format, inputPath: inputFile.path, outputPath: inputFile.path,
-            sourceVCodec: resolvedVCodec, sourceIsHDR: sourceIsHDR, x265Available: x265
+            sourceVCodec: resolvedVCodec, sourceIsHDR: resolvedIsHDR, x265Available: x265,
+            backend: backend, hevcVTAvailable: hevcVT, h264VTAvailable: h264VT
         )
         let targetExt = probePlan.outputExtension
         // 始终先写到临时文件，避免「输入输出同名同容器」时 ffmpeg 无法同时读写同一文件而直接报错。
@@ -126,8 +156,11 @@ public struct Transcoder: Sendable {
             inputPath: inputFile.path,
             outputPath: tmpOutput.path,
             sourceVCodec: resolvedVCodec,
-            sourceIsHDR: sourceIsHDR,
-            x265Available: x265
+            sourceIsHDR: resolvedIsHDR,
+            x265Available: x265,
+            backend: backend,
+            hevcVTAvailable: hevcVT,
+            h264VTAvailable: h264VT
         )
         // 最终落地文件名：与输入同容器时允许就地替换（原文件随后删除），否则避让已存在文件。
         var output = dir.appendingPathComponent("\(stem).\(p.outputExtension)")
@@ -137,11 +170,19 @@ public struct Transcoder: Sendable {
             serial += 1
         }
         // ffmpeg 写临时文件；占位的最后一个参数已是 tmpOutput.path，无需再改。
-        let args = p.ffmpegArgs
+        // 进度：plan() 的参数不含 -progress（保持其纯净、可被单测精确断言），
+        // 这里在输出文件名前插入 `-progress pipe:1 -nostats`，让 ffmpeg 把 out_time_us=
+        // 写到 stdout，runStreamingProcess 的行回调据此换算完成比例、驱动进度条。
+        var args = p.ffmpegArgs
+        if !p.isRemux, let outIndex = args.lastIndex(of: tmpOutput.path) {
+            // 转码（重编码）才有意义；remux 是 -c copy 秒级完成，不插进度参数。
+            args.insert(contentsOf: ["-progress", "pipe:1", "-nostats"], at: outIndex)
+        }
 
         if control?.isCancelled == true { throw MoongateError.cancelled }
         let duration = await FFmpegBurner.probeDurationSeconds(file: inputFile)
         do {
+            defer { control?.setActivePID(0) }
             let (status, tail) = try await YtDlpEngine.runStreamingProcess(
                 executable: ffmpeg,
                 arguments: args,
@@ -159,7 +200,6 @@ public struct Transcoder: Sendable {
                     progress(frac)
                 }
             }
-            control?.setActivePID(0)
             if control?.isCancelled == true {
                 try? FileManager.default.removeItem(at: tmpOutput)
                 throw MoongateError.cancelled

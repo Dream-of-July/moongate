@@ -64,6 +64,7 @@ final class ViewModel: ObservableObject {
         didSet {
             queue.syncConcurrency(from: settings)
             refreshTranslationRuntimeReadiness()
+            refreshSummaryRuntimeReadiness()
         }
     }
     @Published var showSettings = false
@@ -88,6 +89,8 @@ final class ViewModel: ObservableObject {
     @Published var queueExpanded = false
     @Published private(set) var runtimeTranslationReadiness: TranslationReadiness?
     private var runtimeTranslationReadinessContext: TranslationContext?
+    @Published private(set) var runtimeSummaryReadiness: TranslationReadiness?
+    private var runtimeSummaryReadinessContext: TranslationContext?
 
     /// AI 内容总结状态。按需触发；切换/重置视频时回到 idle。
     enum SummaryState: Equatable {
@@ -105,6 +108,7 @@ final class ViewModel: ObservableObject {
     private let engine: any DownloadEngine
     private let runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating
     private var runtimeReadinessTask: Task<Void, Never>?
+    private var summaryReadinessTask: Task<Void, Never>?
     private var parseTask: Task<Void, Never>?
     private var candidates: [VideoCandidate] = []
     private var chosenCandidate: VideoCandidate?
@@ -145,6 +149,7 @@ final class ViewModel: ObservableObject {
         prefillFromClipboardIfAppropriate()
         showDependencySetupIfNeededOnStartup()
         refreshTranslationRuntimeReadiness()
+        refreshSummaryRuntimeReadiness()
     }
 
     /// 视图出现或 App 激活时：处于可输入阶段且输入框为空，用剪贴板里的链接预填（不自动解析）。
@@ -251,14 +256,10 @@ final class ViewModel: ObservableObject {
     /// 从粘贴文本里提取全部 http(s) 链接，保序去重。
     /// 按 `http(s)://` 锚点切分而非只按空白：单行输入框粘贴多行时换行可能被吞掉、
     /// 多条链接首尾相接，按空白分隔会整段当成一条导致「只解析出一个地址」。
-    /// 链接提取正则：编译一次复用，避免每次粘贴都重新编译（粘贴大批链接时尤其明显）。
-    private static let urlExtractRegex = try? NSRegularExpression(pattern: #"(?i)https?://(?:(?!https?://)\S)+"#)
-
     static func extractURLs(from input: String) -> [String] {
         var seen = Set<String>()
         var urls: [String] = []
-        // 每个字符既非空白、也不是下一条链接的开头（负向前瞻保证相接的链接被切开）
-        guard let regex = urlExtractRegex else { return [] }
+        guard let regex = urlExtractionRegex else { return [] }
         let ns = input as NSString
         for match in regex.matches(in: input, range: NSRange(location: 0, length: ns.length)) {
             let raw = ns.substring(with: match.range)
@@ -272,6 +273,11 @@ final class ViewModel: ObservableObject {
         }
         return urls
     }
+
+    // 每个字符既非空白、也不是下一条链接的开头（负向前瞻保证相接的链接被切开）。
+    private static let urlExtractionRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"(?i)https?://(?:(?!https?://)\S)+"#
+    )
 
     /// 批量模式：逐个解析（多候选页取第一个，即页面主视频），按最高画质自动入队。
     /// 当前已选「中文字幕」模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。
@@ -693,6 +699,23 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    func refreshSummaryRuntimeReadiness() {
+        summaryReadinessTask?.cancel()
+        let settings = settings.applyingTranslationConfig(settings.effectiveSummaryConfig)
+        let context = summaryReadinessContext()
+        runtimeSummaryReadinessContext = context
+        runtimeSummaryReadiness = settings.translationReadiness(context: context)
+        summaryReadinessTask = Task { [runtimeReadinessEvaluator] in
+            let readiness = await settings.translationRuntimeReadiness(
+                context: context,
+                evaluator: runtimeReadinessEvaluator
+            )
+            guard !Task.isCancelled else { return }
+            guard self.runtimeSummaryReadinessContext == context else { return }
+            self.runtimeSummaryReadiness = readiness
+        }
+    }
+
     private func currentTranslationContext() -> TranslationContext {
         let sourceLanguage: String?
         if case .ready(let info) = stage {
@@ -703,6 +726,10 @@ final class ViewModel: ObservableObject {
         return TranslationContext(sourceLanguage: sourceLanguage, targetLanguage: "zh-Hans")
     }
 
+    private func summaryReadinessContext() -> TranslationContext {
+        TranslationContext(sourceLanguage: nil, targetLanguage: "zh-Hans")
+    }
+
     // MARK: - AI 内容总结
 
     /// 总结当前不可用的原因；nil 表示可用。供 Ready 页禁用按钮并给提示。
@@ -711,8 +738,16 @@ final class ViewModel: ObservableObject {
         if !config.engine.canGenerateText {
             return "当前总结引擎只能翻译、不能生成总结。请在设置的「AI 设置」里为总结选择支持文本生成的引擎。"
         }
-        if !config.isCloudConfigurationComplete {
+        let summarySettings = settings.applyingTranslationConfig(config)
+        if !summarySettings.isTranslationConfigured {
             return "总结尚未配置完整。请在设置的「AI 设置」里填写服务地址、模型和凭证。"
+        }
+        let context = summaryReadinessContext()
+        let readiness = runtimeSummaryReadinessContext == context
+            ? (runtimeSummaryReadiness ?? summarySettings.translationReadiness(context: context))
+            : summarySettings.translationReadiness(context: context)
+        if !readiness.isReady {
+            return translationReadinessMessage(for: readiness)
         }
         return nil
     }

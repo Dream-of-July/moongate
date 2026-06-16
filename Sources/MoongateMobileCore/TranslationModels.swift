@@ -1,5 +1,29 @@
 import Foundation
 
+/// 视频编码后端。决定烧录 / 转码时用硬件媒体引擎还是软件编码器。
+public enum EncodeBackend: String, Codable, Sendable, Equatable, CaseIterable {
+    /// 自动：有硬件编码器（VideoToolbox）就用，否则回退软件。日常推荐。
+    case auto
+    /// 强制硬件（VideoToolbox）。最快、最省电、几乎不占 CPU；硬件不可用时回退软件。
+    case hardware
+    /// 强制软件（libx265/libx264）。同体积画质最高，但 4K 明显更慢、吃满 CPU。
+    case software
+
+    public var displayName: String {
+        switch self {
+        case .auto: return "自动（硬件优先，推荐）"
+        case .hardware: return "硬件加速（最快省电）"
+        case .software: return "软件（画质最高，较慢）"
+        }
+    }
+
+    /// 是否倾向使用硬件路径（auto / hardware）。software 返回 false。
+    /// 实际是否真用硬件还要看 VideoToolbox 编码器可用性，由 Burner/Transcoder 决定。
+    public var prefersHardware: Bool {
+        self != .software
+    }
+}
+
 public enum TranslationProvider: String, Codable, Sendable, Equatable, CaseIterable {
     case anthropic
     case openai

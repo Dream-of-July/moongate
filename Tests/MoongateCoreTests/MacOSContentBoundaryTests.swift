@@ -13,7 +13,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
             functionBody(prefix: "private func appleTranslationSetupGuidanceView", in: source)
         )
         XCTAssertTrue(guidanceBody.contains("AppleTranslationSetupGuidance.make("))
-        XCTAssertTrue(guidanceBody.contains("engine: model.settings.translationEngine"))
+        XCTAssertTrue(guidanceBody.contains("engine: effectiveTranslationEngine"))
         XCTAssertTrue(guidanceBody.contains("readiness: readiness"))
         XCTAssertTrue(guidanceBody.contains("guidance.title"))
         XCTAssertTrue(guidanceBody.contains("guidance.steps"))
@@ -44,6 +44,9 @@ final class MacOSContentBoundaryTests: XCTestCase {
         let compactGateBody = compactWhitespace(gateBody)
         XCTAssertTrue(compactGateBody.contains("case .appleTranslationLowLatency, .appleTranslationHighFidelity, .appleFoundationOnDevice, .appleFoundationPCC, .appleFoundationCloudPro: return true"))
         XCTAssertTrue(compactGateBody.contains("case .anthropicCompatible, .openAICompatible: return false"))
+
+        let effectiveEngineBody = try XCTUnwrap(functionBody(prefix: "private var effectiveTranslationEngine", in: source))
+        XCTAssertTrue(effectiveEngineBody.contains("model.settings.effectiveTranslationConfig.engine"))
     }
 
     func testAppleSetupGuidanceShowsAPICompatibleFallbackWithoutChangingSettings() throws {
@@ -83,7 +86,7 @@ final class MacOSContentBoundaryTests: XCTestCase {
             functionBody(prefix: "private func appleTranslationSetupReadinessSummary", in: source)
         )
         XCTAssertTrue(summaryBody.contains("Text(\"当前引擎\")"))
-        XCTAssertTrue(summaryBody.contains("model.settings.translationEngine.displayName"))
+        XCTAssertTrue(summaryBody.contains("effectiveTranslationEngine.displayName"))
         XCTAssertTrue(summaryBody.contains("Text(\"状态\")"))
         XCTAssertTrue(summaryBody.contains("readiness.isReady ? \"当前可运行\" : \"需要处理\""))
         XCTAssertTrue(summaryBody.contains("Text(\"首要原因\")"))

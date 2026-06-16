@@ -109,6 +109,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         )
     }
 
+    func testDefaultAIConnectionActionsDoNotUseTranslationOverrideEndpoint() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        let testBody = try XCTUnwrap(functionBody(named: "runConnectionTest", in: source))
+        XCTAssertTrue(testBody.contains("draft.applyingTranslationConfig(defaultAIConfig)"))
+        XCTAssertFalse(testBody.contains("draft.effectiveTranslationConfig"))
+
+        let fetchBody = try XCTUnwrap(functionBody(named: "fetchModels", in: source))
+        XCTAssertTrue(fetchBody.contains("draft.applyingTranslationConfig(defaultAIConfig)"))
+        XCTAssertFalse(fetchBody.contains("draft.effectiveTranslationConfig"))
+
+        let apiFieldsBody = try XCTUnwrap(functionBody(named: "apiTranslationFields", in: source))
+        XCTAssertTrue(apiFieldsBody.contains("!draft.applyingTranslationConfig(defaultAIConfig).isTranslationConfigured"))
+        XCTAssertFalse(apiFieldsBody.contains("!draft.translationReadiness().isReady"))
+
+        let configBody = try XCTUnwrap(functionBody(named: "defaultAIConfig", in: source))
+        XCTAssertTrue(configBody.contains("engine: draft.aiEngine"))
+        XCTAssertTrue(configBody.contains("baseURL: draft.aiBaseURL"))
+        XCTAssertTrue(configBody.contains("model: draft.aiModel"))
+        XCTAssertTrue(configBody.contains("authToken: draft.aiAuthToken"))
+    }
+
     func testAPITranslationProgressIndicatorsExposeAccessibleLabels() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")

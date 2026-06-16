@@ -48,7 +48,7 @@
     <sys:String x:Key="L.Summary.Hint">下载前先用 AI 看一眼这是什么视频。</sys:String>
     <sys:String x:Key="L.Summary.Running">正在理解视频内容…</sys:String>
     <sys:String x:Key="L.Summary.Regenerate">↻ 重新总结</sys:String>
-    <sys:String x:Key="L.Summary.Unconfigured">总结需要先在设置里配置 AI 服务（与翻译共用）：填写服务地址、模型和凭证。</sys:String>
+    <sys:String x:Key="L.Summary.Unconfigured">总结需要先在设置里配置可用的 AI 服务：填写服务地址、模型和凭证。</sys:String>
 
     <!-- 输出选项 -->
     <sys:String x:Key="L.Output.Section">输出选项</sys:String>
@@ -126,7 +126,11 @@
     <sys:String x:Key="L.Settings.Language">界面语言</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">跟随系统</sys:String>
     <sys:String x:Key="L.Settings.LangHint">切换语言立即生效；进行中任务的状态文案在下次刷新时切换。</sys:String>
+    <sys:String x:Key="L.Settings.AIService">AI 服务</sys:String>
+    <sys:String x:Key="L.Settings.AIServiceHint">默认 AI 服务会被翻译和总结复用；需要不同模型时可在下方单独覆盖。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻译服务</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻译跟随默认 AI 服务</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">默认复用上方服务。关闭后可给翻译单独指定模型或网关。</sys:String>
     <sys:String x:Key="L.Settings.Protocol">接口协议</sys:String>
     <sys:String x:Key="L.Settings.BaseUrl">服务地址</sys:String>
     <sys:String x:Key="L.Settings.Credential">API 凭证</sys:String>
@@ -144,11 +148,22 @@
     <sys:String x:Key="L.Settings.Testing">正在测试…</sys:String>
     <sys:String x:Key="L.Settings.TestOk">连接正常</sys:String>
     <sys:String x:Key="L.Settings.TestFailedFmt">连接失败：{0}</sys:String>
+    <sys:String x:Key="L.Settings.SummaryConfig">AI 总结</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefault">总结跟随默认 AI 服务</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefaultHint">默认使用上方服务。关闭后可给总结单独指定模型或网关。</sys:String>
+    <sys:String x:Key="L.Settings.SummaryModelHint">总结会使用这里的模型；留空时总结按钮会显示未配置。</sys:String>
     <sys:String x:Key="L.Settings.SubtitleStyle">字幕样式</sys:String>
     <sys:String x:Key="L.Settings.StyleLabel">中文字幕样式</sys:String>
     <sys:String x:Key="L.Settings.StyleBilingual">双语（原文 + 中文）</sys:String>
     <sys:String x:Key="L.Settings.StyleChineseOnly">仅中文</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">烧录画质</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackend">编码方式</sys:String>
+    <sys:String x:Key="L.Settings.EncodeAuto">自动</sys:String>
+    <sys:String x:Key="L.Settings.EncodeHardware">硬件优先</sys:String>
+    <sys:String x:Key="L.Settings.EncodeSoftware">软件编码</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackendHint">自动会优先使用 NVENC / QSV / AMF；软件编码更慢但画质更稳。</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264">始终输出 H.264</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">开启后兼容性最好；关闭则尽量跟随源视频编码，例如 HEVC 源继续输出 HEVC。</sys:String>
     <sys:String x:Key="L.Settings.Limit1080">高清视频烧录时缩放到 1080p（更快更省空间，推荐）</sys:String>
     <sys:String x:Key="L.Settings.Limit1080Hint">关闭则按源分辨率烧录（4K 会明显更慢、文件更大）。此设置只影响烧录字幕，不影响普通下载。</sys:String>
     <sys:String x:Key="L.Settings.Performance">性能</sys:String>

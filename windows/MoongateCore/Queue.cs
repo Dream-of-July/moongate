@@ -183,6 +183,11 @@ public sealed class QueueManager
 
     private int _maxConcurrentDownloads;
     private int _maxConcurrentBurns;
+    /// <summary>
+    /// 实际压制并发上限：硬件编码后端时编码不占 CPU（走专用编码器），可比原始值多放一路提高吞吐；
+    /// 软件后端等于原始值。由 SyncConcurrency 从 settings.EffectiveMaxConcurrentBurns 同步。
+    /// </summary>
+    private int _effectiveBurnCapacity;
 
     /// <summary>同时下载数（设置变更时由 UI 层同步；调大即时生效）。</summary>
     public int MaxConcurrentDownloads
@@ -240,8 +245,9 @@ public sealed class QueueManager
         var loaded = settings ?? AppSettings.Load();
         _maxConcurrentDownloads = loaded.MaxConcurrentDownloads;
         _maxConcurrentBurns = loaded.MaxConcurrentBurns;
+        _effectiveBurnCapacity = loaded.EffectiveMaxConcurrentBurns;
         _downloadPool = new StageSlotPool(() => MaxConcurrentDownloads);
-        _burnPool = new StageSlotPool(() => MaxConcurrentBurns);
+        _burnPool = new StageSlotPool(() => { lock (_lock) return _effectiveBurnCapacity; });
         _translatePool = new StageSlotPool(() => 2);
     }
 
@@ -256,6 +262,14 @@ public sealed class QueueManager
         {
             MaxConcurrentBurns = settings.MaxConcurrentBurns;
         }
+        // 后端切换（硬件/软件）会改变有效压制并发，即使原始压制数没变也要同步。
+        bool changed;
+        lock (_lock)
+        {
+            changed = _effectiveBurnCapacity != settings.EffectiveMaxConcurrentBurns;
+            _effectiveBurnCapacity = settings.EffectiveMaxConcurrentBurns;
+        }
+        if (changed) _burnPool.WakeAll();
     }
 
     // MARK: - 状态读取
@@ -454,16 +468,19 @@ public sealed class QueueManager
                                 item.StatusText = L10n.T("正在转码为所选格式…", "Transcoding to chosen format…");
                                 item.IsPostDownloadProcessing = true;
                             });
+                            // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
+                            var requestedHdrFallback = current.Request.PreferHdr;
                             var transcoded = await new Transcoder().TranscodeAsync(
                                 videoFile, current.Request.OutputFormat,
-                                sourceVCodec: null, sourceIsHdr: current.Request.PreferHdr,
+                                sourceVCodec: null, sourceIsHdr: requestedHdrFallback,
                                 control,
                                 frac =>
                                 {
                                     if (GenerationOf(id) != generation) return;
                                     Update(id, generation, item => item.Progress = frac);
                                 },
-                                ct).ConfigureAwait(false);
+                                backend: current.Settings.EncodeBackend,
+                                ct: ct).ConfigureAwait(false);
                             if (GenerationOf(id) != generation) return;
                             // 用转码产物替换原视频文件（删原文件，除非同一路径）。
                             if (!PathsEqual(transcoded, videoFile))
@@ -564,6 +581,8 @@ public sealed class QueueManager
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
                             item.Progress = p;
                         }),
+                        backend: settings.EncodeBackend,
+                        alwaysH264: settings.BurnAlwaysH264,
                         outputTag: L10n.T("（字幕版）", " (subtitled)"),
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
@@ -631,6 +650,8 @@ public sealed class QueueManager
                             if (item.Stage.Kind != ItemStageKind.Burning) return;
                             item.Progress = p;
                         }),
+                        backend: settings.EncodeBackend,
+                        alwaysH264: settings.BurnAlwaysH264,
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
                     Update(id, generation, item =>
@@ -670,9 +691,10 @@ public sealed class QueueManager
                     item.Progress = null;
                     item.StatusText = null;
                 });
-                var translator = _translatorFactory(settings);
+                var translationSettings = settings.ForTranslation();
+                var translator = _translatorFactory(translationSettings);
                 zhSrt = await translator.TranslateAsync(
-                    srtFile, settings.SubtitleStyle, control,
+                    srtFile, translationSettings.SubtitleStyle, control,
                     p => Update(id, generation, item =>
                     {
                         if (item.Stage.Kind != ItemStageKind.Translating) return;
@@ -735,6 +757,8 @@ public sealed class QueueManager
                         if (item.Stage.Kind != ItemStageKind.Burning) return;
                         item.Progress = p;
                     }),
+                    backend: settings.EncodeBackend,
+                    alwaysH264: settings.BurnAlwaysH264,
                     ct: ct).ConfigureAwait(false);
                 if (GenerationOf(id) != generation) return;
                 Update(id, generation, item =>
@@ -862,11 +886,15 @@ public sealed class QueueManager
             if (target is null || !IsOpen(target.Stage.Kind) || target.IsPaused) return;
             control = target.Control;
             // 让出占用的下载/压制槽位给其它任务；恢复时重新排队领取。
+            // 翻译请求不是本地可挂起进程，暂停后仍可能有分块请求在飞行中，不能释放翻译并发位。
             if (_holdingPool.TryGetValue(id, out var holding) && holding.Generation == target.Generation)
             {
-                _holdingPool.Remove(id);
-                _resumePool[id] = holding;
-                releasePool = holding.Pool;
+                if (!ReferenceEquals(holding.Pool, _translatePool))
+                {
+                    _holdingPool.Remove(id);
+                    _resumePool[id] = holding;
+                    releasePool = holding.Pool;
+                }
             }
             target.IsPaused = true;
         }

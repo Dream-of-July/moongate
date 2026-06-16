@@ -132,6 +132,10 @@ final class UpdateService: ObservableObject {
               newID == (Bundle.main.bundleIdentifier ?? "") else {
             throw MoongateError.downloadFailed("更新包与当前应用不匹配，已停止安装。")
         }
+        guard let newVersionRaw = newPlist["CFBundleShortVersionString"] as? String,
+              SemVer(newVersionRaw) == expectedVersion else {
+            throw MoongateError.downloadFailed("更新包版本与目标版本不一致，已停止安装。")
+        }
 
         // 写替换脚本：等本进程退出 → 覆盖 → 去隔离 → 重开。
         let script = UpdateChecker.installScript(
@@ -201,5 +205,4 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {}
 }
-
 

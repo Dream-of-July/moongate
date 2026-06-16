@@ -397,12 +397,15 @@ public protocol SubtitleBurner: Sendable {
     /// 把 subtitle 烧录进 video，输出 "<原名>（中文字幕).mp4" 风格的新文件（不覆盖原片）；
     /// outputTag 非空时自定义文件名标签，例如直压原字幕模式用 "（字幕版）"。
     /// maxHeight 非空且源更高时缩放到该高度；progress 为 0...1。
+    /// backend 决定用硬件（VideoToolbox）还是软件编码器；alwaysH264=true 时无视源编码强制 H.264（兼容优先）。
     /// control 非空时支持暂停/取消（向 ffmpeg 进程树发 SIGSTOP/SIGCONT、取消时终止）。
     /// 失败抛 MoongateError.burnFailed。
     func burn(
         video: URL,
         subtitle: URL,
         maxHeight: Int?,
+        backend: EncodeBackend,
+        alwaysH264: Bool,
         control: TaskControlToken?,
         outputTag: String?,
         progress: @escaping @Sendable (Double) -> Void
@@ -414,12 +417,15 @@ public extension SubtitleBurner {
         video: URL,
         subtitle: URL,
         maxHeight: Int?,
+        backend: EncodeBackend = .auto,
+        alwaysH264: Bool = false,
         control: TaskControlToken?,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try await burn(
             video: video, subtitle: subtitle,
-            maxHeight: maxHeight, control: control, outputTag: nil,
+            maxHeight: maxHeight, backend: backend, alwaysH264: alwaysH264,
+            control: control, outputTag: nil,
             progress: progress
         )
     }
@@ -431,7 +437,8 @@ public extension SubtitleBurner {
     ) async throws -> URL {
         try await burn(
             video: video, subtitle: subtitle,
-            maxHeight: nil, control: nil, outputTag: nil,
+            maxHeight: nil, backend: .auto, alwaysH264: false,
+            control: nil, outputTag: nil,
             progress: progress
         )
     }

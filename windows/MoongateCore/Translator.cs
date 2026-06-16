@@ -966,10 +966,17 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         var output = cues.Select(c => new SubtitleCue(c.Index, c.Start, c.End, c.Text)).ToList();
         for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
         {
-            // 某条缺失就保留原文（output 初始即原文）
-            if (!merged.TryGetValue(cueIndex + 1, out var rawChinese)) continue;
+            if (!merged.TryGetValue(cueIndex + 1, out var rawChinese))
+            {
+                throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                    "Malformed model reply: translation lines are missing"));
+            }
             var chinese = SanitizeTranslation(rawChinese);
-            if (chinese.Length == 0) continue;
+            if (chinese.Length == 0)
+            {
+                throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                    "Malformed model reply: translation lines are missing"));
+            }
             output[cueIndex].Text = style switch
             {
                 // 中文在上、原文在下（烧录时原文用更小字号）
@@ -1001,7 +1008,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     /// <summary>
     /// 翻译一块字幕，返回 [全局编号: 译文]。
     /// 译文被输出上限截断时按减半的条数自动重试：最多再分两层、每块最小 8 条；仍截断则抛错。
-    /// 译文缺失行数超过 40% 视为模型返回格式异常，抛错而不是静默保留原文。
+    /// 只要译文缺失行即视为模型返回格式异常，抛错而不是静默保留原文。
     /// </summary>
     private async Task<Dictionary<int, string>> TranslateChunkAsync(
         IReadOnlyList<SubtitleCue> allCues, int offset, int count, int startNumber, int depth,
@@ -1033,10 +1040,10 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         var map = ParseReply(reply.Text);
         var missing = Enumerable.Range(startNumber, count)
             .Count(n => !map.TryGetValue(n, out var v) || v.Length == 0);
-        if (missing > count * 0.4)
+        if (missing > 0)
         {
-            throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失过多译文行",
-                "Malformed model reply: too many translation lines are missing"));
+            throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                "Malformed model reply: translation lines are missing"));
         }
         return map;
     }

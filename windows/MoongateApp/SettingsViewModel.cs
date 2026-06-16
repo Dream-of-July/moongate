@@ -17,6 +17,8 @@ public sealed class SettingsViewModel : ObservableObject
     private CancellationTokenSource? _fetchCts;
     private List<string> _fetchedModels = [];
 
+    public APIEndpointActions AIEndpoint { get; }
+    public APIEndpointActions SummaryEndpoint { get; }
     public RelayCommand FetchModelsCommand { get; }
     public RelayCommand TestConnectionCommand { get; }
     public RelayCommand DownloadsMinusCommand { get; }
@@ -27,16 +29,43 @@ public sealed class SettingsViewModel : ObservableObject
     public SettingsViewModel(AppSettings current, QueueManager queue, string? initialNotice)
     {
         _queue = queue;
+        _aiProvider = current.AIProvider;
+        _aiBaseUrl = current.AIBaseUrl;
+        _aiAuthToken = current.AIAuthToken;
+        _aiModel = current.AIModel;
+        _translationFollowsDefault = current.TranslationFollowsDefault;
         _provider = current.TranslationProvider;
         _baseUrl = current.TranslationBaseUrl;
         _authToken = current.TranslationAuthToken;
         _model = current.TranslationModel;
+        _summaryFollowsDefault = current.SummaryFollowsDefault;
+        _summaryProvider = current.SummaryProvider;
+        _summaryBaseUrl = current.SummaryBaseUrl;
+        _summaryAuthToken = current.SummaryAuthToken;
+        _summaryModel = current.SummaryModel;
         _styleIndex = current.SubtitleStyle == SubtitleStyle.ChineseOnly ? 1 : 0;
         _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "en" => 2, _ => 0 };
         _limitBurnTo1080 = current.MaxBurnHeight is not null;
+        _encodeBackend = current.EncodeBackend;
+        _burnAlwaysH264 = current.BurnAlwaysH264;
         _maxDownloads = current.MaxConcurrentDownloads;
         _maxBurns = current.MaxConcurrentBurns;
         _notice = initialNotice;
+
+        AIEndpoint = new APIEndpointActions(
+            _modelPlaceholder,
+            () => RequestSettings(_aiProvider, AIBaseUrl, AIModel, AIAuthToken),
+            () => AIBaseUrl,
+            () => AIAuthToken,
+            () => AIModel,
+            value => AIModel = value);
+        SummaryEndpoint = new APIEndpointActions(
+            _modelPlaceholder,
+            () => RequestSettings(_summaryProvider, SummaryBaseUrl, SummaryModel, SummaryAuthToken),
+            () => SummaryBaseUrl,
+            () => SummaryAuthToken,
+            () => SummaryModel,
+            value => SummaryModel = value);
 
         FetchModelsCommand = new RelayCommand(() => _ = FetchModelsAsync(), () => !IsFetchingModels && CanFetchModels);
         TestConnectionCommand = new RelayCommand(
@@ -50,7 +79,91 @@ public sealed class SettingsViewModel : ObservableObject
         RefreshDependencyStatus();
     }
 
+    // MARK: - 默认 AI 服务
+
+    private TranslationProvider _aiProvider;
+    public int AIProviderIndex
+    {
+        get => _aiProvider == TranslationProvider.Openai ? 1 : 0;
+        set
+        {
+            var next = value == 1 ? TranslationProvider.Openai : TranslationProvider.Anthropic;
+            if (_aiProvider == next) return;
+            _aiProvider = next;
+            var trimmed = AIBaseUrl.Trim();
+            if (trimmed.Length == 0
+                || trimmed == TranslationProvider.Anthropic.DefaultBaseUrl()
+                || trimmed == TranslationProvider.Openai.DefaultBaseUrl())
+            {
+                AIBaseUrl = next.DefaultBaseUrl();
+            }
+            if (AIModel.Length > 0) AIModel = "";
+            AIEndpoint.ResetTestState();
+            AIEndpoint.ResetModelFetch();
+            AIEndpoint.RaiseActionEnables();
+            RaisePropertyChanged();
+            RaisePropertyChanged(nameof(AICredentialHelpText));
+        }
+    }
+
+    public string AICredentialHelpText => _aiProvider == TranslationProvider.Openai
+        ? Loc.S("L.Settings.CredHelpOpenAi")
+        : Loc.S("L.Settings.CredHelpAnthropic");
+
+    private string _aiBaseUrl;
+    public string AIBaseUrl
+    {
+        get => _aiBaseUrl;
+        set
+        {
+            if (!SetProperty(ref _aiBaseUrl, value)) return;
+            AIEndpoint.ResetTestState();
+            AIEndpoint.ResetModelFetch();
+            AIEndpoint.RaiseActionEnables();
+        }
+    }
+
+    private string _aiAuthToken;
+    public string AIAuthToken
+    {
+        get => _aiAuthToken;
+        set
+        {
+            if (!SetProperty(ref _aiAuthToken, value)) return;
+            AIEndpoint.ResetTestState();
+            AIEndpoint.ResetModelFetch();
+            AIEndpoint.RaiseActionEnables();
+        }
+    }
+
+    private string _aiModel;
+    public string AIModel
+    {
+        get => _aiModel;
+        set
+        {
+            if (!SetProperty(ref _aiModel, value)) return;
+            AIEndpoint.ResetTestState();
+            AIEndpoint.OnModelChanged();
+            AIEndpoint.RaiseActionEnables();
+        }
+    }
+
     // MARK: - 翻译服务
+
+    private bool _translationFollowsDefault;
+    public bool TranslationFollowsDefault
+    {
+        get => _translationFollowsDefault;
+        set
+        {
+            if (!SetProperty(ref _translationFollowsDefault, value)) return;
+            RaisePropertyChanged(nameof(ShowTranslationOverride));
+            RaiseActionEnables();
+        }
+    }
+
+    public bool ShowTranslationOverride => !TranslationFollowsDefault;
 
     private TranslationProvider _provider;
     /// <summary>0 = Anthropic 兼容，1 = OpenAI 兼容。</summary>
@@ -218,6 +331,89 @@ public sealed class SettingsViewModel : ObservableObject
         FetchStatusIsError = false;
     }
 
+    // MARK: - AI 总结配置
+
+    private bool _summaryFollowsDefault;
+    public bool SummaryFollowsDefault
+    {
+        get => _summaryFollowsDefault;
+        set
+        {
+            if (!SetProperty(ref _summaryFollowsDefault, value)) return;
+            RaisePropertyChanged(nameof(ShowSummaryOverride));
+        }
+    }
+
+    public bool ShowSummaryOverride => !SummaryFollowsDefault;
+
+    private TranslationProvider _summaryProvider;
+    public int SummaryProviderIndex
+    {
+        get => _summaryProvider == TranslationProvider.Openai ? 1 : 0;
+        set
+        {
+            var next = value == 1 ? TranslationProvider.Openai : TranslationProvider.Anthropic;
+            if (_summaryProvider == next) return;
+            _summaryProvider = next;
+            var trimmed = SummaryBaseUrl.Trim();
+            if (trimmed.Length == 0
+                || trimmed == TranslationProvider.Anthropic.DefaultBaseUrl()
+                || trimmed == TranslationProvider.Openai.DefaultBaseUrl())
+            {
+                SummaryBaseUrl = next.DefaultBaseUrl();
+            }
+            if (SummaryModel.Length > 0) SummaryModel = "";
+            SummaryEndpoint.ResetTestState();
+            SummaryEndpoint.ResetModelFetch();
+            SummaryEndpoint.RaiseActionEnables();
+            RaisePropertyChanged();
+            RaisePropertyChanged(nameof(SummaryCredentialHelpText));
+        }
+    }
+
+    public string SummaryCredentialHelpText => _summaryProvider == TranslationProvider.Openai
+        ? Loc.S("L.Settings.CredHelpOpenAi")
+        : Loc.S("L.Settings.CredHelpAnthropic");
+
+    private string _summaryBaseUrl;
+    public string SummaryBaseUrl
+    {
+        get => _summaryBaseUrl;
+        set
+        {
+            if (!SetProperty(ref _summaryBaseUrl, value)) return;
+            SummaryEndpoint.ResetTestState();
+            SummaryEndpoint.ResetModelFetch();
+            SummaryEndpoint.RaiseActionEnables();
+        }
+    }
+
+    private string _summaryAuthToken;
+    public string SummaryAuthToken
+    {
+        get => _summaryAuthToken;
+        set
+        {
+            if (!SetProperty(ref _summaryAuthToken, value)) return;
+            SummaryEndpoint.ResetTestState();
+            SummaryEndpoint.ResetModelFetch();
+            SummaryEndpoint.RaiseActionEnables();
+        }
+    }
+
+    private string _summaryModel;
+    public string SummaryModel
+    {
+        get => _summaryModel;
+        set
+        {
+            if (!SetProperty(ref _summaryModel, value)) return;
+            SummaryEndpoint.ResetTestState();
+            SummaryEndpoint.OnModelChanged();
+            SummaryEndpoint.RaiseActionEnables();
+        }
+    }
+
     // MARK: 测试连接
 
     private bool _isTesting;
@@ -303,6 +499,34 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _limitBurnTo1080;
     /// <summary>勾选 = MaxBurnHeight 1080；关闭 = null（保持源分辨率）。</summary>
     public bool LimitBurnTo1080 { get => _limitBurnTo1080; set => SetProperty(ref _limitBurnTo1080, value); }
+
+    private EncodeBackend _encodeBackend;
+    /// <summary>0 = 自动，1 = 硬件优先，2 = 软件。</summary>
+    public int EncodeBackendIndex
+    {
+        get => _encodeBackend switch
+        {
+            EncodeBackend.Hardware => 1,
+            EncodeBackend.Software => 2,
+            _ => 0,
+        };
+        set
+        {
+            var next = value switch
+            {
+                1 => EncodeBackend.Hardware,
+                2 => EncodeBackend.Software,
+                _ => EncodeBackend.Auto,
+            };
+            if (_encodeBackend == next) return;
+            _encodeBackend = next;
+            RaisePropertyChanged();
+            SyncConcurrencyLive();
+        }
+    }
+
+    private bool _burnAlwaysH264;
+    public bool BurnAlwaysH264 { get => _burnAlwaysH264; set => SetProperty(ref _burnAlwaysH264, value); }
 
     // MARK: - 性能（改动实时生效）
 
@@ -423,8 +647,20 @@ public sealed class SettingsViewModel : ObservableObject
         TranslationBaseUrl = BaseUrl,
         TranslationModel = Model,
         TranslationAuthToken = AuthToken,
+        AIProvider = _aiProvider,
+        AIBaseUrl = AIBaseUrl,
+        AIModel = AIModel,
+        AIAuthToken = AIAuthToken,
+        TranslationFollowsDefault = TranslationFollowsDefault,
+        SummaryFollowsDefault = SummaryFollowsDefault,
+        SummaryProvider = _summaryProvider,
+        SummaryBaseUrl = SummaryBaseUrl,
+        SummaryModel = SummaryModel,
+        SummaryAuthToken = SummaryAuthToken,
         SubtitleStyle = StyleIndex == 1 ? SubtitleStyle.ChineseOnly : SubtitleStyle.Bilingual,
         MaxBurnHeight = LimitBurnTo1080 ? 1080 : null,
+        EncodeBackend = _encodeBackend,
+        BurnAlwaysH264 = BurnAlwaysH264,
         MaxConcurrentDownloads = MaxDownloads,
         MaxConcurrentBurns = MaxBurns,
         AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "en", _ => "auto" },
@@ -450,5 +686,228 @@ public sealed class SettingsViewModel : ObservableObject
     {
         _testCts?.Cancel();
         _fetchCts?.Cancel();
+        AIEndpoint.CancelOperations();
+        SummaryEndpoint.CancelOperations();
     }
+
+    private static AppSettings RequestSettings(
+        TranslationProvider provider,
+        string baseUrl,
+        string model,
+        string authToken
+    ) => new()
+    {
+        TranslationProvider = provider,
+        TranslationBaseUrl = baseUrl,
+        TranslationModel = model,
+        TranslationAuthToken = authToken,
+        TranslationFollowsDefault = false,
+    };
+}
+
+public sealed class APIEndpointActions : ObservableObject
+{
+    private readonly string _modelPlaceholder;
+    private readonly Func<AppSettings> _settingsForRequest;
+    private readonly Func<string> _baseUrl;
+    private readonly Func<string> _authToken;
+    private readonly Func<string> _model;
+    private readonly Action<string> _setModel;
+    private CancellationTokenSource? _testCts;
+    private CancellationTokenSource? _fetchCts;
+    private List<string> _fetchedModels = [];
+
+    public APIEndpointActions(
+        string modelPlaceholder,
+        Func<AppSettings> settingsForRequest,
+        Func<string> baseUrl,
+        Func<string> authToken,
+        Func<string> model,
+        Action<string> setModel
+    )
+    {
+        _modelPlaceholder = modelPlaceholder;
+        _settingsForRequest = settingsForRequest;
+        _baseUrl = baseUrl;
+        _authToken = authToken;
+        _model = model;
+        _setModel = setModel;
+        FetchModelsCommand = new RelayCommand(() => _ = FetchModelsAsync(), () => !IsFetchingModels && CanFetchModels);
+        TestConnectionCommand = new RelayCommand(
+            () => _ = TestConnectionAsync(),
+            () => !IsTesting && _settingsForRequest().IsTranslationConfigured);
+    }
+
+    public RelayCommand FetchModelsCommand { get; }
+    public RelayCommand TestConnectionCommand { get; }
+
+    private bool _isFetchingModels;
+    public bool IsFetchingModels
+    {
+        get => _isFetchingModels;
+        private set
+        {
+            if (SetProperty(ref _isFetchingModels, value)) RaiseActionEnables();
+        }
+    }
+
+    private string? _fetchStatusText;
+    public string? FetchStatusText { get => _fetchStatusText; private set => SetProperty(ref _fetchStatusText, value); }
+
+    private bool _fetchStatusIsError;
+    public bool FetchStatusIsError { get => _fetchStatusIsError; private set => SetProperty(ref _fetchStatusIsError, value); }
+
+    private bool _showModelPicker;
+    public bool ShowModelPicker { get => _showModelPicker; private set => SetProperty(ref _showModelPicker, value); }
+
+    private List<string> _modelOptions = [];
+    public List<string> ModelOptions { get => _modelOptions; private set => SetProperty(ref _modelOptions, value); }
+
+    public string SelectedModelOption
+    {
+        get => _model().Length == 0 ? _modelPlaceholder : _model();
+        set
+        {
+            if (string.IsNullOrEmpty(value)) return;
+            _setModel(value == _modelPlaceholder ? "" : value);
+        }
+    }
+
+    private bool _isTesting;
+    public bool IsTesting
+    {
+        get => _isTesting;
+        private set
+        {
+            if (SetProperty(ref _isTesting, value)) RaiseActionEnables();
+        }
+    }
+
+    private string? _testStatusText;
+    public string? TestStatusText { get => _testStatusText; private set => SetProperty(ref _testStatusText, value); }
+
+    private bool _testStatusIsError;
+    public bool TestStatusIsError { get => _testStatusIsError; private set => SetProperty(ref _testStatusIsError, value); }
+
+    private bool _testStatusIsSuccess;
+    public bool TestStatusIsSuccess { get => _testStatusIsSuccess; private set => SetProperty(ref _testStatusIsSuccess, value); }
+
+    public void OnModelChanged()
+    {
+        if (ShowModelPicker) RebuildModelOptions();
+        RaisePropertyChanged(nameof(SelectedModelOption));
+    }
+
+    public void ResetModelFetch()
+    {
+        _fetchCts?.Cancel();
+        if (!ShowModelPicker && FetchStatusText is null && !IsFetchingModels) return;
+        IsFetchingModels = false;
+        ShowModelPicker = false;
+        FetchStatusText = null;
+        FetchStatusIsError = false;
+    }
+
+    public void ResetTestState()
+    {
+        _testCts?.Cancel();
+        if (TestStatusText is null && !IsTesting) return;
+        IsTesting = false;
+        TestStatusText = null;
+        TestStatusIsError = false;
+        TestStatusIsSuccess = false;
+    }
+
+    public void RaiseActionEnables()
+    {
+        FetchModelsCommand.RaiseCanExecuteChanged();
+        TestConnectionCommand.RaiseCanExecuteChanged();
+    }
+
+    public void CancelOperations()
+    {
+        _testCts?.Cancel();
+        _fetchCts?.Cancel();
+    }
+
+    private bool CanFetchModels => _baseUrl().Trim().Length > 0 && _authToken().Trim().Length > 0;
+
+    private async Task FetchModelsAsync()
+    {
+        _fetchCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _fetchCts = cts;
+        IsFetchingModels = true;
+        FetchStatusText = Loc.S("L.Settings.Fetching");
+        FetchStatusIsError = false;
+        ShowModelPicker = false;
+        var settings = _settingsForRequest();
+        try
+        {
+            var models = await TranslationApi.ListModelsAsync(settings, ct: cts.Token);
+            if (cts.Token.IsCancellationRequested) return;
+            _fetchedModels = [.. models];
+            if (_model().Length > 0 && !_fetchedModels.Contains(_model())) _setModel("");
+            RebuildModelOptions();
+            ShowModelPicker = true;
+            FetchStatusText = Loc.F("L.Settings.FetchedFmt", models.Count);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception error)
+        {
+            if (cts.Token.IsCancellationRequested) return;
+            FetchStatusText = Loc.F("L.Settings.FetchFailedFmt", ReasonOf(error));
+            FetchStatusIsError = true;
+        }
+        finally
+        {
+            if (_fetchCts == cts) IsFetchingModels = false;
+        }
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        _testCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _testCts = cts;
+        IsTesting = true;
+        TestStatusText = Loc.S("L.Settings.Testing");
+        TestStatusIsError = false;
+        TestStatusIsSuccess = false;
+        var settings = _settingsForRequest();
+        try
+        {
+            _ = await TranslationApi.TestConnectionAsync(settings, ct: cts.Token);
+            if (cts.Token.IsCancellationRequested) return;
+            TestStatusText = Loc.S("L.Settings.TestOk");
+            TestStatusIsSuccess = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception error)
+        {
+            if (cts.Token.IsCancellationRequested) return;
+            TestStatusText = Loc.F("L.Settings.TestFailedFmt", ReasonOf(error));
+            TestStatusIsError = true;
+        }
+        finally
+        {
+            if (_testCts == cts) IsTesting = false;
+        }
+    }
+
+    private void RebuildModelOptions()
+    {
+        var options = new List<string> { _modelPlaceholder };
+        options.AddRange(_fetchedModels);
+        if (_model().Length > 0 && !_fetchedModels.Contains(_model())) options.Add(_model());
+        ModelOptions = options;
+        RaisePropertyChanged(nameof(SelectedModelOption));
+    }
+
+    private static string ReasonOf(Exception error) =>
+        error is MoongateException { Kind: MoongateErrorKind.TranslateFailed } mge ? mge.Detail : error.Message;
 }

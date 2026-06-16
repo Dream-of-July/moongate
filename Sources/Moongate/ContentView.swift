@@ -569,12 +569,16 @@ struct ContentView: View {
     }
 
     private var shouldShowAppleTranslationSetupGuidance: Bool {
-        switch model.settings.translationEngine {
+        switch effectiveTranslationEngine {
         case .appleTranslationLowLatency, .appleTranslationHighFidelity, .appleFoundationOnDevice, .appleFoundationPCC, .appleFoundationCloudPro:
             return true
         case .anthropicCompatible, .openAICompatible:
             return false
         }
+    }
+
+    private var effectiveTranslationEngine: TranslationEngine {
+        model.settings.effectiveTranslationConfig.engine
     }
 
     private func compactTranslationReadinessView() -> some View {
@@ -592,7 +596,7 @@ struct ContentView: View {
 
     private func appleTranslationSetupGuidanceView(_ readiness: TranslationReadiness) -> some View {
         let guidance = AppleTranslationSetupGuidance.make(
-            engine: model.settings.translationEngine,
+            engine: effectiveTranslationEngine,
             readiness: readiness
         )
         return VStack(alignment: .leading, spacing: 6) {
@@ -635,7 +639,7 @@ struct ContentView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("当前引擎")
                     .foregroundStyle(.secondary)
-                Text(model.settings.translationEngine.displayName)
+                Text(effectiveTranslationEngine.displayName)
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("状态")
@@ -651,7 +655,7 @@ struct ContentView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Apple 翻译引擎状态")
-        .accessibilityValue("\(model.settings.translationEngine.displayName)，\(statusText)：\(reasonText)")
+        .accessibilityValue("\(effectiveTranslationEngine.displayName)，\(statusText)：\(reasonText)")
     }
 
     private func appleTranslationSetupReadinessReason(_ readiness: TranslationReadiness) -> String {

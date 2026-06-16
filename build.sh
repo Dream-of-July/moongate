@@ -1,11 +1,11 @@
 #!/bin/zsh
 # 编译并安装 月之门.app 到 /Applications。
-# 构建产物不要留在项目目录里，避免同步目录或残留文件影响 codesign。
-# scratch path 与 .app 都放到项目目录之外。
+# 注意：本项目位于 iCloud 同步的 ~/Documents 下，构建产物若留在项目内会破坏 codesign，
+# 因此 scratch path 与 .app 全部放在 iCloud 之外。
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
-SCRATCH="$HOME/Library/Caches/moongate-build"
+SCRATCH="$HOME/Library/Caches/vdl-build"
 APP_NAME="月之门"
 # Icon Composer 源、actool 的 --app-icon、以及 Info.plist 的 CFBundleIconName 三者必须同名，
 # 否则 macOS 按 CFBundleIconName 从 Assets.car 取分层图标时会落空（Tahoe Liquid Glass 失效）。
@@ -14,8 +14,15 @@ ICON_SOURCE_NAME="$APP_NAME"
 # 当前用户在 admin 组时可直接写，无需 sudo。
 INSTALL_DIR="/Applications"
 APP="$INSTALL_DIR/$APP_NAME.app"
+TMP_APP="$INSTALL_DIR/.$APP_NAME.app.new"
+BACKUP_APP="$INSTALL_DIR/.$APP_NAME.app.previous"
 ICON_DOC="$PROJ_DIR/$ICON_SOURCE_NAME.icon"
 ICON_OUT="$SCRATCH/icon-compiled"
+
+cleanup() {
+    rm -rf "$TMP_APP"
+}
+trap cleanup EXIT
 
 echo "==> swift build (release, scratch: $SCRATCH)"
 swift build -c release --package-path "$PROJ_DIR" --scratch-path "$SCRATCH"
@@ -40,15 +47,15 @@ if [[ -d "$ICON_DOC" ]] && xcrun --find actool >/dev/null 2>&1; then
 fi
 
 echo "==> 组装 $APP"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Moongate"
+rm -rf "$TMP_APP"
+mkdir -p "$TMP_APP/Contents/MacOS" "$TMP_APP/Contents/Resources"
+cp "$BIN" "$TMP_APP/Contents/MacOS/Moongate"
 if [[ "$ICON_READY" == 1 ]]; then
-    cp "$ICON_OUT/Assets.car" "$APP/Contents/Resources/"
-    cp "$ICON_OUT/$ICON_SOURCE_NAME.icns" "$APP/Contents/Resources/$APP_NAME.icns"
+    cp "$ICON_OUT/Assets.car" "$TMP_APP/Contents/Resources/"
+    cp "$ICON_OUT/$ICON_SOURCE_NAME.icns" "$TMP_APP/Contents/Resources/$APP_NAME.icns"
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$TMP_APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -61,7 +68,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>               <string>月之门</string>
     <key>CFBundleIconName</key>               <string>月之门</string>
     <key>CFBundlePackageType</key>            <string>APPL</string>
-    <key>CFBundleShortVersionString</key>     <string>0.4.0</string>
+    <key>CFBundleShortVersionString</key>     <string>0.5.0</string>
     <key>CFBundleVersion</key>                <string>1</string>
     <key>LSMinimumSystemVersion</key>         <string>14.0</string>
     <key>LSApplicationCategoryType</key>      <string>public.app-category.utilities</string>
@@ -72,6 +79,18 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 echo "==> ad-hoc 签名"
-codesign --force --sign - "$APP"
+codesign --force --sign - "$TMP_APP"
+
+rm -rf "$BACKUP_APP"
+if [[ -e "$APP" ]]; then
+    mv "$APP" "$BACKUP_APP"
+fi
+if ! mv "$TMP_APP" "$APP"; then
+    if [[ -e "$BACKUP_APP" ]]; then
+        mv "$BACKUP_APP" "$APP"
+    fi
+    exit 1
+fi
+rm -rf "$BACKUP_APP"
 
 echo "==> 完成：$APP"

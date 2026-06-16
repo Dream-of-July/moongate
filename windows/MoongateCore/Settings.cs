@@ -8,6 +8,38 @@ public enum TranslationProvider
     Openai,
 }
 
+/// <summary>视频编码后端。决定烧录/转码用硬件编码器（NVENC/QSV/AMF）还是软件（libx265/libx264）。</summary>
+public enum EncodeBackend
+{
+    /// <summary>自动：有硬件编码器就用，否则回退软件。日常推荐。</summary>
+    Auto,
+    /// <summary>强制硬件（NVENC→QSV→AMF）。最快、最省电；硬件不可用时回退软件。</summary>
+    Hardware,
+    /// <summary>强制软件（libx265/libx264）。同体积画质最高，但 4K 明显更慢、吃满 CPU。</summary>
+    Software,
+}
+
+public static class EncodeBackendExtensions
+{
+    /// <summary>JSON 持久化值（与 Swift 版 rawValue 一致）。</summary>
+    public static string RawValue(this EncodeBackend backend) => backend switch
+    {
+        EncodeBackend.Hardware => "hardware",
+        EncodeBackend.Software => "software",
+        _ => "auto",
+    };
+
+    public static EncodeBackend FromRawValue(string? raw) => raw switch
+    {
+        "hardware" => EncodeBackend.Hardware,
+        "software" => EncodeBackend.Software,
+        _ => EncodeBackend.Auto,
+    };
+
+    /// <summary>是否倾向硬件路径（Auto/Hardware）；实际是否真用硬件还要看探测结果。</summary>
+    public static bool PrefersHardware(this EncodeBackend backend) => backend != EncodeBackend.Software;
+}
+
 public static class TranslationProviderExtensions
 {
     public static string DefaultBaseUrl(this TranslationProvider provider) => provider switch
@@ -47,6 +79,26 @@ public sealed record AppSettings
     public string TranslationModel { get; init; } = "";
     /// <summary>API 凭证（x-api-key / Bearer token）。</summary>
     public string TranslationAuthToken { get; init; } = "";
+    /// <summary>默认 AI 接口协议。Windows 版仅支持 Anthropic/OpenAI 兼容云端协议。</summary>
+    public TranslationProvider AIProvider { get; init; } = TranslationProvider.Anthropic;
+    /// <summary>默认 AI 服务地址；翻译/总结跟随默认时使用。</summary>
+    public string AIBaseUrl { get; init; } = TranslationProvider.Anthropic.DefaultBaseUrl();
+    /// <summary>默认 AI 模型名。</summary>
+    public string AIModel { get; init; } = "";
+    /// <summary>默认 AI API 凭证。</summary>
+    public string AIAuthToken { get; init; } = "";
+    /// <summary>翻译是否跟随默认 AI 配置；Windows 当前设置窗保持跟随默认。</summary>
+    public bool TranslationFollowsDefault { get; init; } = true;
+    /// <summary>AI 总结是否跟随默认 AI 配置。</summary>
+    public bool SummaryFollowsDefault { get; init; } = true;
+    /// <summary>总结单独覆盖协议。</summary>
+    public TranslationProvider SummaryProvider { get; init; } = TranslationProvider.Anthropic;
+    /// <summary>总结单独覆盖服务地址。</summary>
+    public string SummaryBaseUrl { get; init; } = TranslationProvider.Anthropic.DefaultBaseUrl();
+    /// <summary>总结单独覆盖模型名。</summary>
+    public string SummaryModel { get; init; } = "";
+    /// <summary>总结单独覆盖 API 凭证。</summary>
+    public string SummaryAuthToken { get; init; } = "";
     /// <summary>烧录字幕样式。</summary>
     public SubtitleStyle SubtitleStyle { get; init; } = SubtitleStyle.Bilingual;
     /// <summary>
@@ -58,8 +110,19 @@ public sealed record AppSettings
     public int MaxConcurrentDownloads { get; init; } = 3;
     /// <summary>同时进行的压制（烧录）任务数（1...3，默认 2）。压制吃满 CPU，并行多了互相拖慢。</summary>
     public int MaxConcurrentBurns { get; init; } = 2;
+    /// <summary>烧录/转码的视频编码后端：Auto（硬件优先）/ Hardware / Software。默认 Auto。</summary>
+    public EncodeBackend EncodeBackend { get; init; } = EncodeBackend.Auto;
+    /// <summary>烧录字幕时是否始终输出 H.264（兼容优先）。false=跟随源编码（HEVC 源保 HEVC）。默认 false。</summary>
+    public bool BurnAlwaysH264 { get; init; }
     /// <summary>界面语言："auto"（跟随系统）、"zh-Hans"、"en"。</summary>
     public string AppLanguage { get; init; } = "auto";
+
+    /// <summary>
+    /// 实际压制并发上限：硬件后端编码不占 CPU（走专用编码器），可比软件多放一路并行提高吞吐；
+    /// 软件后端维持设置值（libx265 已吃满 CPU）。夹在 1...4。
+    /// </summary>
+    public int EffectiveMaxConcurrentBurns =>
+        EncodeBackend.PrefersHardware() ? Math.Min(MaxConcurrentBurns + 1, 4) : MaxConcurrentBurns;
 
     // MARK: 存储位置
 
@@ -115,6 +178,18 @@ public sealed record AppSettings
         // provider 键缺失（旧版配置）时按 baseURL/模型名推断
         var provider = TranslationProviderExtensions.FromRawValue(StringField(root, "translationProvider"))
             ?? InferProvider(baseUrl, model);
+        var translationEngineProvider = ProviderFromEngine(StringField(root, "translationEngine")) ?? provider;
+        provider = translationEngineProvider;
+        var aiProvider = ProviderFromEngine(StringField(root, "aiEngine")) ?? provider;
+        var aiBaseUrl = StringField(root, "aiBaseURL") ?? baseUrl;
+        var aiModel = StringField(root, "aiModel") ?? model;
+        var aiToken = StringField(root, "aiAuthToken")
+            ?? StringField(root, "translationAuthToken")
+            ?? "";
+        var summaryProvider = ProviderFromEngine(StringField(root, "summaryEngine")) ?? aiProvider;
+        var summaryBaseUrl = StringField(root, "summaryBaseURL") ?? aiBaseUrl;
+        var summaryModel = StringField(root, "summaryModel") ?? aiModel;
+        var summaryToken = StringField(root, "summaryAuthToken") ?? aiToken;
         var style = StringField(root, "subtitleStyle") switch
         {
             "chineseOnly" => SubtitleStyle.ChineseOnly,
@@ -138,16 +213,35 @@ public sealed record AppSettings
             _ => "auto",
         };
 
+        // 编码后端：缺键默认 Auto；烧录始终 H.264 默认关（跟随源）。
+        var encodeBackend = EncodeBackendExtensions.FromRawValue(StringField(root, "encodeBackend"));
+        var burnAlwaysH264 = root.TryGetProperty("burnAlwaysH264", out var ah264)
+            && ah264.ValueKind == JsonValueKind.True;
+
         return new AppSettings
         {
             TranslationProvider = provider,
             TranslationBaseUrl = baseUrl,
             TranslationModel = model,
             TranslationAuthToken = StringField(root, "translationAuthToken") ?? "",
+            AIProvider = aiProvider,
+            AIBaseUrl = aiBaseUrl,
+            AIModel = aiModel,
+            AIAuthToken = aiToken,
+            TranslationFollowsDefault = !root.TryGetProperty("translationFollowsDefault", out var tfd)
+                || tfd.ValueKind != JsonValueKind.False,
+            SummaryFollowsDefault = !root.TryGetProperty("summaryFollowsDefault", out var sfd)
+                || sfd.ValueKind != JsonValueKind.False,
+            SummaryProvider = summaryProvider,
+            SummaryBaseUrl = summaryBaseUrl,
+            SummaryModel = summaryModel,
+            SummaryAuthToken = summaryToken,
             SubtitleStyle = style,
             MaxBurnHeight = maxBurnHeight,
             MaxConcurrentDownloads = Math.Clamp(IntField(root, "maxConcurrentDownloads") ?? 3, 1, 5),
             MaxConcurrentBurns = Math.Clamp(IntField(root, "maxConcurrentBurns") ?? 2, 1, 3),
+            EncodeBackend = encodeBackend,
+            BurnAlwaysH264 = burnAlwaysH264,
             AppLanguage = appLanguage,
         };
     }
@@ -158,13 +252,26 @@ public sealed record AppSettings
         var payload = new Dictionary<string, object?>
         {
             ["translationProvider"] = TranslationProvider.RawValue(),
+            ["translationEngine"] = EngineRawValue(TranslationProvider),
             ["translationBaseURL"] = TranslationBaseUrl,
             ["translationModel"] = TranslationModel,
             ["translationAuthToken"] = TranslationAuthToken,
+            ["aiEngine"] = EngineRawValue(AIProvider),
+            ["aiBaseURL"] = AIBaseUrl,
+            ["aiModel"] = AIModel,
+            ["aiAuthToken"] = AIAuthToken,
+            ["translationFollowsDefault"] = TranslationFollowsDefault,
+            ["summaryFollowsDefault"] = SummaryFollowsDefault,
+            ["summaryEngine"] = EngineRawValue(SummaryProvider),
+            ["summaryBaseURL"] = SummaryBaseUrl,
+            ["summaryModel"] = SummaryModel,
+            ["summaryAuthToken"] = SummaryAuthToken,
             ["subtitleStyle"] = SubtitleStyle == SubtitleStyle.ChineseOnly ? "chineseOnly" : "bilingual",
             ["maxBurnHeight"] = MaxBurnHeight,
             ["maxConcurrentDownloads"] = MaxConcurrentDownloads,
             ["maxConcurrentBurns"] = MaxConcurrentBurns,
+            ["encodeBackend"] = EncodeBackend.RawValue(),
+            ["burnAlwaysH264"] = BurnAlwaysH264,
             ["appLanguage"] = AppLanguage,
         };
         return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
@@ -195,15 +302,44 @@ public sealed record AppSettings
     // MARK: 派生状态
 
     /// <summary>翻译功能是否已配置完整。</summary>
-    public bool IsTranslationConfigured =>
-        !string.IsNullOrWhiteSpace(TranslationBaseUrl)
-        && !string.IsNullOrWhiteSpace(TranslationModel)
-        && !string.IsNullOrWhiteSpace(TranslationAuthToken);
+    public bool IsTranslationConfigured => HasCloudEndpoint(ForTranslation());
+
+    /// <summary>AI 总结功能是否已配置完整。</summary>
+    public bool IsSummaryConfigured => HasCloudEndpoint(ForSummary());
+
+    /// <summary>把翻译有效配置投影成 TranslationApi 可直接使用的设置对象。</summary>
+    public AppSettings ForTranslation()
+    {
+        if (!TranslationFollowsDefault) return this;
+        return this with
+        {
+            TranslationProvider = AIProvider,
+            TranslationBaseUrl = AIBaseUrl,
+            TranslationModel = AIModel,
+            TranslationAuthToken = AIAuthToken,
+        };
+    }
+
+    /// <summary>把总结有效配置投影成 TranslationApi 可直接使用的设置对象。</summary>
+    public AppSettings ForSummary()
+    {
+        var provider = SummaryFollowsDefault ? AIProvider : SummaryProvider;
+        var baseUrl = SummaryFollowsDefault ? AIBaseUrl : SummaryBaseUrl;
+        var model = SummaryFollowsDefault ? AIModel : SummaryModel;
+        var token = SummaryFollowsDefault ? AIAuthToken : SummaryAuthToken;
+        return this with
+        {
+            TranslationProvider = provider,
+            TranslationBaseUrl = baseUrl,
+            TranslationModel = model,
+            TranslationAuthToken = token,
+        };
+    }
 
     /// <summary>已填好服务地址和凭证，但模型可以稍后从候选菜单里选择。</summary>
     public bool IsTranslationEndpointConfigured =>
-        !string.IsNullOrWhiteSpace(TranslationBaseUrl)
-        && !string.IsNullOrWhiteSpace(TranslationAuthToken);
+        !string.IsNullOrWhiteSpace(ForTranslation().TranslationBaseUrl)
+        && !string.IsNullOrWhiteSpace(ForTranslation().TranslationAuthToken);
 
     internal static TranslationProvider InferProvider(string baseUrl, string model)
     {
@@ -220,4 +356,22 @@ public sealed record AppSettings
         }
         return TranslationProvider.Anthropic;
     }
+
+    private static string EngineRawValue(TranslationProvider provider) => provider switch
+    {
+        TranslationProvider.Openai => "openAICompatible",
+        _ => "anthropicCompatible",
+    };
+
+    private static TranslationProvider? ProviderFromEngine(string? raw) => raw switch
+    {
+        "anthropicCompatible" => TranslationProvider.Anthropic,
+        "openAICompatible" => TranslationProvider.Openai,
+        _ => TranslationProviderExtensions.FromRawValue(raw),
+    };
+
+    private static bool HasCloudEndpoint(AppSettings settings) =>
+        !string.IsNullOrWhiteSpace(settings.TranslationBaseUrl)
+        && !string.IsNullOrWhiteSpace(settings.TranslationModel)
+        && !string.IsNullOrWhiteSpace(settings.TranslationAuthToken);
 }

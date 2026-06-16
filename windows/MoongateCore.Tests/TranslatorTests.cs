@@ -395,46 +395,23 @@ public class ConfiguredTranslatorTests : IDisposable
         }
     }
 
-    /// <summary>译文缺失行数 &gt;40% → 抛错而不是静默保留原文。</summary>
+    /// <summary>译文缺失任意行 → 抛错而不是静默保留原文。</summary>
     [Fact]
-    public async Task Translate_TooManyMissingLines_Throws()
+    public async Task Translate_MissingLines_Throws()
     {
-        var cues = Enumerable.Range(1, 10).Select(i => new SubtitleCue(
+        var cues = Enumerable.Range(1, 3).Select(i => new SubtitleCue(
             i, SrtTools.SecondsToSrtTime(i * 10), SrtTools.SecondsToSrtTime(i * 10 + 2), $"Sentence {i}."));
         var srt = WriteSrt("missing.srt", cues);
         var handler = new FakeHttpHandler
         {
-            // 只回 1-5 行（缺 50% > 40%）
-            Responder = _ => FakeHttpHandler.Json(200,
-                AnthropicReply(string.Join("\n", Enumerable.Range(1, 5).Select(i => $"{i}|中{i}")))),
+            // 缺第 2 条（33%）也必须失败，避免产物混入未翻译原文。
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|一\n3|三")),
         };
         var translator = new ConfiguredTranslator(Settings, handler);
         var ex = await Assert.ThrowsAsync<MoongateException>(() =>
             translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
         Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
-        Assert.Equal("模型返回格式异常，缺失过多译文行", ex.Detail);
-    }
-
-    /// <summary>某条缺失（≤40%）时保留原文，不报错。</summary>
-    [Fact]
-    public async Task Translate_FewMissingLines_KeepsOriginalText()
-    {
-        var srt = WriteSrt("few.srt",
-        [
-            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "One."),
-            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "Two."),
-            new SubtitleCue(3, "00:00:05,000", "00:00:06,000", "Three."),
-        ]);
-        var handler = new FakeHttpHandler
-        {
-            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|一\n3|三")),  // 缺第 2 条（33% ≤ 40%）
-        };
-        var translator = new ConfiguredTranslator(Settings, handler);
-        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
-        var cues = SrtTools.ParseSrt(File.ReadAllText(output));
-        Assert.Equal("一", cues[0].Text);
-        Assert.Equal("Two.", cues[1].Text);  // 缺失 → 保留原文
-        Assert.Equal("三", cues[2].Text);
+        Assert.Equal("模型返回格式异常，缺失译文行", ex.Detail);
     }
 
     [Fact]

@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using System.Windows;
 using Moongate.Core;
 
@@ -119,6 +121,12 @@ public sealed class UpdateService : ObservableObject
             State = Phase.Failed;
             return;
         }
+        if (!UpdateChecker.IsTrustedSetupChecksumUrl(info.Sha256Url, info.AssetName, _checker.Owner, _checker.Repo))
+        {
+            FailureReason = Loc.S("L.Update.Untrusted");
+            State = Phase.Failed;
+            return;
+        }
         _cts?.Cancel();
         var cts = new CancellationTokenSource();
         _cts = cts;
@@ -129,6 +137,11 @@ public sealed class UpdateService : ObservableObject
             var installerPath = await DownloadAsync(info.SetupUrl, info.AssetName,
                 f => DownloadFraction = f, cts.Token).ConfigureAwait(true);
             if (cts.IsCancellationRequested) return;
+            if (!InstallerNameMatchesVersion(installerPath, info.Version))
+                throw MoongateException.DownloadFailed(Loc.S("L.Update.DownloadFailed"));
+            var expectedSha256 = await DownloadSha256Async(info.Sha256Url, cts.Token).ConfigureAwait(true);
+            if (!FileSha256Matches(installerPath, expectedSha256))
+                throw MoongateException.DownloadFailed(Loc.S("L.Update.DownloadFailed"));
             State = Phase.Installing;
             // 运行安装器（NSIS，每用户安装会就地覆盖并可重启），随后退出本应用让其完成替换。
             Process.Start(new ProcessStartInfo(installerPath) { UseShellExecute = true });
@@ -188,5 +201,27 @@ public sealed class UpdateService : ObservableObject
         }
         progress(1);
         return target;
+    }
+
+    private static bool InstallerNameMatchesVersion(string installerPath, SemVer expectedVersion)
+    {
+        return UpdateChecker.AssetNameMatchesVersion(Path.GetFileName(installerPath), expectedVersion);
+    }
+
+    private static async Task<string> DownloadSha256Async(string url, CancellationToken ct)
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        var text = await client.GetStringAsync(url, ct).ConfigureAwait(false);
+        var match = Regex.Match(text, @"\b[a-fA-F0-9]{64}\b");
+        if (!match.Success) throw MoongateException.DownloadFailed(Loc.S("L.Update.DownloadFailed"));
+        return match.Value.ToLowerInvariant();
+    }
+
+    private static bool FileSha256Matches(string path, string expectedSha256)
+    {
+        using var stream = File.OpenRead(path);
+        var hash = SHA256.HashData(stream);
+        var actual = Convert.ToHexString(hash).ToLowerInvariant();
+        return string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -33,6 +33,155 @@ public class SettingsTests
         Assert.Null(settings.MaxBurnHeight);
     }
 
+    /// <summary>0.5：编码后端 + 烧录编码 round-trip；缺键默认 Auto/false。</summary>
+    [Fact]
+    public void EncodeBackend_RoundTripsThroughJson()
+    {
+        var settings = new AppSettings { EncodeBackend = EncodeBackend.Software, BurnAlwaysH264 = true };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.Equal(EncodeBackend.Software, back.EncodeBackend);
+        Assert.True(back.BurnAlwaysH264);
+    }
+
+    [Fact]
+    public void EncodeBackend_MissingKey_DefaultsAutoAndFalse()
+    {
+        var settings = AppSettings.FromJson("""{"translationModel": "claude"}""");
+        Assert.Equal(EncodeBackend.Auto, settings.EncodeBackend);
+        Assert.False(settings.BurnAlwaysH264);
+    }
+
+    [Fact]
+    public void SummaryConfig_RoundTripsAndCanOverrideDefaultAi()
+    {
+        var settings = new AppSettings
+        {
+            TranslationProvider = TranslationProvider.Anthropic,
+            TranslationBaseUrl = "https://translation.example.com",
+            TranslationModel = "claude-translate",
+            TranslationAuthToken = "translation-token",
+            AIProvider = TranslationProvider.Openai,
+            AIBaseUrl = "https://ai.example.com",
+            AIModel = "gpt-default",
+            AIAuthToken = "ai-token",
+            SummaryFollowsDefault = false,
+            SummaryProvider = TranslationProvider.Anthropic,
+            SummaryBaseUrl = "https://summary.example.com",
+            SummaryModel = "claude-summary",
+            SummaryAuthToken = "summary-token",
+        };
+
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.False(back.SummaryFollowsDefault);
+        Assert.Equal(TranslationProvider.Anthropic, back.ForSummary().TranslationProvider);
+        Assert.Equal("https://summary.example.com", back.ForSummary().TranslationBaseUrl);
+        Assert.Equal("claude-summary", back.ForSummary().TranslationModel);
+        Assert.Equal("summary-token", back.ForSummary().TranslationAuthToken);
+        Assert.True(back.IsSummaryConfigured);
+    }
+
+    [Fact]
+    public void SummaryConfig_MissingKeysFollowDefaultAiSeededFromTranslation()
+    {
+        var settings = AppSettings.FromJson("""
+            {
+              "translationProvider": "openai",
+              "translationBaseURL": "https://gateway.example.com",
+              "translationModel": "gpt-4o-mini",
+              "translationAuthToken": "tok"
+            }
+            """);
+
+        Assert.True(settings.SummaryFollowsDefault);
+        Assert.Equal(TranslationProvider.Openai, settings.AIProvider);
+        Assert.Equal("https://gateway.example.com", settings.AIBaseUrl);
+        Assert.Equal("gpt-4o-mini", settings.AIModel);
+        Assert.Equal("tok", settings.AIAuthToken);
+        Assert.Equal("gpt-4o-mini", settings.ForSummary().TranslationModel);
+        Assert.True(settings.IsSummaryConfigured);
+    }
+
+    [Fact]
+    public void TranslationConfig_FollowsDefaultAiWhenRequested()
+    {
+        var settings = new AppSettings
+        {
+            TranslationProvider = TranslationProvider.Anthropic,
+            TranslationBaseUrl = "",
+            TranslationModel = "",
+            TranslationAuthToken = "",
+            AIProvider = TranslationProvider.Openai,
+            AIBaseUrl = "https://ai.example.com",
+            AIModel = "gpt-default",
+            AIAuthToken = "ai-token",
+            TranslationFollowsDefault = true,
+        };
+
+        var effective = settings.ForTranslation();
+        Assert.True(settings.IsTranslationConfigured);
+        Assert.Equal(TranslationProvider.Openai, effective.TranslationProvider);
+        Assert.Equal("https://ai.example.com", effective.TranslationBaseUrl);
+        Assert.Equal("gpt-default", effective.TranslationModel);
+        Assert.Equal("ai-token", effective.TranslationAuthToken);
+    }
+
+    [Fact]
+    public void TranslationConfig_FollowsDefaultAiWithoutFallingBackToHiddenOverride()
+    {
+        var settings = new AppSettings
+        {
+            TranslationProvider = TranslationProvider.Anthropic,
+            TranslationBaseUrl = "https://old-translation.example.com",
+            TranslationModel = "claude-old",
+            TranslationAuthToken = "old-translation-token",
+            AIProvider = TranslationProvider.Openai,
+            AIBaseUrl = "",
+            AIModel = "",
+            AIAuthToken = "",
+            TranslationFollowsDefault = true,
+        };
+
+        var effective = settings.ForTranslation();
+        Assert.False(settings.IsTranslationConfigured);
+        Assert.Equal(TranslationProvider.Openai, effective.TranslationProvider);
+        Assert.Equal("", effective.TranslationBaseUrl);
+        Assert.Equal("", effective.TranslationModel);
+        Assert.Equal("", effective.TranslationAuthToken);
+    }
+
+    [Fact]
+    public void TranslationConfig_UsesOverrideWhenNotFollowingDefault()
+    {
+        var settings = new AppSettings
+        {
+            TranslationProvider = TranslationProvider.Anthropic,
+            TranslationBaseUrl = "https://translation.example.com",
+            TranslationModel = "claude-translate",
+            TranslationAuthToken = "translation-token",
+            AIProvider = TranslationProvider.Openai,
+            AIBaseUrl = "https://ai.example.com",
+            AIModel = "gpt-default",
+            AIAuthToken = "ai-token",
+            TranslationFollowsDefault = false,
+        };
+
+        var effective = settings.ForTranslation();
+        Assert.True(settings.IsTranslationConfigured);
+        Assert.Equal(TranslationProvider.Anthropic, effective.TranslationProvider);
+        Assert.Equal("https://translation.example.com", effective.TranslationBaseUrl);
+        Assert.Equal("claude-translate", effective.TranslationModel);
+        Assert.Equal("translation-token", effective.TranslationAuthToken);
+    }
+
+    [Fact]
+    public void EffectiveMaxConcurrentBurns_BumpsForHardware_ClampsAtFour()
+    {
+        Assert.Equal(3, new AppSettings { MaxConcurrentBurns = 2, EncodeBackend = EncodeBackend.Auto }.EffectiveMaxConcurrentBurns);
+        Assert.Equal(3, new AppSettings { MaxConcurrentBurns = 2, EncodeBackend = EncodeBackend.Hardware }.EffectiveMaxConcurrentBurns);
+        Assert.Equal(2, new AppSettings { MaxConcurrentBurns = 2, EncodeBackend = EncodeBackend.Software }.EffectiveMaxConcurrentBurns);
+        Assert.Equal(4, new AppSettings { MaxConcurrentBurns = 3, EncodeBackend = EncodeBackend.Auto }.EffectiveMaxConcurrentBurns);
+    }
+
     [Fact]
     public void FromJson_ConcurrencyClampedToValidRange()
     {
@@ -118,7 +267,12 @@ public class SettingsTests
     [Fact]
     public void IsTranslationConfigured_RequiresAllThreeFields()
     {
-        var ready = new AppSettings { TranslationModel = "m", TranslationAuthToken = "t" };
+        var ready = new AppSettings
+        {
+            TranslationModel = "m",
+            TranslationAuthToken = "t",
+            TranslationFollowsDefault = false,
+        };
         Assert.True(ready.IsTranslationConfigured);
         Assert.True(ready.IsTranslationEndpointConfigured);
 

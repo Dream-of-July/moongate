@@ -589,6 +589,39 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(effective.authToken, "SUMMARY_TOKEN")
     }
 
+    func testEncodeBackendSurvivesCodableRoundTrip() throws {
+        var settings = AppSettings()
+        settings.encodeBackend = .software
+        settings.burnAlwaysH264 = true
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+        XCTAssertEqual(decoded.encodeBackend, .software)
+        XCTAssertTrue(decoded.burnAlwaysH264)
+    }
+
+    func testEncodeBackendDefaultsToAutoWhenKeyMissing() throws {
+        // 旧 settings.json 没有 encodeBackend / burnAlwaysH264：默认 auto / false。
+        let settings = try decodeSettings("""
+        { "translationBaseURL": "https://api.anthropic.com", "translationModel": "claude" }
+        """)
+        XCTAssertEqual(settings.encodeBackend, .auto)
+        XCTAssertFalse(settings.burnAlwaysH264)
+    }
+
+    func testEffectiveMaxConcurrentBurnsBumpsForHardwareBackend() {
+        var s = AppSettings(maxConcurrentBurns: 2, encodeBackend: .auto)
+        XCTAssertEqual(s.effectiveMaxConcurrentBurns, 3, "硬件后端编码不占 CPU，可多放一路")
+        s.encodeBackend = .hardware
+        XCTAssertEqual(s.effectiveMaxConcurrentBurns, 3)
+        s.encodeBackend = .software
+        XCTAssertEqual(s.effectiveMaxConcurrentBurns, 2, "软件后端维持原始值")
+    }
+
+    func testEffectiveMaxConcurrentBurnsClampsAtFour() {
+        let s = AppSettings(maxConcurrentBurns: 3, encodeBackend: .auto)
+        XCTAssertEqual(s.effectiveMaxConcurrentBurns, 4, "上限 4")
+    }
+
     func testSummarizeVideoRejectsTextIncapableEngineWithoutNetwork() async {
         // Apple Translation 不能生成文本：summarizeVideo 必须在发任何请求前抛错。
         let config = LLMEndpointConfig(
