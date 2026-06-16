@@ -27,7 +27,9 @@ public partial class SettingsWindow : Window
         DataContext = _vm;
         InitializeComponent();
         // PasswordBox 不支持数据绑定，初值与变更都走代码同步。
+        AITokenBox.Password = _vm.AIAuthToken;
         TokenBox.Password = _vm.AuthToken;
+        SummaryTokenBox.Password = _vm.SummaryAuthToken;
         Closed += (_, _) =>
         {
             _vm.CancelOperations();
@@ -42,6 +44,16 @@ public partial class SettingsWindow : Window
     private void OnTokenChanged(object sender, RoutedEventArgs e)
     {
         _vm.AuthToken = TokenBox.Password;
+    }
+
+    private void OnAITokenChanged(object sender, RoutedEventArgs e)
+    {
+        _vm.AIAuthToken = AITokenBox.Password;
+    }
+
+    private void OnSummaryTokenChanged(object sender, RoutedEventArgs e)
+    {
+        _vm.SummaryAuthToken = SummaryTokenBox.Password;
     }
 
     private void OnCancelClick(object sender, RoutedEventArgs e)

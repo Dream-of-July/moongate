@@ -70,6 +70,25 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         )
     }
 
+    func testPauseDoesNotReleaseTranslationSlot() throws {
+        let source = try queueManagerSource()
+        let pauseBody = try XCTUnwrap(functionBody(named: "pause", in: source))
+
+        XCTAssertTrue(pauseBody.contains("holding.pool !== translatePool"))
+        XCTAssertLessThan(
+            try XCTUnwrap(pauseBody.range(of: "holding.pool !== translatePool")).lowerBound,
+            try XCTUnwrap(pauseBody.range(of: "holding.pool.release()")).lowerBound
+        )
+        XCTAssertTrue(pauseBody.contains("翻译请求不是本地可挂起进程"))
+    }
+
+    private func queueManagerSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("QueueManager.swift"))
+    }
+
     private func queueSectionSource() throws -> String {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -94,6 +113,7 @@ final class MacOSQueueBoundaryTests: XCTestCase {
     private func functionBody(named name: String, in source: String) -> String? {
         let declarations = [
             "private func \(name)(",
+            "func \(name)(",
             "private var \(name):",
             "private var \(name) ",
             "var \(name):",

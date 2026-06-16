@@ -75,7 +75,8 @@ internal sealed class FakeBurner : ISubtitleBurner
 
     public Task<string> BurnAsync(
         string video, string subtitle, int? maxHeight, TaskControlToken? control,
-        Action<double> progress, string? outputTag = null, CancellationToken ct = default)
+        Action<double> progress, EncodeBackend backend = EncodeBackend.Auto, bool alwaysH264 = false,
+        string? outputTag = null, CancellationToken ct = default)
     {
         Interlocked.Increment(ref CallCount);
         LastOutputTag = outputTag;
@@ -180,6 +181,18 @@ public class QueueManagerTests
 
         engine.Calls[0].Complete("/tmp/downloads/a [a].mp4");
         await WaitUntilAsync(() => queue.Item(idA)?.Stage.Kind == ItemStageKind.Done, "A 完成");
+    }
+
+    [Fact]
+    public void PauseDoesNotReleaseTranslationSlot()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Queue.cs"));
+
+        Assert.Contains("ReferenceEquals(holding.Pool, _translatePool)", source);
+        Assert.Contains("翻译请求不是本地可挂起进程", source);
+        Assert.True(
+            source.IndexOf("ReferenceEquals(holding.Pool, _translatePool)", StringComparison.Ordinal)
+            < source.IndexOf("releasePool = holding.Pool", StringComparison.Ordinal));
     }
 
     /// <summary>取消唤醒：排队等槽位的任务被取消时立即收敛为已取消。</summary>
@@ -498,8 +511,24 @@ public class QueueManagerTests
     {
         public Task<string> BurnAsync(
             string video, string subtitle, int? maxHeight, TaskControlToken? control,
-            Action<double> progress, string? outputTag = null, CancellationToken ct = default) =>
+            Action<double> progress, EncodeBackend backend = EncodeBackend.Auto, bool alwaysH264 = false,
+            string? outputTag = null, CancellationToken ct = default) =>
             Task.FromException<string>(error);
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Package.swift"))
+                && Directory.Exists(Path.Combine(dir.FullName, "windows")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate repository root.");
     }
 
     [Fact]

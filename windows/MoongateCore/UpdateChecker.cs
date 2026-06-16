@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Moongate.Core;
 
@@ -54,7 +55,14 @@ public readonly struct SemVer : IComparable<SemVer>, IEquatable<SemVer>
 // MARK: - 更新信息
 
 /// <summary>一条可升级的 Windows 安装包信息。</summary>
-public sealed record UpdateInfo(SemVer Version, string Tag, string Notes, string SetupUrl, string AssetName);
+public sealed record UpdateInfo(
+    SemVer Version,
+    string Tag,
+    string Notes,
+    string SetupUrl,
+    string AssetName,
+    string Sha256Url,
+    string Sha256AssetName);
 
 // MARK: - 更新检查
 
@@ -64,10 +72,14 @@ public sealed record UpdateInfo(SemVer Version, string Tag, string Notes, string
 /// </summary>
 public sealed class UpdateChecker
 {
+    private static readonly Regex VersionTokenRegex = new(
+        @"(?<![A-Za-z0-9])v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?(?=$|[^A-Za-z0-9]|\.[A-Za-z]{2,5}$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     public string Owner { get; }
     public string Repo { get; }
 
-    public UpdateChecker(string owner = "Dream-of-July", string repo = "video-downloader-app")
+    public UpdateChecker(string owner = "Dream-of-July", string repo = "moongate")
     {
         Owner = owner;
         Repo = repo;
@@ -158,15 +170,25 @@ public sealed class UpdateChecker
             var notes = StringProp(release, "body") ?? "";
             if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) continue;
 
-            foreach (var asset in assets.EnumerateArray())
+            var releaseAssets = assets.EnumerateArray()
+                .Select(asset => (
+                    Name: StringProp(asset, "name"),
+                    Url: StringProp(asset, "browser_download_url")))
+                .Where(asset => asset.Name is not null && asset.Url is not null)
+                .Select(asset => (Name: asset.Name!, Url: asset.Url!, LowerName: asset.Name!.ToLowerInvariant()))
+                .ToList();
+
+            foreach (var asset in releaseAssets)
             {
-                var name = StringProp(asset, "name");
-                var url = StringProp(asset, "browser_download_url");
-                if (name is null || url is null) continue;
-                var lower = name.ToLowerInvariant();
                 // Windows 安装包：.exe 且名字含 "win" 或 "setup"。
-                if (!lower.EndsWith(".exe") || (!lower.Contains("win") && !lower.Contains("setup"))) continue;
-                var candidate = new UpdateInfo(version, tag, notes, url, name);
+                if (!asset.LowerName.EndsWith(".exe")
+                    || (!asset.LowerName.Contains("win") && !asset.LowerName.Contains("setup"))) continue;
+                if (!AssetNameMatchesVersion(asset.LowerName, version)) continue;
+                var shaName = asset.Name + ".sha256";
+                var shaAsset = releaseAssets.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, shaName, StringComparison.OrdinalIgnoreCase));
+                if (shaAsset.Name is null || shaAsset.Url is null) continue;
+                var candidate = new UpdateInfo(version, tag, notes, asset.Url, asset.Name, shaAsset.Url, shaAsset.Name);
                 if (newest is null || candidate.Version > newest.Version) newest = candidate;
                 break;
             }
@@ -176,6 +198,15 @@ public sealed class UpdateChecker
 
     private static string? StringProp(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    public static bool AssetNameMatchesVersion(string assetName, SemVer version)
+    {
+        foreach (Match match in VersionTokenRegex.Matches(assetName))
+        {
+            if (SemVer.Parse(match.Value) is { } parsed && parsed.Equals(version)) return true;
+        }
+        return false;
+    }
 
     // MARK: 安装辅助（纯函数，跨平台可测）
 
@@ -194,5 +225,18 @@ public sealed class UpdateChecker
         if (!url.AbsolutePath.ToLowerInvariant().EndsWith(".exe")) return false;
         return url.AbsolutePath.StartsWith($"/{owner}/{repo}/releases/download/", StringComparison.Ordinal);
     }
-}
 
+    public static bool IsTrustedSetupChecksumUrl(
+        string urlString,
+        string setupAssetName,
+        string owner,
+        string repo)
+    {
+        if (!Uri.TryCreate(urlString, UriKind.Absolute, out var url)) return false;
+        if (!string.Equals(url.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(url.Host, "github.com", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!url.AbsolutePath.StartsWith($"/{owner}/{repo}/releases/download/", StringComparison.Ordinal)) return false;
+        var fileName = Uri.UnescapeDataString(Path.GetFileName(url.AbsolutePath));
+        return string.Equals(fileName, setupAssetName + ".sha256", StringComparison.OrdinalIgnoreCase);
+    }
+}

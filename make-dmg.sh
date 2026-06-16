@@ -1,13 +1,14 @@
 #!/bin/zsh
 # 打包分发用 DMG：先跑 build.sh 确保 App 最新（含图标），再生成压缩镜像。
-# 输出默认到 ~/Downloads（避免 iCloud 同步的 ~/Documents）；可传参覆盖输出路径。
+# 输出默认到 ~/Downloads；也可以传参覆盖输出路径。
 set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
+VERSION="0.5.0"
 # build.sh 把 App 装到 /Applications，这里必须从同一位置取，否则 cp 找不到文件。
 APP="/Applications/$APP_NAME.app"
-OUT="${1:-$HOME/Downloads/$APP_NAME.dmg}"
+OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.dmg}"
 
 "$PROJ_DIR/build.sh"
 

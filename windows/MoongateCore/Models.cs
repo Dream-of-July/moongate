@@ -324,6 +324,7 @@ public interface ISubtitleBurner
     /// 把 subtitle 烧录进 video，输出 "&lt;原名&gt;（中文字幕）.mp4" 风格的新文件（不覆盖原片）；
     /// outputTag 自定义文件名后缀标签（null 用默认「（中文字幕）」；直压原文字幕模式传「（字幕版）」）；
     /// maxHeight 非空且源更高时缩放到该高度；progress 为 0...1。
+    /// backend 决定用硬件（NVENC/QSV/AMF）还是软件编码器；alwaysH264=true 时无视源编码强制 H.264（兼容优先）。
     /// control 非空时支持暂停/取消（挂起/终止 ffmpeg 进程树）。失败抛 BurnFailed。返回输出文件路径。
     /// </summary>
     Task<string> BurnAsync(
@@ -332,6 +333,8 @@ public interface ISubtitleBurner
         int? maxHeight,
         TaskControlToken? control,
         Action<double> progress,
+        EncodeBackend backend = EncodeBackend.Auto,
+        bool alwaysH264 = false,
         string? outputTag = null,
         CancellationToken ct = default);
 }

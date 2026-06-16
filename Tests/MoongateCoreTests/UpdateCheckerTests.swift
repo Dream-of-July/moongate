@@ -22,7 +22,7 @@ final class UpdateCheckerTests: XCTestCase {
                 "prerelease": true,
                 "assets": e.assets.map { name -> [String: Any] in
                     ["name": name,
-                     "browser_download_url": "https://github.com/Dream-of-July/video-downloader-app/releases/download/\(e.tag)/\(name)"]
+                     "browser_download_url": "https://github.com/Dream-of-July/moongate/releases/download/\(e.tag)/\(name)"]
                 },
             ]
         }
@@ -41,6 +41,24 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(info?.assetName, "Moongate-macOS-v0.5.0.dmg")
         XCTAssertTrue(info?.dmgURL.absoluteString.hasPrefix("https://github.com/Dream-of-July/") == true)
         XCTAssertTrue(info?.notes.contains("v0.5.0") == true)
+    }
+
+    func testIgnoresMacAssetWhenNameDoesNotMatchReleaseVersion() {
+        let data = releasesJSON([
+            ("v0.6.0", ["Moongate-macOS-v0.5.0.dmg"]),
+            ("v0.5.0", ["Moongate-macOS-v0.5.0.dmg"]),
+        ])
+        let info = UpdateChecker.latestMacUpdate(fromReleasesJSON: data, currentVersion: SemVer("0.4.0")!)
+        XCTAssertEqual(info?.tag, "v0.5.0")
+        XCTAssertEqual(info?.assetName, "Moongate-macOS-v0.5.0.dmg")
+    }
+
+    func testIgnoresMacAssetWhenVersionIsOnlyPrefixMatch() {
+        let data = releasesJSON([
+            ("v0.5.0", ["Moongate-macOS-v0.5.01.dmg"]),
+        ])
+
+        XCTAssertNil(UpdateChecker.latestMacUpdate(fromReleasesJSON: data, currentVersion: SemVer("0.4.0")!))
     }
 
     func testReturnsNilWhenAlreadyLatest() {
@@ -72,33 +90,61 @@ final class UpdateCheckerTests: XCTestCase {
             pid: 4242
         )
         XCTAssertTrue(script.contains("kill -0 4242"))
-        XCTAssertTrue(script.contains("ditto '/Volumes/月之门/月之门.app' '/Applications/月之门.app'"))
+        XCTAssertTrue(script.contains("mktemp -d"))
+        XCTAssertTrue(script.contains(".moongate-update."))
+        XCTAssertTrue(script.contains("newApp=\"$tmp/$targetBase\""))
+        XCTAssertTrue(script.contains("backup=\"$parent/.moongate-previous-$targetBase\""))
+        XCTAssertTrue(script.contains("ditto '/Volumes/月之门/月之门.app' \"$newApp\""))
+        XCTAssertTrue(script.contains("mv '/Applications/月之门.app' \"$backup\""))
+        XCTAssertTrue(script.contains("mv \"$backup\" '/Applications/月之门.app'"))
         XCTAssertTrue(script.contains("xattr -dr com.apple.quarantine '/Applications/月之门.app'"))
         XCTAssertTrue(script.contains("open '/Applications/月之门.app'"))
-        // 先等退出再删除，保证不替换正在运行的进程。
+        XCTAssertFalse(script.contains("rm -rf '/Applications/月之门.app'"))
+        // 先等退出，再复制到临时目录，最后原子交换，避免失败后留下空安装。
         let killIdx = script.range(of: "kill -0")!.lowerBound
-        let rmIdx = script.range(of: "rm -rf")!.lowerBound
-        XCTAssertLessThan(killIdx, rmIdx)
+        let dittoIdx = script.range(of: "ditto")!.lowerBound
+        let backupIdx = script.range(of: "mv '/Applications/月之门.app' \"$backup\"")!.lowerBound
+        let installIdx = script.range(of: "mv \"$newApp\" '/Applications/月之门.app'")!.lowerBound
+        XCTAssertLessThan(killIdx, dittoIdx)
+        XCTAssertLessThan(dittoIdx, backupIdx)
+        XCTAssertLessThan(backupIdx, installIdx)
+    }
+
+    func testMacUpdateInstallValidatesMountedAppVersionBeforeReplacement() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("UpdateService.swift"))
+
+        XCTAssertTrue(source.contains("CFBundleShortVersionString"))
+        XCTAssertTrue(source.contains("SemVer(newVersionRaw) == expectedVersion"))
+        let versionCheck = try XCTUnwrap(source.range(of: "SemVer(newVersionRaw) == expectedVersion"))
+        let installScript = try XCTUnwrap(source.range(of: "UpdateChecker.installScript("))
+        XCTAssertLessThan(versionCheck.lowerBound, installScript.lowerBound)
     }
 
     func testTrustedDMGURLWhitelist() {
-        let owner = "Dream-of-July", repo = "video-downloader-app"
+        let owner = "Dream-of-July", repo = "moongate"
         XCTAssertTrue(UpdateChecker.isTrustedDMGURL(
-            URL(string: "https://github.com/Dream-of-July/video-downloader-app/releases/download/v0.5.0/x.dmg")!,
+            URL(string: "https://github.com/Dream-of-July/moongate/releases/download/v0.5.0/x.dmg")!,
             owner: owner, repo: repo))
-        // 只信任规范的 github.com 仓库 releases 下载路径。
-        // objects.githubusercontent.com 任意路径不再放行（之前无脑 return true 是漏洞，
-        // 且 dmgURL 实际只会是 github.com 规范地址，CDN 重定向由 URLSession 内部跟随）。
+        // 非 https / 非 GitHub release canonical URL / 非 dmg / 错仓库 → 拒绝。
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
-            URL(string: "https://objects.githubusercontent.com/abc/x.dmg")!, owner: owner, repo: repo))
-        // 非 https / 非 GitHub / 非 dmg / 错仓库 → 拒绝。
-        XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
-            URL(string: "http://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
+            URL(string: "http://github.com/Dream-of-July/moongate/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
             URL(string: "https://evil.com/x.dmg")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
-            URL(string: "https://github.com/Dream-of-July/video-downloader-app/releases/download/v1/x.zip")!, owner: owner, repo: repo))
+            URL(string: "https://objects.githubusercontent.com/abc/x.dmg")!, owner: owner, repo: repo))
+        XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
+            URL(string: "https://github.com/Dream-of-July/moongate/releases/download/v1/x.zip")!, owner: owner, repo: repo))
         XCTAssertFalse(UpdateChecker.isTrustedDMGURL(
             URL(string: "https://github.com/someone-else/evil/releases/download/v1/x.dmg")!, owner: owner, repo: repo))
+    }
+
+    private func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

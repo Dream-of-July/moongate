@@ -12,18 +12,25 @@ final class BurnerAssTests: XCTestCase {
         XCTAssertEqual(layout.playResX, 512)
         XCTAssertEqual(layout.playResY, 288)
         XCTAssertEqual(layout.chineseSize, 15)
-        XCTAssertEqual(layout.originalSize, 11)
-        XCTAssertEqual(layout.marginH, 61)
+        // 原文字号 = round(15 × 0.8) = 12（不分语言统一）。
+        XCTAssertEqual(layout.originalSize, 12)
+        // 自动布局：左右只留最小边距（约画面 4%）。512 × 0.04 ≈ 20。
+        XCTAssertEqual(layout.marginH, 20)
         XCTAssertEqual(layout.marginV, 20)
-        XCTAssertEqual(layout.cjkWrapCapacity, 26)
+        // 容量按可用宽度推算：(512 - 40) / 15 ≈ 31，比旧的强制 26 宽，少换行。
+        XCTAssertEqual(layout.cjkWrapCapacity, 31)
     }
 
     func testLandscape169LongChineseLinePreWrappedForReadableWidth() {
-        let ass = FFmpegBurner.makeASS(cues: [
-            cue("今天，我会介绍如何使用Xcode中的一些强大新工具，在早期探索应用设计时快速尝试不同的界面方向。")
-        ])
+        // 一行约 31 字以内不该换行（自动布局，够宽就不折）。
+        let short = "今天我会介绍如何使用Xcode中的强大新工具" // 21 字
+        let assShort = FFmpegBurner.makeASS(cues: [cue(short)])
+        XCTAssertFalse(assShort.contains("\\N"), "未超容量不应换行：\(short)")
 
-        XCTAssertTrue(ass.contains(#"今天，我会介绍如何使用Xcode中的一些强大新工具，\N在早期探索应用设计时快速尝试不同的界面方向。"#))
+        // 远超容量的长行仍会按容量折行。
+        let long = "今天，我会介绍如何使用Xcode中的一些强大新工具，在早期探索应用设计时快速尝试不同的界面方向。"
+        let assLong = FFmpegBurner.makeASS(cues: [cue(long)])
+        XCTAssertTrue(assLong.contains("\\N"), "超容量长行应换行")
     }
 
     func testPortrait916StillKeepsUsefulCapacity() {
@@ -31,9 +38,10 @@ final class BurnerAssTests: XCTestCase {
 
         XCTAssertEqual(layout.playResX, 162)
         XCTAssertEqual(layout.chineseSize, 8)
+        // round(8 × 0.8) = 6。
         XCTAssertEqual(layout.originalSize, 6)
-        XCTAssertEqual(layout.marginH, 5)
-        XCTAssertEqual(layout.cjkWrapCapacity, 19)
+        XCTAssertEqual(layout.marginH, max(5, Int((162.0 * 0.04).rounded())))
+        XCTAssertEqual(layout.cjkWrapCapacity, 18)
     }
 
     func testUltraWideCapsReadingLength() {
@@ -41,8 +49,9 @@ final class BurnerAssTests: XCTestCase {
 
         XCTAssertEqual(layout.playResX, 1152)
         XCTAssertEqual(layout.chineseSize, 15)
-        XCTAssertEqual(layout.marginH, 351)
-        XCTAssertEqual(layout.cjkWrapCapacity, 30)
+        // 自动布局：超宽屏也只留 4% 最小边距，不再人为收窄到「舒适阅读宽度」。
+        XCTAssertEqual(layout.marginH, 46)
+        XCTAssertEqual(layout.cjkWrapCapacity, 70)
     }
 
     // MARK: - 原文（拉丁）折行
@@ -50,7 +59,7 @@ final class BurnerAssTests: XCTestCase {
     func testPortraitLatinCapacityComfortablyWiderThanCJK() {
         // 竖屏下英文按词折行的容量应远大于中文（拉丁字形更窄），否则英文会被切碎。
         let layout = FFmpegBurner.ASSLayout(aspect: 9.0 / 16.0)
-        XCTAssertEqual(layout.latinWrapCapacity, 46)
+        XCTAssertEqual(layout.latinWrapCapacity, 45)
     }
 
     func testLatinLineWrapMergesSourceBreaksAndRewrapsByWords() {
@@ -93,5 +102,51 @@ final class BurnerAssTests: XCTestCase {
         for piece in englishPart.components(separatedBy: "\\N") {
             XCTAssertLessThanOrEqual(piece.count, 50, "英文行过长：\(piece)")
         }
+    }
+
+    // MARK: - 原文分类、字号、透明度（不分语言统一 80%）
+
+    func testOriginalSizeIsEightyPercentOfTranslation() {
+        // 16:9：译文 15 → 原文 round(15×0.8)=12。
+        XCTAssertEqual(FFmpegBurner.ASSLayout(aspect: 16.0/9.0).originalSize, 12)
+    }
+
+    func testBilingualAppliesSmallerSizeAndAlphaToOriginal() {
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500",
+                        text: "这是中文译文\nThis is the source line")
+        ])
+        let dialogue = ass.split(separator: "\n").first { $0.hasPrefix("Dialogue:") }.map(String.init) ?? ""
+        // 原文块带更小字号 + 80% 不透明度（alpha &H33&），且整体（含描边）变淡。
+        XCTAssertTrue(dialogue.contains("{\\fs12\\alpha&H33&}"), "原文应带 12 号字 + alpha：\(dialogue)")
+        // 中文在前、原文覆盖块在后。
+        let zhRange = dialogue.range(of: "这是中文译文")
+        let ovRange = dialogue.range(of: "{\\fs12\\alpha&H33&}")
+        XCTAssertNotNil(zhRange); XCTAssertNotNil(ovRange)
+        if let z = zhRange, let o = ovRange { XCTAssertLessThan(z.lowerBound, o.lowerBound) }
+    }
+
+    func testJapaneseOriginalIsTreatedAsOriginalNotTranslation() {
+        // 日文原文（含假名）必须归为原文层：缩小 + 透明，而不是被当成译文用满字号。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500",
+                        text: "我会一直在你身边\nずっとそばにいるよ")
+        ])
+        let dialogue = ass.split(separator: "\n").first { $0.hasPrefix("Dialogue:") }.map(String.init) ?? ""
+        XCTAssertTrue(dialogue.contains("\\alpha&H33&"), "日文原文应进原文层（缩小+透明）：\(dialogue)")
+        // 译文（简体中文）在覆盖块之前。
+        if let z = dialogue.range(of: "我会一直在你身边"),
+           let o = dialogue.range(of: "\\alpha&H33&") {
+            XCTAssertLessThan(z.lowerBound, o.lowerBound, "中文译文应在原文之上")
+        } else {
+            XCTFail("缺中文或原文：\(dialogue)")
+        }
+    }
+
+    func testKoreanOriginalClassifiedAsOriginal() {
+        XCTAssertFalse(FFmpegBurner.isSimplifiedChineseLine("항상 네 곁에 있을게"), "韩文不应判为简体中文译文")
+        XCTAssertFalse(FFmpegBurner.isSimplifiedChineseLine("ずっとそばにいるよ"), "日文不应判为简体中文译文")
+        XCTAssertTrue(FFmpegBurner.isSimplifiedChineseLine("我会一直在你身边"), "简体中文应判为译文")
+        XCTAssertFalse(FFmpegBurner.isSimplifiedChineseLine("Always by your side"), "英文不是译文")
     }
 }

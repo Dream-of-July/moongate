@@ -40,7 +40,7 @@ macOS App：
 ./build.sh
 ```
 
-编译产物放在 `~/Library/Caches/moongate-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
+编译产物放在 `~/Library/Caches/vdl-build`（本项目位于 iCloud 同步的 `~/Documents` 下，构建产物留在项目内会破坏 codesign），App 安装到 `/Applications/月之门.app`（系统级「应用程序」目录，访达侧边栏可直接看到）。
 
 Windows 安装包：
 
@@ -55,9 +55,9 @@ Windows 安装包：
 不开 GUI 也能验证全流程：
 
 ```sh
-swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli resolve <url>
-swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli analyze <url>
-swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli download <url> --video-id <id> --format <formatID> [--subs en] [--auto-subs zh-Hans] [--dest 路径]
+swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli resolve <url>
+swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli analyze <url>
+swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli download <url> --video-id <id> --format <formatID> [--subs en] [--auto-subs zh-Hans] [--dest 路径]
 ```
 
 ## AI 设置（翻译与总结）
@@ -80,8 +80,8 @@ Apple 引擎（按系统能力运行前检测，不需要填地址/凭证）：
 CLI 也可以临时覆盖：
 
 ```sh
-swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm --provider anthropic --base "$ANTHROPIC_BASE_URL" --model claude-haiku-4-5 --token "$ANTHROPIC_AUTH_TOKEN"
-swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm --provider openai --base https://api.openai.com --model gpt-5.4 --token "$OPENAI_API_KEY"
+swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --provider anthropic --base "$ANTHROPIC_BASE_URL" --model claude-haiku-4-5 --token "$ANTHROPIC_AUTH_TOKEN"
+swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --provider openai --base https://api.openai.com --model gpt-5.4 --token "$OPENAI_API_KEY"
 ```
 
 ## 更新
@@ -91,7 +91,7 @@ swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm -
 - 来源是本仓库的 GitHub Releases（公开，匿名访问）；选取含 macOS DMG 资产、版本号高于当前的最新发布。
 - 全自动：App 下载 DMG → 校验（仅接受本仓库 release 下载地址、且 bundle 标识一致）→ 挂载 → 替换 `/Applications/月之门.app` → 自动重启。
 - 自下载的 DMG 不带隔离属性，ad-hoc 签名也能替换；失败时提供「去 GitHub 下载」兜底。
-- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.4.0.dmg`）。
+- 检查更新对每个发布的资产命名有要求：macOS 安装包名需包含 `mac` 且以 `.dmg` 结尾（如 `Moongate-macOS-v0.5.0.dmg`）。
 
 ## 性能与队列
 
@@ -102,16 +102,27 @@ swift run --scratch-path ~/Library/Caches/moongate-build moongate-cli ping-llm -
 ## Windows
 
 Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 + NSIS 安装器），
-在 macOS 上执行 `./build-windows.sh` 即可产出 `月之门-Windows-Setup.exe`
-（双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
+在 macOS 上执行 `./build-windows.sh` 即可产出 `月之门-Windows-Setup-v0.5.0.exe`
+（同时生成 `.sha256` 校验文件；
+双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
 详见 [docs/WINDOWS.md](docs/WINDOWS.md)。**GUI 尚未在真实 Windows 上运行验证。**
+
+## 移动端状态
+
+iOS 和 Android 仍是 **no-ship** 的开发面，不属于当前可发布支持矩阵。
+
+- iOS WIP 位于 `Sources/MoongateMobileCore/`、`Sources/MoongateiOS/`、`Sources/MoongateiOSApp/` 和 `ios/`。`Scripts/build-ios-swiftpm.sh` 只验证 SwiftPM host/shared code，不等于真实 Xcode iOS app host；`Scripts/build-ios-xcode.sh` 与 `Scripts/run-ios-simulator-smoke.sh` 只能证明本地源码、无签名 bundle 或模拟器 smoke 的一部分。涉及 iOS 26 SDK 的 adapter 需要 Xcode/iPhoneOS 26 SDK 或真实 Xcode/device gate；这些脚本都不等于签名安装、TestFlight/App Store、真机后台下载/渲染、Apple Translation/Apple Intelligence 真实执行或完整视觉/无障碍 QA。
+- Android WIP 位于 `android/`。`Scripts/build-android-local.sh` 只使用现有 `android/gradlew` 或 PATH 中已有的 `Gradle`，并强制以 `--offline` 执行；当前没有 wrapper/本机 Gradle，或离线缓存/Android SDK 组件缺失时会安全退出，不下载依赖、安装工具或访问外部服务。因此 Android APK、Gradle 单测、Compose runtime、WorkManager/通知、后台下载/渲染和真机 QA 仍未证明。
+- 详细移动端门槛见 `docs/exec-plans/2026-06-12-mobile-native.md`、`docs/exec-plans/2026-06-13-ios-native-architecture.md` 和 `docs/exec-plans/2026-06-13-android-native-architecture.md`。
 
 ## 目录结构
 
 - `Sources/MoongateCore/` — 核心：契约类型（`Models.swift`）、yt-dlp 封装（`Engine.swift`）、页面嗅探（`PageSniffer.swift`）、翻译/总结（`Translator.swift`）、字幕烧录（`Burner.swift`）、转码（`Transcoder.swift`）、更新检查（`UpdateChecker.swift`）
 - `Sources/Moongate/` — SwiftUI 界面（含 `SummaryView.swift` AI 总结卡片、`UpdateService.swift` 远程更新）
 - `Sources/moongate-cli/` — 命令行测试工具
-- `Sources/MoongateMobileCore/` — 共享纯契约核心，不依赖桌面 yt-dlp/ffmpeg/Process 实现
+- `Sources/MoongateMobileCore/` — 移动端纯契约，不依赖桌面 yt-dlp/ffmpeg/Process 实现
+- `Sources/MoongateiOS/`、`Sources/MoongateiOSApp/`、`ios/` — iOS WIP shell、SwiftPM host 与本地 Xcode wrapper
+- `android/` — Android WIP Gradle/Kotlin/Compose 工程
 - `windows/` — Windows 版（C# 核心库 + 单测、WPF 界面、NSIS 安装脚本）
 
 ## 已知限制
@@ -119,6 +130,7 @@ Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 
 - 首次写入 `~/Downloads` 时 macOS 会弹一次系统授权询问，允许即可。
 - 仅下载你有权访问的公开视频；不绕过任何 DRM 或付费墙。
 - 任天堂 `assets.nintendo.com` 直链视频只有原画一档（其 CDN 已禁用转码变体）。
+- 移动端仍未完成发布级验证；不要把源码边界测试或本地 bundle/smoke 结果解读为移动端发布就绪。
 
 ## License
 

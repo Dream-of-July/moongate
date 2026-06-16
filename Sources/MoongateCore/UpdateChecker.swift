@@ -37,7 +37,6 @@ public struct SemVer: Comparable, Equatable, Sendable, CustomStringConvertible {
         return lhs.patch < rhs.patch
     }
 }
-
 // MARK: - 更新信息
 
 public struct UpdateInfo: Sendable, Equatable {
@@ -62,7 +61,7 @@ public struct UpdateChecker: Sendable {
     public let owner: String
     public let repo: String
 
-    public init(owner: String = "Dream-of-July", repo: String = "video-downloader-app") {
+    public init(owner: String = "Dream-of-July", repo: String = "moongate") {
         self.owner = owner
         self.repo = repo
     }
@@ -80,7 +79,7 @@ public struct UpdateChecker: Sendable {
         }
         var request = URLRequest(url: URL(string:
             "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=20")!)
-        // 45s 而非 15s：中国大陆用户经代理/VPN 访问 api.github.com 时，握手+TLS+收发常需 20-30s。
+        // GitHub API 在代理/VPN 环境下偶尔需要更长握手时间；保持和 Windows 更新器一致。
         request.timeoutInterval = 45
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         // GitHub 要求带 User-Agent，否则可能被拒。
@@ -129,7 +128,9 @@ public struct UpdateChecker: Sendable {
             // macOS DMG 资产：名字含 "mac" 且以 .dmg 结尾。
             guard let asset = assets.first(where: { asset in
                 let name = ((asset["name"] as? String) ?? "").lowercased()
-                return name.hasSuffix(".dmg") && name.contains("mac")
+                return name.hasSuffix(".dmg")
+                    && name.contains("mac")
+                    && Self.assetName(name, matches: version)
             }),
                   let assetName = asset["name"] as? String,
                   let urlString = asset["browser_download_url"] as? String,
@@ -145,22 +146,28 @@ public struct UpdateChecker: Sendable {
     // MARK: 安装辅助（纯函数，跨平台可测；实际执行在 macOS UpdateService）
 
     /// 只接受 GitHub 该仓库 releases 下载地址的 https DMG。
-    ///
-    /// `dmgURL` 始终来自 GitHub API 的 `browser_download_url`，即规范的
-    /// `https://github.com/<owner>/<repo>/releases/download/...` 形式；下载时
-    /// `URLSession` 会在内部跟随 302 到 `objects.githubusercontent.com` 的临时
-    /// 令牌地址，但那一步对本函数不可见。因此这里只信任规范的 github.com 仓库
-    /// 下载路径——之前对 `objects.githubusercontent.com` 任意路径无脑放行，等于
-    /// 把校验目标放空，且实际从不会传入 CDN 地址，属于危险的死分支，已收紧。
     public static func isTrustedDMGURL(_ url: URL, owner: String, repo: String) -> Bool {
         guard url.scheme?.lowercased() == "https" else { return false }
-        guard let host = url.host?.lowercased(), host == "github.com" else { return false }
+        guard let host = url.host?.lowercased(),
+              host == "github.com" else { return false }
         guard url.path.lowercased().hasSuffix(".dmg") else { return false }
         return url.path.hasPrefix("/\(owner)/\(repo)/releases/download/")
     }
 
-    /// 生成替换脚本：等旧进程退出 → ditto 覆盖 → 去 quarantine → 重开。
-    /// 先等退出再删除，保证不替换正在运行的进程。
+    private static func assetName(_ name: String, matches version: SemVer) -> Bool {
+        let regex = try! NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9])v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?(?=$|[^A-Za-z0-9]|\.[A-Za-z]{2,5}$)"#,
+            options: [.caseInsensitive]
+        )
+        let range = NSRange(name.startIndex..<name.endIndex, in: name)
+        return regex.matches(in: name, range: range).contains { match in
+            guard let matchRange = Range(match.range, in: name) else { return false }
+            return SemVer(String(name[matchRange])) == version
+        }
+    }
+
+    /// 生成替换脚本：等旧进程退出 → 复制到临时目录 → 备份交换 → 去 quarantine → 重开。
+    /// 先完整准备新 App，再替换目标路径，避免失败后留下空安装。
     public static func installScript(mountedAppPath: String, targetAppPath: String, pid: Int32) -> String {
         let mount = mountedAppPath.replacingOccurrences(of: "'", with: "'\\''")
         let target = targetAppPath.replacingOccurrences(of: "'", with: "'\\''")
@@ -171,11 +178,25 @@ public struct UpdateChecker: Sendable {
           kill -0 \(pid) 2>/dev/null || break
           sleep 0.5
         done
-        rm -rf '\(target)'
-        /usr/bin/ditto '\(mount)' '\(target)'
+        parent="$(/usr/bin/dirname '\(target)')"
+        targetBase="$(/usr/bin/basename '\(target)')"
+        tmp="$(/usr/bin/mktemp -d "$parent/.moongate-update.XXXXXX")" || exit 1
+        newApp="$tmp/$targetBase"
+        backup="$parent/.moongate-previous-$targetBase"
+        /usr/bin/ditto '\(mount)' "$newApp" || { /bin/rm -rf "$tmp"; exit 1; }
+        /usr/bin/xattr -dr com.apple.quarantine "$newApp" 2>/dev/null
+        /bin/rm -rf "$backup"
+        if [ -e '\(target)' ]; then
+          /bin/mv '\(target)' "$backup" || { /bin/rm -rf "$tmp"; exit 1; }
+        fi
+        if ! /bin/mv "$newApp" '\(target)'; then
+          if [ -e "$backup" ]; then /bin/mv "$backup" '\(target)'; fi
+          /bin/rm -rf "$tmp"
+          exit 1
+        fi
+        /bin/rm -rf "$backup" "$tmp"
         /usr/bin/xattr -dr com.apple.quarantine '\(target)' 2>/dev/null
         /usr/bin/open '\(target)'
         """
     }
 }
-

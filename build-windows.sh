@@ -7,8 +7,8 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
-OUT="${1:-$HOME/Downloads/月之门-Windows-Setup.exe}"
-VERSION="0.4.0"
+VERSION="0.5.0"
+OUT="${1:-$HOME/Downloads/月之门-Windows-Setup-v$VERSION.exe}"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
@@ -28,7 +28,11 @@ makensis -INPUTCHARSET UTF8 \
     -DPUBLISH_DIR="$PUBLISH_DIR" \
     -DOUTFILE="$OUT" \
     -DAPPVERSION="$VERSION" \
+    -DICON_PATH="$WIN_DIR/assets/app-nsis.ico" \
     "$WIN_DIR/installer/installer.nsi" >/dev/null
+HASH="$(shasum -a 256 "$OUT" | awk '{print $1}')"
+printf "%s  %s\n" "$HASH" "${OUT:t}" > "$OUT.sha256"
 
 echo "==> 完成：$OUT"
+echo "==> SHA256：$OUT.sha256"
 echo "    （Windows 上双击安装，无需管理员权限；首次启动 App 会自动下载 yt-dlp/ffmpeg/deno）"

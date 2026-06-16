@@ -1,6 +1,20 @@
 import XCTest
 
 final class MacOSViewModelBoundaryTests: XCTestCase {
+    func testViewModelOwnsUpdaterAndChecksSilentlyOnAppear() throws {
+        let source = try viewModelSource()
+
+        XCTAssertTrue(source.contains("let updater: UpdateService"))
+        XCTAssertTrue(source.contains("updater: UpdateService? = nil"))
+        XCTAssertTrue(source.contains("self.updater = updater ?? UpdateService()"))
+        let onAppearBody = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
+        XCTAssertTrue(onAppearBody.contains("checkForUpdatesIfNeeded()"))
+
+        let checkBody = try XCTUnwrap(functionBody(prefix: "func checkForUpdatesIfNeeded", in: source))
+        XCTAssertTrue(checkBody.contains("if case .idle = updater.state"))
+        XCTAssertTrue(checkBody.contains("updater.check(silent: true)"))
+    }
+
     func testStartDownloadSkipsTranslationReadinessGateForChineseSourceSubtitles() throws {
         let source = try viewModelSource()
         let startDownloadBody = try XCTUnwrap(functionBody(prefix: "func startDownload", in: source))
@@ -90,6 +104,37 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("evaluator: runtimeReadinessEvaluator"))
     }
 
+    func testSummaryAvailabilityUsesSummaryRuntimeReadiness() throws {
+        let source = try viewModelSource()
+        let refreshBody = try XCTUnwrap(functionBody(prefix: "func refreshSummaryRuntimeReadiness", in: source))
+        let unavailableBody = try XCTUnwrap(functionBody(prefix: "var summaryUnavailableReason", in: source))
+
+        XCTAssertTrue(source.contains("@Published private(set) var runtimeSummaryReadiness"))
+        XCTAssertTrue(source.contains("private var runtimeSummaryReadinessContext"))
+        XCTAssertTrue(source.contains("private var summaryReadinessTask"))
+        XCTAssertTrue(refreshBody.contains("settings.applyingTranslationConfig(settings.effectiveSummaryConfig)"))
+        XCTAssertTrue(refreshBody.contains("summaryReadinessContext()"))
+        XCTAssertTrue(refreshBody.contains("translationRuntimeReadiness("))
+        XCTAssertTrue(refreshBody.contains("runtimeSummaryReadiness = readiness"))
+
+        XCTAssertTrue(unavailableBody.contains("let config = settings.effectiveSummaryConfig"))
+        XCTAssertTrue(unavailableBody.contains("let summarySettings = settings.applyingTranslationConfig(config)"))
+        XCTAssertTrue(unavailableBody.contains("runtimeSummaryReadinessContext == context"))
+        XCTAssertTrue(unavailableBody.contains("runtimeSummaryReadiness ?? summarySettings.translationReadiness(context: context)"))
+        XCTAssertFalse(unavailableBody.contains("settings.translationReadiness(context: context)"))
+    }
+
+    func testSummaryRuntimeReadinessRefreshesOnAppearAndSettingsChange() throws {
+        let source = try viewModelSource()
+        let onAppearBody = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
+        let settingsBody = try XCTUnwrap(publishedSettingsBody(in: source))
+
+        XCTAssertTrue(onAppearBody.contains("refreshTranslationRuntimeReadiness()"))
+        XCTAssertTrue(onAppearBody.contains("refreshSummaryRuntimeReadiness()"))
+        XCTAssertTrue(settingsBody.contains("refreshTranslationRuntimeReadiness()"))
+        XCTAssertTrue(settingsBody.contains("refreshSummaryRuntimeReadiness()"))
+    }
+
     private func viewModelSource() throws -> String {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -107,6 +152,30 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
     private func functionBody(prefix: String, in source: String) -> String? {
         guard let declaration = source.range(of: prefix) else { return nil }
         guard let openingBrace = source[declaration.lowerBound...].firstIndex(of: "{") else { return nil }
+
+        var depth = 0
+        var cursor = openingBrace
+        while cursor < source.endIndex {
+            switch source[cursor] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(source[openingBrace...cursor])
+                }
+            default:
+                break
+            }
+            cursor = source.index(after: cursor)
+        }
+        return nil
+    }
+
+    private func publishedSettingsBody(in source: String) -> String? {
+        guard let declaration = source.range(of: "@Published var settings") else { return nil }
+        guard let didSet = source.range(of: "didSet", range: declaration.lowerBound..<source.endIndex) else { return nil }
+        guard let openingBrace = source[didSet.lowerBound...].firstIndex(of: "{") else { return nil }
 
         var depth = 0
         var cursor = openingBrace

@@ -150,8 +150,9 @@ internal static class ProcessRunner
         }
         catch (Exception e)
         {
-            throw MoongateException.DownloadFailed(L10n.T($"无法启动 yt-dlp：{e.Message}",
-                $"Could not start yt-dlp: {e.Message}"));
+            var tool = Path.GetFileName(executable);
+            throw MoongateException.DownloadFailed(L10n.T($"无法启动 {tool}：{e.Message}",
+                $"Could not start {tool}: {e.Message}"));
         }
         process.StandardInput.Close();
         var pid = SafePid(process);

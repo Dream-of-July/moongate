@@ -8,11 +8,15 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.4.0"
+  !define APPVERSION "0.5.0"
+!endif
+!ifndef ICON_PATH
+  !define ICON_PATH "windows/assets/app-nsis.ico"
 !endif
 
 !define APPNAME "月之门"
 !define EXENAME "Moongate.exe"
+!define INSTALL_MARKER ".moongate-install-root"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Moongate"
 
 Name "${APPNAME}"
@@ -22,13 +26,12 @@ RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
 SetCompressor /SOLID lzma
 
-!define MUI_ICON "${__FILEDIR__}\..\assets\app.ico"
-!define MUI_UNICON "${__FILEDIR__}\..\assets\app.ico"
+!define MUI_ICON "${ICON_PATH}"
+!define MUI_UNICON "${ICON_PATH}"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXENAME}"
 !define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APPNAME}"
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -38,6 +41,9 @@ SetCompressor /SOLID lzma
 Section "安装"
   SetOutPath "$INSTDIR"
   File /r "${PUBLISH_DIR}\*"
+  FileOpen $0 "$INSTDIR\${INSTALL_MARKER}" w
+  FileWrite $0 "Moongate ${APPVERSION}$\r$\n"
+  FileClose $0
 
   ; 快捷方式
   CreateShortCut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
@@ -48,7 +54,7 @@ Section "安装"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${APPVERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\${EXENAME}"
-  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "本地个人工具"
+  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "月之门 · Moongate"
   WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
@@ -62,7 +68,16 @@ SectionEnd
 Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$DESKTOP\${APPNAME}.lnk"
+  IfFileExists "$INSTDIR\${INSTALL_MARKER}" 0 skipRecursiveRemove
+  StrCmp "$INSTDIR" "$LOCALAPPDATA\Programs\${APPNAME}" 0 skipRecursiveRemove
+  Delete "$INSTDIR\${INSTALL_MARKER}"
   RMDir /r "$INSTDIR"
+  Goto uninstallRegistry
+skipRecursiveRemove:
+  Delete "$INSTDIR\Uninstall.exe"
+  Delete "$INSTDIR\${EXENAME}"
+  RMDir "$INSTDIR"
+uninstallRegistry:
   DeleteRegKey HKCU "${UNINSTKEY}"
   ; 注意：刻意保留 %LOCALAPPDATA%\Moongate（下载的 yt-dlp/ffmpeg 与设置），
   ; 重装无需重新下载依赖；用户想彻底清理可手动删除该目录。

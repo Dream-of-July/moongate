@@ -43,6 +43,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 同时进行的压制（烧录）任务数（1...3，默认 2）。压制吃满 CPU，并行多了互相拖慢。
     public var maxConcurrentBurns: Int
 
+    // MARK: 编码后端
+    /// 烧录 / 转码的视频编码后端：auto（硬件优先）/ hardware / software。默认 auto。
+    public var encodeBackend: EncodeBackend
+    /// 烧录字幕时是否始终输出 H.264（兼容优先）。false=跟随源编码（HEVC 源保 HEVC）。默认 false。
+    public var burnAlwaysH264: Bool
+
     public init(
         translationProvider: TranslationProvider = .anthropic,
         translationEngine: TranslationEngine? = nil,
@@ -62,7 +68,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         subtitleStyle: SubtitleStyle = .bilingual,
         maxBurnHeight: Int? = 1080,
         maxConcurrentDownloads: Int = 3,
-        maxConcurrentBurns: Int = 2
+        maxConcurrentBurns: Int = 2,
+        encodeBackend: EncodeBackend = .auto,
+        burnAlwaysH264: Bool = false
     ) {
         let resolvedEngine = translationEngine ?? TranslationEngine.compatible(with: translationProvider)
         self.translationProvider = resolvedEngine.legacyProvider ?? translationProvider
@@ -85,6 +93,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.maxBurnHeight = maxBurnHeight
         self.maxConcurrentDownloads = maxConcurrentDownloads
         self.maxConcurrentBurns = maxConcurrentBurns
+        self.encodeBackend = encodeBackend
+        self.burnAlwaysH264 = burnAlwaysH264
     }
 
     // MARK: 存储位置
@@ -115,6 +125,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case maxConcurrentDownloads, maxConcurrentBurns
         case aiEngine, aiBaseURL, aiModel, aiAuthToken, translationFollowsDefault
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
+        case encodeBackend, burnAlwaysH264
     }
 
     public init(from decoder: Decoder) throws {
@@ -159,6 +170,44 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxConcurrentDownloads = min(max(downloads, 1), 5)
         let burns = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentBurns) ?? 2
         maxConcurrentBurns = min(max(burns, 1), 3)
+
+        // 编码后端：旧版本缺键时默认 auto（硬件优先）；烧录始终 H.264 默认关（跟随源）。
+        let rawBackend = try c.decodeIfPresent(String.self, forKey: .encodeBackend)
+        encodeBackend = rawBackend.flatMap { EncodeBackend(rawValue: $0) } ?? .auto
+        burnAlwaysH264 = try c.decodeIfPresent(Bool.self, forKey: .burnAlwaysH264) ?? false
+    }
+
+    /// 自定义编码：必须显式写出 maxBurnHeight。
+    /// 合成的 Encodable 会在 maxBurnHeight 为 nil（关闭「缩放到 1080p」）时省略该键，
+    /// 而 init(from:) 把「缺键」判定为旧版本并回退成默认 1080——于是「关闭」永远存不住，
+    /// 下次加载又变回 1080。这里 nil 时写出显式 null，让关闭状态可持久化。
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(translationProvider.rawValue, forKey: .translationProvider)
+        try c.encode(translationEngine.rawValue, forKey: .translationEngine)
+        try c.encode(translationBaseURL, forKey: .translationBaseURL)
+        try c.encode(translationModel, forKey: .translationModel)
+        try c.encode(translationAuthToken, forKey: .translationAuthToken)
+        try c.encode(aiEngine.rawValue, forKey: .aiEngine)
+        try c.encode(aiBaseURL, forKey: .aiBaseURL)
+        try c.encode(aiModel, forKey: .aiModel)
+        try c.encode(aiAuthToken, forKey: .aiAuthToken)
+        try c.encode(translationFollowsDefault, forKey: .translationFollowsDefault)
+        try c.encode(summaryFollowsDefault, forKey: .summaryFollowsDefault)
+        try c.encode(summaryEngine.rawValue, forKey: .summaryEngine)
+        try c.encode(summaryBaseURL, forKey: .summaryBaseURL)
+        try c.encode(summaryModel, forKey: .summaryModel)
+        try c.encode(summaryAuthToken, forKey: .summaryAuthToken)
+        try c.encode(subtitleStyle, forKey: .subtitleStyle)
+        if let maxBurnHeight {
+            try c.encode(maxBurnHeight, forKey: .maxBurnHeight)
+        } else {
+            try c.encodeNil(forKey: .maxBurnHeight)
+        }
+        try c.encode(maxConcurrentDownloads, forKey: .maxConcurrentDownloads)
+        try c.encode(maxConcurrentBurns, forKey: .maxConcurrentBurns)
+        try c.encode(encodeBackend.rawValue, forKey: .encodeBackend)
+        try c.encode(burnAlwaysH264, forKey: .burnAlwaysH264)
     }
 
     public static func load() -> AppSettings {
@@ -329,6 +378,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         guard translationEngine.requiresCloudConfiguration else { return true }
         return !translationBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
             && !translationAuthToken.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// 实际压制并发上限：硬件后端时编码不占 CPU（走媒体引擎），可比软件多放一路并行，
+    /// 提高整体吞吐（实测 2 路硬件 4K 有约 1.3× 增益）；软件后端维持设置值（libx265 已吃满 CPU）。
+    /// 仍夹在 1...4。
+    public var effectiveMaxConcurrentBurns: Int {
+        guard encodeBackend.prefersHardware else { return maxConcurrentBurns }
+        return min(maxConcurrentBurns + 1, 4)
     }
 
     /// 翻译运行前 readiness。区别于 `isTranslationConfigured`：

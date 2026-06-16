@@ -4,6 +4,10 @@ import MoongateMobileCore
 import FoundationModels
 #endif
 
+private let srtTimeLineRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})"#
+)
+
 // MARK: - 默认翻译器
 
 public func makeTranslator(settings: AppSettings) -> any SubtitleTranslator {
@@ -71,11 +75,6 @@ func parseSRT(_ raw: String) -> [SubtitleCue] {
 }
 
 /// 解析时间行 "HH:MM:SS,mmm --> HH:MM:SS,mmm"（毫秒分隔符容忍 "," 与 "."）。
-/// SRT 时间行正则：编译一次复用。之前每行都重新编译，3000 行字幕 = 3000 次编译，开销显著。
-private let srtTimeLineRegex = try? NSRegularExpression(
-    pattern: #"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})"#
-)
-
 private func parseSRTTimeLine(_ line: String) -> (start: String, end: String)? {
     guard let regex = srtTimeLineRegex,
           let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
@@ -908,10 +907,13 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             }
         }
         for cueIndex in 0..<cues.count {
-            // 某条缺失就保留原文（output 初始即原文）
-            guard let rawChinese = merged[cueIndex + 1] else { continue }
+            guard let rawChinese = merged[cueIndex + 1] else {
+                throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+            }
             let chinese = Self.sanitizeTranslation(rawChinese)
-            guard !chinese.isEmpty else { continue }
+            guard !chinese.isEmpty else {
+                throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
+            }
             switch style {
             case .bilingual:
                 // 中文在上、原文在下（烧录时原文用更小字号）
@@ -937,7 +939,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     /// 翻译一块字幕，返回 [全局编号: 译文]。
     /// stop_reason 为 "max_tokens"（译文被截断）时按减半的条数自动重试：
     /// 最多再分两层、每块最小 8 条；仍截断则抛错。
-    /// 译文缺失行数超过 40% 视为模型返回格式异常，抛错而不是静默保留原文。
+    /// 只要译文缺失行即视为模型返回格式异常，抛错而不是静默保留原文。
     private func translateChunk(
         _ chunk: ArraySlice<SubtitleCue>,
         startNumber: Int,
@@ -993,8 +995,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         let missing = (startNumber..<startNumber + chunk.count)
             .filter { (map[$0] ?? "").isEmpty }
             .count
-        if Double(missing) > Double(chunk.count) * 0.4 {
-            throw MoongateError.translateFailed("模型返回格式异常，缺失过多译文行")
+        if missing > 0 {
+            throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
         }
         return map
     }
@@ -1018,8 +1020,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         let missing = (startNumber..<startNumber + chunk.count)
             .filter { (map[$0] ?? "").isEmpty }
             .count
-        if Double(missing) > Double(chunk.count) * 0.4 {
-            throw MoongateError.translateFailed("模型返回格式异常，缺失过多译文行")
+        if missing > 0 {
+            throw MoongateError.translateFailed("模型返回格式异常，缺失译文行")
         }
         return map
     }

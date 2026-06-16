@@ -12,22 +12,11 @@ import MoongateCore
 struct SettingsView: View {
     @ObservedObject var model: ViewModel
 
-    private enum TestState: Equatable {
-        case idle
-        case testing
-        case success
-        case failure(String)
-    }
-
-    private enum ModelFetchState: Equatable {
-        case idle
-        case fetching
-        case loaded([String])
-        case failure(String)
-    }
+    typealias TestState = APIConnectionTestState
+    typealias ModelFetchState = APIModelFetchState
 
     @State private var draft = AppSettings()
-    @StateObject private var updater = UpdateService()
+    @ObservedObject private var updater: UpdateService
     @State private var testState: TestState = .idle
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: ModelFetchState = .idle
@@ -52,6 +41,11 @@ struct SettingsView: View {
         ("zh-Hans", "简体中文"),
         ("zh-Hant", "繁体中文")
     ]
+
+    init(model: ViewModel) {
+        self.model = model
+        self._updater = ObservedObject(wrappedValue: model.updater)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,7 +80,7 @@ struct SettingsView: View {
         }
         .task {
             // 打开设置时静默检查一次（有新版才在更新区提示，不打扰）。
-            if case .idle = updater.state { updater.check(silent: true) }
+            model.checkForUpdatesIfNeeded()
         }
         .onDisappear {
             testTask?.cancel()
@@ -228,11 +222,19 @@ struct SettingsView: View {
                     }
                 }
                 if draft.translationEngine.requiresCloudConfiguration {
-                    TextField("服务地址", text: $draft.translationBaseURL, prompt: Text(baseURLPrompt))
-                        .autocorrectionDisabled()
-                    SecureField("API 凭证", text: $draft.translationAuthToken)
-                    TextField("模型名", text: $draft.translationModel, prompt: Text(modelPrompt))
-                        .autocorrectionDisabled()
+                    APIConfigEditor(
+                        baseURL: $draft.translationBaseURL,
+                        model: $draft.translationModel,
+                        authToken: $draft.translationAuthToken,
+                        settingsForRequest: { overrideSettingsForRequest(
+                            engine: draft.translationEngine,
+                            baseURL: draft.translationBaseURL,
+                            model: draft.translationModel,
+                            authToken: draft.translationAuthToken
+                        ) },
+                        baseURLPrompt: baseURLPrompt(for: draft.translationEngine),
+                        modelPrompt: "可先留空，填完地址和凭证后选择"
+                    )
                 } else {
                     Text("本地引擎无需填写服务地址与凭证。")
                         .font(.caption)
@@ -280,11 +282,19 @@ struct SettingsView: View {
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         } else if draft.summaryEngine.requiresCloudConfiguration {
-            TextField("服务地址", text: $draft.summaryBaseURL, prompt: Text(baseURLPrompt))
-                .autocorrectionDisabled()
-            SecureField("API 凭证", text: $draft.summaryAuthToken)
-            TextField("模型名", text: $draft.summaryModel, prompt: Text(modelPrompt))
-                .autocorrectionDisabled()
+            APIConfigEditor(
+                baseURL: $draft.summaryBaseURL,
+                model: $draft.summaryModel,
+                authToken: $draft.summaryAuthToken,
+                settingsForRequest: { overrideSettingsForRequest(
+                    engine: draft.summaryEngine,
+                    baseURL: draft.summaryBaseURL,
+                    model: draft.summaryModel,
+                    authToken: draft.summaryAuthToken
+                ) },
+                baseURLPrompt: baseURLPrompt(for: draft.summaryEngine),
+                modelPrompt: "可先留空，填完地址和凭证后选择"
+            )
         } else {
             Text("本地引擎无需填写服务地址与凭证。")
                 .font(.caption)
@@ -362,7 +372,7 @@ struct SettingsView: View {
                 runConnectionTest()
             }
             .buttonStyle(.bordered)
-            .disabled(testState == .testing || !draft.translationReadiness().isReady)
+            .disabled(testState == .testing || !draft.applyingTranslationConfig(defaultAIConfig).isTranslationConfigured)
             switch testState {
             case .idle:
                 EmptyView()
@@ -526,6 +536,27 @@ struct SettingsView: View {
         draft.aiEngine.legacyProvider ?? .anthropic
     }
 
+    /// 把某个「单独配置」槽位（翻译 / 总结）的字段固化进 translation* 字段，
+    /// 供 listTranslationModels / testTranslationConnection 直接使用（它们只读 translation* 字段）。
+    private func overrideSettingsForRequest(
+        engine: TranslationEngine,
+        baseURL: String,
+        model: String,
+        authToken: String
+    ) -> AppSettings {
+        draft.applyingTranslationConfig(LLMEndpointConfig(
+            engine: engine, baseURL: baseURL, model: model, authToken: authToken
+        ))
+    }
+
+    /// 服务地址提示语：按引擎对应的协议给出。
+    private func baseURLPrompt(for engine: TranslationEngine) -> String {
+        switch engine.legacyProvider ?? .anthropic {
+        case .anthropic: return "Anthropic 兼容地址或企业网关地址"
+        case .openai: return "https://api.openai.com"
+        }
+    }
+
     private var translationEngineBinding: Binding<TranslationEngine> {
         Binding(
             get: { draft.aiEngine },
@@ -669,7 +700,7 @@ struct SettingsView: View {
                 }
             case .available(let info):
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("发现新版本 v\(info.version)", systemImage: "arrow.down.circle.fill")
+                    Label("发现新版本 v\(info.version.description)", systemImage: "arrow.down.circle.fill")
                         .foregroundStyle(.blue)
                         .font(.callout.weight(.medium))
                     if !info.notes.isEmpty {
@@ -772,8 +803,8 @@ struct SettingsView: View {
     private func runConnectionTest() {
         testTask?.cancel()
         testState = .testing
-        // 默认配置编辑的是 ai*，把它作为有效翻译配置应用进去再测。
-        let settings = draft.applyingTranslationConfig(draft.effectiveTranslationConfig)
+        // 默认配置编辑的是 ai*；测试连接必须只测默认 AI，而不是当前翻译 override。
+        let settings = draft.applyingTranslationConfig(defaultAIConfig)
         testTask = Task {
             do {
                 _ = try await testTranslationConnection(settings: settings)
@@ -801,7 +832,7 @@ struct SettingsView: View {
     private func fetchModels() {
         modelFetchTask?.cancel()
         modelFetchState = .fetching
-        let settings = draft.applyingTranslationConfig(draft.effectiveTranslationConfig)
+        let settings = draft.applyingTranslationConfig(defaultAIConfig)
         modelFetchTask = Task {
             do {
                 let models = try await listTranslationModels(settings: settings)
@@ -824,6 +855,15 @@ struct SettingsView: View {
         }
     }
 
+    private var defaultAIConfig: LLMEndpointConfig {
+        LLMEndpointConfig(
+            engine: draft.aiEngine,
+            baseURL: draft.aiBaseURL,
+            model: draft.aiModel,
+            authToken: draft.aiAuthToken
+        )
+    }
+
     // MARK: - 字幕样式
 
     private var styleSection: some View {
@@ -838,7 +878,29 @@ struct SettingsView: View {
     // MARK: - 烧录画质
 
     private var burnQualitySection: some View {
-        Section("烧录画质") {
+        Section("烧录与转码") {
+            Picker("编码方式", selection: $draft.encodeBackend) {
+                ForEach(EncodeBackend.allCases, id: \.rawValue) { backend in
+                    Text(backend.displayName).tag(backend)
+                }
+            }
+            Text(encodeBackendHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("烧录编码", selection: Binding(
+                get: { draft.burnAlwaysH264 },
+                set: { draft.burnAlwaysH264 = $0 }
+            )) {
+                Text("跟随源（HEVC 源保 HEVC）").tag(false)
+                Text("始终 H.264（兼容最好）").tag(true)
+            }
+            Text("「始终 H.264」体积略大但几乎所有设备/网页都能播；「跟随源」保留 HEVC/HDR 画质与更小体积。HDR 源在跟随源时保留 HDR。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             VStack(alignment: .leading, spacing: 4) {
                 Toggle(
                     "高清视频烧录时缩放到 1080p（更快更省空间，推荐）",
@@ -851,6 +913,17 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var encodeBackendHint: String {
+        switch draft.encodeBackend {
+        case .auto:
+            return "优先用 Mac 的硬件媒体引擎编码：4K 快数倍、几乎不占 CPU、不发热；硬件不可用时自动回退软件。硬件编码时可同时压制更多任务。"
+        case .hardware:
+            return "强制使用硬件媒体引擎（VideoToolbox）。最快最省电；个别老机型不支持时仍会回退软件。"
+        case .software:
+            return "强制软件编码（libx265/libx264）。同等体积画质最高，但 4K 明显更慢、吃满 CPU、发热明显。追求极致画质时选它。"
         }
     }
 
@@ -969,5 +1042,154 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+}
+
+// MARK: - 可复用的 API 端点编辑器（拉取模型 + 测试连接）
+
+enum APIConnectionTestState: Equatable {
+    case idle
+    case testing
+    case success
+    case failure(String)
+}
+
+enum APIModelFetchState: Equatable {
+    case idle
+    case fetching
+    case loaded([String])
+    case failure(String)
+}
+
+/// 一个云端 API 引擎（Anthropic/OpenAI 兼容）的服务地址 + 凭证 + 模型编辑块，
+/// 自带「拉取模型」和「测试连接」。AI 翻译、AI 总结的「单独配置」复用它，行为与主
+/// 「AI 设置」一致：先填地址+凭证，点「拉取模型」从服务端取真实列表再选，再「测试连接」。
+struct APIConfigEditor: View {
+    @Binding var baseURL: String
+    @Binding var model: String
+    @Binding var authToken: String
+    /// 把编辑中的字段组装成一份可直接调用的 settings（用于拉取模型 / 测试连接）。
+    let settingsForRequest: () -> AppSettings
+    let baseURLPrompt: String
+    let modelPrompt: String
+
+    @State private var testState: APIConnectionTestState = .idle
+    @State private var testTask: Task<Void, Never>?
+    @State private var modelFetchState: APIModelFetchState = .idle
+    @State private var modelFetchTask: Task<Void, Never>?
+
+    var body: some View {
+        TextField("服务地址", text: $baseURL, prompt: Text(baseURLPrompt))
+            .autocorrectionDisabled()
+            .onChange(of: baseURL) { resetTestState(); resetModelFetch() }
+        SecureField("API 凭证", text: $authToken)
+            .onChange(of: authToken) { resetTestState(); resetModelFetch() }
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button("拉取模型") { fetchModels() }
+                .buttonStyle(.bordered)
+                .disabled(modelFetchState == .fetching
+                    || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+                    || authToken.trimmingCharacters(in: .whitespaces).isEmpty)
+            switch modelFetchState {
+            case .idle:
+                EmptyView()
+            case .fetching:
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("正在拉取模型")
+            case .loaded(let models):
+                Text("已拉取 \(models.count) 个模型")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .failure(let message):
+                Text(message)
+                    .font(.caption).foregroundStyle(.red).lineLimit(3)
+            }
+            Spacer(minLength: 0)
+        }
+        if case .loaded(let models) = modelFetchState, !models.isEmpty {
+            let current = model
+            let options = (current.isEmpty || models.contains(current)) ? models : models + [current]
+            Picker("选择模型", selection: $model) {
+                Text("请选择").tag("")
+                ForEach(options, id: \.self) { Text($0).tag($0) }
+            }
+            .pickerStyle(.menu)
+        }
+        TextField("模型名（也可手动填写）", text: $model, prompt: Text(modelPrompt))
+            .autocorrectionDisabled()
+            .onChange(of: model) { resetTestState() }
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button("测试连接") { runConnectionTest() }
+                .buttonStyle(.bordered)
+                .disabled(testState == .testing
+                    || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+                    || authToken.trimmingCharacters(in: .whitespaces).isEmpty
+                    || model.trimmingCharacters(in: .whitespaces).isEmpty)
+            switch testState {
+            case .idle:
+                EmptyView()
+            case .testing:
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("正在测试连接")
+            case .success:
+                Text("连接正常").font(.caption).foregroundStyle(.green)
+            case .failure(let message):
+                Text(message).font(.caption).foregroundStyle(.red).lineLimit(3)
+            }
+            Spacer(minLength: 0)
+        }
+        .onDisappear {
+            testTask?.cancel()
+            modelFetchTask?.cancel()
+        }
+    }
+
+    private func resetTestState() {
+        guard testState != .idle else { return }
+        testTask?.cancel()
+        testState = .idle
+    }
+
+    private func resetModelFetch() {
+        guard modelFetchState != .idle else { return }
+        modelFetchTask?.cancel()
+        modelFetchState = .idle
+    }
+
+    private func fetchModels() {
+        modelFetchTask?.cancel()
+        modelFetchState = .fetching
+        let settings = settingsForRequest()
+        modelFetchTask = Task {
+            do {
+                let models = try await listTranslationModels(settings: settings)
+                guard !Task.isCancelled else { return }
+                modelFetchState = .loaded(models)
+                if !model.isEmpty, !models.contains(model) { model = "" }
+            } catch {
+                guard !Task.isCancelled else { return }
+                modelFetchState = .failure("拉取失败：\(Self.reason(error))")
+            }
+        }
+    }
+
+    private func runConnectionTest() {
+        testTask?.cancel()
+        testState = .testing
+        let settings = settingsForRequest()
+        testTask = Task {
+            do {
+                _ = try await testTranslationConnection(settings: settings)
+                guard !Task.isCancelled else { return }
+                testState = .success
+            } catch {
+                guard !Task.isCancelled else { return }
+                testState = .failure("连接失败：\(Self.reason(error))")
+            }
+        }
+    }
+
+    private static func reason(_ error: Error) -> String {
+        if case MoongateError.translateFailed(let detail) = error { return detail }
+        return error.localizedDescription
     }
 }

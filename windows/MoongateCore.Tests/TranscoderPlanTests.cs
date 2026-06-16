@@ -77,6 +77,98 @@ public class TranscoderPlanTests
         Assert.Contains("hvc1", plan.FfmpegArgs);
     }
 
+    // 0.5：硬件转码路径（NVENC/QSV/AMF）。available 注入编码器可用性。
+    private static bool AllHw(string enc) => true;
+
+    [Fact]
+    public void TranscodeH265_HardwareBackend_UsesHardwareEncoder()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H265, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: false, x265Available: true,
+            backend: EncodeBackend.Auto, available: AllHw);
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.Contains("hevc_nvenc", joined);
+        Assert.DoesNotContain("libx265", joined);
+    }
+
+    [Fact]
+    public void TranscodeH265_HardwareHdr_KeepsHdrMain10()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H265, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: true, x265Available: true,
+            backend: EncodeBackend.Auto, available: AllHw);
+        Assert.False(plan.DropsHdr);
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.Contains("hevc_nvenc", joined);
+        Assert.Contains("main10", joined);
+        Assert.Contains("smpte2084", joined);
+    }
+
+    [Fact]
+    public void TranscodeH265_SoftwareBackend_StillLibx265()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H265, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: true, x265Available: true,
+            backend: EncodeBackend.Software, available: AllHw);
+        Assert.Contains("libx265", string.Join(" ", plan.FfmpegArgs));
+        Assert.False(plan.DropsHdr);
+    }
+
+    [Fact]
+    public void TranscodeAsyncFailsEarlyWhenNoH265EncoderExists()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Transcoder.cs"));
+
+        Assert.Contains("format == OutputFormat.Mp4H265", source);
+        Assert.Contains("FFmpegBurner.HardwareHevcEncoder(Available) is null", source);
+        Assert.Contains("!x265", source);
+        Assert.Contains("缺少 HEVC 编码器", source);
+        Assert.True(
+            source.IndexOf("缺少 HEVC 编码器", StringComparison.Ordinal)
+            < source.IndexOf("BuildPlan(format, inputFile, inputFile", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TranscodeAsyncProbesActualHdrBeforePlanning()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Transcoder.cs"));
+
+        Assert.Contains("ProbeVideoIsHdrAsync(inputFile, ct)", source);
+        Assert.Contains("?? sourceIsHdr", source);
+        Assert.True(
+            source.IndexOf("ProbeVideoIsHdrAsync(inputFile, ct)", StringComparison.Ordinal)
+            < source.IndexOf("BuildPlan(format, inputFile, inputFile", StringComparison.Ordinal));
+
+        var queue = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Queue.cs"));
+        Assert.Contains("requestedHdrFallback = current.Request.PreferHdr", queue);
+        Assert.DoesNotContain("sourceIsHdr: current.Request.PreferHdr", queue);
+    }
+
+    [Fact]
+    public void TranscodeAndBurnClearActivePidInFinally()
+    {
+        var transcoder = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Transcoder.cs"));
+        Assert.Contains("finally", transcoder);
+        Assert.Contains("control?.SetActivePid(0);", transcoder);
+
+        var burner = File.ReadAllText(Path.Combine(RepoRoot(), "windows", "MoongateCore", "Burner.cs"));
+        Assert.Contains("finally", burner);
+        Assert.Contains("control?.SetActivePid(0);", burner);
+    }
+
+    [Fact]
+    public void TranscodeH264_HardwareBackend_UsesHardwareH264()
+    {
+        var plan = Transcoder.BuildPlan(
+            OutputFormat.Mp4H264, "in.webm", "out.mp4",
+            sourceVCodec: "vp9", sourceIsHdr: false, x265Available: true,
+            backend: EncodeBackend.Auto, available: AllHw);
+        Assert.Contains("h264_nvenc", string.Join(" ", plan.FfmpegArgs));
+    }
+
     [Fact]
     public void OriginalFormat_NeedsNoProcessing()
     {
@@ -94,6 +186,21 @@ public class TranscoderPlanTests
     [InlineData(null, DynamicRange.Sdr)]
     public void DynamicRange_ParsesYtDlpValue(string? raw, DynamicRange expected) =>
         Assert.Equal(expected, DynamicRangeExtensions.FromYtDlpValue(raw));
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Package.swift"))
+                && Directory.Exists(Path.Combine(dir.FullName, "windows")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate repository root.");
+    }
 }
 
 public class HdrBurnArgsTests

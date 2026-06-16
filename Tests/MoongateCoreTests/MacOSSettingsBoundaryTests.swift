@@ -21,6 +21,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             || source.contains("updateSection"))
     }
 
+    func testSettingsViewReusesSharedUpdaterFromViewModel() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        XCTAssertTrue(source.contains("@ObservedObject private var updater: UpdateService"))
+        XCTAssertFalse(source.contains("@StateObject private var updater = UpdateService()"))
+        XCTAssertTrue(source.contains("init(model: ViewModel)"))
+        XCTAssertTrue(source.contains("self._updater = ObservedObject(wrappedValue: model.updater)"))
+        XCTAssertTrue(source.contains("model.checkForUpdatesIfNeeded()"))
+    }
+
+    func testUpdateServiceExposesAvailableUpdateBadgeState() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("UpdateService.swift"))
+
+        XCTAssertTrue(source.contains("var hasAvailableUpdate: Bool"))
+        XCTAssertTrue(source.contains("if case .available = state"))
+        XCTAssertTrue(source.contains("return true"))
+        XCTAssertTrue(source.contains("return false"))
+    }
+
     func testAppleTranslationReadinessUsesUserVisibleSourceLanguageContext() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -107,6 +132,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
             try XCTUnwrap(apiFieldsBody.range(of: "DisclosureGroup")).lowerBound,
             "Credential summary must remain visible before advanced protocol details."
         )
+    }
+
+    func testDefaultAIConnectionActionsDoNotUseTranslationOverrideEndpoint() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        let testBody = try XCTUnwrap(functionBody(named: "runConnectionTest", in: source))
+        XCTAssertTrue(testBody.contains("draft.applyingTranslationConfig(defaultAIConfig)"))
+        XCTAssertFalse(testBody.contains("draft.effectiveTranslationConfig"))
+
+        let fetchBody = try XCTUnwrap(functionBody(named: "fetchModels", in: source))
+        XCTAssertTrue(fetchBody.contains("draft.applyingTranslationConfig(defaultAIConfig)"))
+        XCTAssertFalse(fetchBody.contains("draft.effectiveTranslationConfig"))
+
+        let apiFieldsBody = try XCTUnwrap(functionBody(named: "apiTranslationFields", in: source))
+        XCTAssertTrue(apiFieldsBody.contains("!draft.applyingTranslationConfig(defaultAIConfig).isTranslationConfigured"))
+        XCTAssertFalse(apiFieldsBody.contains("!draft.translationReadiness().isReady"))
+
+        let configBody = try XCTUnwrap(functionBody(named: "defaultAIConfig", in: source))
+        XCTAssertTrue(configBody.contains("engine: draft.aiEngine"))
+        XCTAssertTrue(configBody.contains("baseURL: draft.aiBaseURL"))
+        XCTAssertTrue(configBody.contains("model: draft.aiModel"))
+        XCTAssertTrue(configBody.contains("authToken: draft.aiAuthToken"))
     }
 
     func testAPITranslationProgressIndicatorsExposeAccessibleLabels() throws {

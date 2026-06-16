@@ -66,7 +66,13 @@ public sealed class FFmpegBurner : ISubtitleBurner
             if (!process.Start()) return found;
             var text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
             process.WaitForExit();
-            foreach (var token in new[] { "libx265", "libx264", "libsvtav1" })
+            foreach (var token in new[]
+            {
+                "libx265", "libx264", "libsvtav1",
+                "hevc_nvenc", "h264_nvenc",   // NVIDIA
+                "hevc_qsv", "h264_qsv",       // Intel Quick Sync
+                "hevc_amf", "h264_amf",       // AMD
+            })
             {
                 if (text.Contains(token)) found.Add(token);
             }
@@ -81,6 +87,17 @@ public sealed class FFmpegBurner : ISubtitleBurner
     /// <summary>转码用：探测时长（秒），用于进度换算。</summary>
     internal static async Task<double?> ProbeDurationSecondsAsync(string video, CancellationToken ct = default) =>
         (await ProbeAsync(video, ct).ConfigureAwait(false)).Duration;
+
+    /// <summary>转码用：探测下载产物的实际动态范围。null 表示 ffprobe 无法判断。</summary>
+    internal static async Task<bool?> ProbeVideoIsHdrAsync(string video, CancellationToken ct = default)
+    {
+        var probe = await ProbeAsync(video, ct).ConfigureAwait(false);
+        if (probe.CodecName is null && probe.Width is null && probe.Height is null && probe.ColorTransfer is null)
+        {
+            return null;
+        }
+        return probe.IsHdr;
+    }
 
     /// <summary>转码用：探测实际视频编码短名（h264/h265/vp9/av1…），让「已是目标编码」时走 remux。</summary>
     internal static async Task<string?> ProbeVideoCodecAsync(string video, CancellationToken ct = default)
@@ -99,7 +116,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
     /// HDR 保真烧录的视频编码参数：libx265 10-bit + HDR10 色彩元数据透传。与 macOS hdrVideoArgs 同构。
     /// 字幕仍是 SDR 白字，叠在 BT.2020/PQ 画面上由 subtitles 滤镜处理。maxrateK 控制码率上限。
     /// </summary>
-    internal static string[] HdrVideoArgs(string? colorPrimaries, string? colorTransfer, string? colorSpace, int maxrateK)
+    internal static string[] HdrVideoArgs(string? colorPrimaries, string? colorTransfer, string? colorSpace, int? maxrateK)
     {
         var prim = string.IsNullOrEmpty(colorPrimaries) ? "bt2020" : colorPrimaries;
         var trc = string.IsNullOrEmpty(colorTransfer) ? "smpte2084" : colorTransfer;
@@ -112,8 +129,151 @@ public sealed class FFmpegBurner : ISubtitleBurner
             "-pix_fmt", "yuv420p10le",
             "-x265-params", x265Params,
             "-tag:v", "hvc1",
-            "-maxrate", $"{maxrateK}k", "-bufsize", $"{maxrateK * 2}k",
+            .. MaxrateFlags(maxrateK),
         ];
+    }
+
+    // MARK: - 编码器选择（硬件 NVENC/QSV/AMF ↔ 软件 libx265/libx264 × 源编码 × HDR）
+
+    /// <summary>
+    /// 一次编码所需的全部参数：编码器/像素格式（EncoderArgs）、字幕滤镜前后缀
+    /// （FilterPrefix/Suffix，用于 HDR 10-bit 转换或 tonemap→SDR）、以及色彩元数据参数（ColorArgs，
+    /// 硬件路径需显式带上才能写出正确 HDR10 元数据）。
+    /// </summary>
+    internal sealed record VideoEncoderSelection(
+        IReadOnlyList<string> EncoderArgs, string FilterPrefix, string FilterSuffix, IReadOnlyList<string> ColorArgs);
+
+    /// <summary>硬件编码质量参数（NVENC/QSV/AMF 各自的「恒定质量」近似）。选高画质档（视觉接近无损）。</summary>
+    private const int HwCq = 22; // NVENC -cq / QSV -global_quality / AMF -qp_p（越小画质越好）
+
+    /// <summary>HDR10 色彩元数据参数（硬件路径需显式带上，否则输出 trc/prim 为 unknown）。缺源信息回退 BT.2020/PQ/BT.2020nc。</summary>
+    internal static string[] HdrColorArgs(string? colorPrimaries, string? colorTransfer, string? colorSpace)
+    {
+        var prim = string.IsNullOrEmpty(colorPrimaries) ? "bt2020" : colorPrimaries;
+        var trc = string.IsNullOrEmpty(colorTransfer) ? "smpte2084" : colorTransfer;
+        var mtx = string.IsNullOrEmpty(colorSpace) ? "bt2020nc" : colorSpace;
+        return ["-color_primaries", prim, "-color_trc", trc, "-colorspace", mtx];
+    }
+
+    /// <summary>软件 SDR H.264：libx264 + CRF；maxrateK 非 null 时封顶。</summary>
+    internal static string[] SdrH264VideoArgs(int? maxrateK) =>
+        ["-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p", .. MaxrateFlags(maxrateK)];
+
+    /// <summary>软件 SDR HEVC（保 HEVC，8-bit）：libx265 + CRF；maxrateK 非 null 时封顶。</summary>
+    internal static string[] SdrHevcVideoArgs(int? maxrateK) =>
+        ["-c:v", "libx265", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", .. MaxrateFlags(maxrateK)];
+
+    /// <summary>首选可用的硬件 H.264 编码器名（NVENC→QSV→AMF），都不可用返回 null。</summary>
+    internal static string? HardwareH264Encoder(Func<string, bool> available)
+    {
+        foreach (var enc in new[] { "h264_nvenc", "h264_qsv", "h264_amf" })
+            if (available(enc)) return enc;
+        return null;
+    }
+
+    /// <summary>首选可用的硬件 HEVC 编码器名（NVENC→QSV→AMF），都不可用返回 null。</summary>
+    internal static string? HardwareHevcEncoder(Func<string, bool> available)
+    {
+        foreach (var enc in new[] { "hevc_nvenc", "hevc_qsv", "hevc_amf" })
+            if (available(enc)) return enc;
+        return null;
+    }
+
+    /// <summary>硬件 H.264 编码参数（按编码器选合适的质量旋钮）。</summary>
+    internal static string[] HwH264VideoArgs(string encoder) =>
+        [.. HwEncoderArgs(encoder), "-pix_fmt", "yuv420p"];
+
+    /// <summary>硬件 HEVC（SDR）编码参数。</summary>
+    internal static string[] HwHevcVideoArgs(string encoder) =>
+        [.. HwEncoderArgs(encoder), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"];
+
+    /// <summary>硬件 HEVC main10（HDR）编码参数：10-bit p010le，色彩元数据由 ColorArgs 单独透传。</summary>
+    internal static string[] HwHdrVideoArgs(string encoder) =>
+        [.. HwEncoderArgs(encoder), "-profile:v", "main10", "-pix_fmt", "p010le", "-tag:v", "hvc1"];
+
+    /// <summary>各硬件编码器的「恒定质量」旋钮（参数名不同：NVENC -cq、QSV -global_quality、AMF -rc cqp -qp_*）。</summary>
+    private static string[] HwEncoderArgs(string encoder)
+    {
+        if (encoder.Contains("nvenc"))
+            return ["-c:v", encoder, "-rc", "vbr", "-cq", $"{HwCq}", "-b:v", "0"];
+        if (encoder.Contains("qsv"))
+            return ["-c:v", encoder, "-global_quality", $"{HwCq}"];
+        // amf
+        return ["-c:v", encoder, "-rc", "cqp", "-qp_i", $"{HwCq}", "-qp_p", $"{HwCq}"];
+    }
+
+    /// <summary>
+    /// 选择视频编码参数。纯函数，便于单测覆盖整个矩阵。available 注入编码器可用性（便于测试与缓存）。
+    /// 决策顺序：HDR → 强制 H.264（路线 A）→ 跟随源（HEVC 保 HEVC，否则 H.264）。
+    /// 每一类再按 backend + 硬件可用性在 硬件编码器 / libx 间选择。
+    /// </summary>
+    internal static VideoEncoderSelection SelectVideoEncoder(
+        EncodeBackend backend, bool alwaysH264, bool sourceIsHevc, bool isHdr,
+        string? colorPrimaries, string? colorTransfer, string? colorSpace,
+        int? maxrateK, bool x265Available, Func<string, bool> available)
+    {
+        var wantHardware = backend.PrefersHardware();
+        var hwHevc = wantHardware ? HardwareHevcEncoder(available) : null;
+        var hwH264 = wantHardware ? HardwareH264Encoder(available) : null;
+
+        // 1) HDR：保 HDR 时输出 HEVC 10-bit；强制 H.264 时只能 tonemap→SDR。
+        if (isHdr && !alwaysH264)
+        {
+            if (hwHevc is { } enc)
+            {
+                return new VideoEncoderSelection(HwHdrVideoArgs(enc), "", ",format=p010le",
+                    HdrColorArgs(colorPrimaries, colorTransfer, colorSpace));
+            }
+            if (x265Available)
+            {
+                return new VideoEncoderSelection(
+                    HdrVideoArgs(colorPrimaries, colorTransfer, colorSpace, maxrateK), "", ",format=yuv420p10le", []);
+            }
+            return TonemappedSdrSelection(hwH264, maxrateK);
+        }
+
+        // 2) HDR 源但强制 H.264：先 tonemap 成 SDR 再编码。
+        if (isHdr && alwaysH264)
+        {
+            return TonemappedSdrSelection(hwH264, maxrateK);
+        }
+
+        // 3) SDR：跟随源（HEVC 保 HEVC）或强制 H.264。
+        if (sourceIsHevc && !alwaysH264)
+        {
+            if (hwHevc is { } enc) return new VideoEncoderSelection(HwHevcVideoArgs(enc), "", "", []);
+            if (x265Available) return new VideoEncoderSelection(SdrHevcVideoArgs(maxrateK), "", "", []);
+            // 无任何 HEVC 编码器：退回 H.264。
+        }
+        if (hwH264 is { } h264) return new VideoEncoderSelection(HwH264VideoArgs(h264), "", "", []);
+        return new VideoEncoderSelection(SdrH264VideoArgs(maxrateK), "", "", []);
+    }
+
+    private static VideoEncoderSelection TonemappedSdrSelection(string? hwH264, int? maxrateK)
+    {
+        const string prefix = "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,";
+        var encoder = hwH264 is { } enc ? HwH264VideoArgs(enc) : SdrH264VideoArgs(maxrateK);
+        return new VideoEncoderSelection(encoder, prefix, "", []);
+    }
+
+    /// <summary>
+    /// 选择编码候选链：主选 + 同编码的软件回退。保证「用户/源决定的编码」最终一定能产出——
+    /// 硬件编码器对个别输入会失败，此时回退到软件 libx265/libx264（仍是同一种编码，只换后端，绝不降级）。
+    /// 主选已是软件、或硬件与软件选择一致（硬件不可用时主选已落到软件）时只返回一个候选。
+    /// </summary>
+    internal static IReadOnlyList<VideoEncoderSelection> SelectVideoEncoderChain(
+        EncodeBackend backend, bool alwaysH264, bool sourceIsHevc, bool isHdr,
+        string? colorPrimaries, string? colorTransfer, string? colorSpace,
+        int? maxrateK, bool x265Available, Func<string, bool> available)
+    {
+        var primary = SelectVideoEncoder(backend, alwaysH264, sourceIsHevc, isHdr,
+            colorPrimaries, colorTransfer, colorSpace, maxrateK, x265Available, available);
+        if (!backend.PrefersHardware()) return [primary];
+        var softwareFallback = SelectVideoEncoder(EncodeBackend.Software, alwaysH264, sourceIsHevc, isHdr,
+            colorPrimaries, colorTransfer, colorSpace, maxrateK, x265Available, available);
+        return softwareFallback.EncoderArgs.SequenceEqual(primary.EncoderArgs)
+            ? [primary]
+            : [primary, softwareFallback];
     }
 
     public async Task<string> BurnAsync(
@@ -122,6 +282,8 @@ public sealed class FFmpegBurner : ISubtitleBurner
         int? maxHeight,
         TaskControlToken? control,
         Action<double> progress,
+        EncodeBackend backend = EncodeBackend.Auto,
+        bool alwaysH264 = false,
         string? outputTag = null,
         CancellationToken ct = default)
     {
@@ -139,9 +301,9 @@ public sealed class FFmpegBurner : ISubtitleBurner
         int? targetShortSide = maxHeight is { } mh && mh > 0 && sourceShortSide is { } shortSide && shortSide > mh
             ? mh
             : null;
-        // -maxrate 上限：缩放后按目标档位推算；不缩放时取源整体码率，缺失再按源档位推算。
-        // 档位维度同样用短边（竖屏 1080×1920 是 1080p 档，不是 4K 档）。
-        var maxrateK = MaxrateK(probe.BitRateBps, sourceShortSide, targetShortSide);
+        // -maxrate 上限：仅在缩放（用户开启「缩放到 1080p」）时按目标档位封顶，压小体积。
+        // 不缩放（保持源分辨率）时为 null → 软件走纯 CRF、硬件走纯恒定质量，全分辨率输出画质/参数一致。
+        int? maxrateK = targetShortSide is { } target ? MaxrateK(probe.BitRateBps, sourceShortSide, target) : null;
 
         // 2. 临时目录：字幕转成 subs.ass 并把 ffmpeg 工作目录设到这里，
         //    规避 subtitles 滤镜对路径里冒号/引号/中文的转义问题。
@@ -197,44 +359,17 @@ public sealed class FFmpegBurner : ISubtitleBurner
 
         try
         {
-            // 3. 滤镜与参数
+            // 3. 编码器选择：按 后端 / 源编码 / HDR / 是否强制 H.264 决定用硬件还是软件、何种编码。
             string[] copyAudio = ["-c:a", "copy"];
             string[] aacAudio = ["-c:a", "aac", "-b:a", "192k"];
-            // 质量优先、体积不超源：libx264 + CRF 恒定质量；-maxrate/-bufsize 给一个不低于源的
-            // 上限封顶，避免高复杂度片段码率失控。
-            string[] sdrVideo =
-            [
-                "-c:v", "libx264", "-crf", "20", "-preset", "medium",
-                "-pix_fmt", "yuv420p",
-                "-maxrate", $"{maxrateK}k", "-bufsize", $"{maxrateK * 2}k",
-            ];
-
-            // HDR 源：用 libx265 10-bit 保 HDR；x265 不可用则回退 tonemap→SDR(libx264)。与 macOS 三路分支一致。
-            // 字幕仍是 SDR 白字，叠在 BT.2020/PQ 画面上由 subtitles 滤镜处理。
-            string[] softwareVideo;
-            string videoFilter;
             var x265Available = EncoderAvailable("libx265", ffmpeg);
-            if (probe.IsHdr && x265Available)
-            {
-                softwareVideo = HdrVideoArgs(probe.ColorPrimaries, probe.ColorTransfer, probe.ColorSpace, maxrateK);
-                // 字幕叠加后保持 10-bit，避免被降到 8-bit 丢 HDR。
-                videoFilter = filter + ",format=yuv420p10le";
-            }
-            else if (probe.IsHdr)
-            {
-                // x265 不可用：先 tonemap 成 SDR 再叠字幕（画质降级，但仍能烧录而非直接失败）。
-                softwareVideo = sdrVideo;
-                videoFilter = "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," + filter;
-            }
-            else
-            {
-                softwareVideo = sdrVideo;
-                videoFilter = filter;
-            }
-
-            var head = new List<string> { "-y", "-i", video, "-vf", videoFilter };
-            List<string> Tail(IReadOnlyList<string> audio) =>
-                [.. audio, "-movflags", "+faststart", "-nostats", "-progress", "pipe:1", "out.mp4"];
+            bool Available(string enc) => EncoderAvailable(enc, ffmpeg);
+            var sourceIsHevc = (probe.CodecName ?? "").ToLowerInvariant() is "hevc" or "h265";
+            // 候选链：主选（按后端）+ 同编码的软件回退。硬件失败时退到软件同一种编码，绝不降级。
+            var candidates = SelectVideoEncoderChain(
+                backend, alwaysH264, sourceIsHevc, probe.IsHdr,
+                probe.ColorPrimaries, probe.ColorTransfer, probe.ColorSpace,
+                maxrateK, x265Available, Available);
 
             // 4. 跑 ffmpeg，stdout 的 -progress 输出换算进度。
             //    onStart 登记 pid 到 control：暂停时挂起 ffmpeg 进程树。
@@ -273,26 +408,46 @@ public sealed class FFmpegBurner : ISubtitleBurner
                         "烧录进程超过 2 分钟没有任何输出，疑似挂死，已自动中止（可重试）。",
                         "The encoder produced no output for 2 minutes and was stopped (you can retry)."));
                 }
-            }
-
-            var (status, stderrTail) = await Run([.. head, .. softwareVideo, .. Tail(copyAudio)]).ConfigureAwait(false);
-            control?.SetActivePid(0);
-
-            // 5. 首跑失败 → 用 aac 音轨重试一次（音轨 copy 不进 mp4 容器是最常见原因，
-            //    字符串匹配 ffmpeg 文案会随版本漂移，干脆除不可修复错误外都重试，代价小）。
-            if (status != 0 && control?.IsCancelled != true)
-            {
-                var lower = stderrTail.ToLowerInvariant();
-                var unfixable = lower.Contains("error parsing filterchain")
-                    || lower.Contains("no such filter")
-                    || lower.Contains("no such file");
-                if (!unfixable)
+                finally
                 {
-                    try { File.Delete(Path.Combine(tempDir, "out.mp4")); } catch { /* 忽略 */ }
-                    (status, stderrTail) = await Run([.. head, .. softwareVideo, .. Tail(aacAudio)]).ConfigureAwait(false);
                     control?.SetActivePid(0);
                 }
             }
+
+            // 字幕滤镜缺失（libass）这类错误换编码器也修不好：命中即终止，不浪费后续重编码。
+            static bool IsUnfixable(string tail)
+            {
+                var lower = tail.ToLowerInvariant();
+                return lower.Contains("error parsing filterchain")
+                    || lower.Contains("no such filter")
+                    || lower.Contains("no such file");
+            }
+
+            // 依次尝试候选编码；每个候选先 copy 音轨，失败再用 aac。硬件失败 → 进入下一个候选（软件同编码）。
+            var status = -1;
+            var stderrTail = "";
+            foreach (var selection in candidates)
+            {
+                var videoFilter = selection.FilterPrefix + filter + selection.FilterSuffix;
+                var head = new List<string> { "-y", "-i", video, "-vf", videoFilter };
+                List<string> Tail(IReadOnlyList<string> audio) =>
+                    [.. audio, .. selection.ColorArgs, "-movflags", "+faststart", "-nostats", "-progress", "pipe:1", "out.mp4"];
+
+                var advanceToNextCandidate = false;
+                foreach (var audio in new[] { copyAudio, aacAudio })
+                {
+                    try { File.Delete(Path.Combine(tempDir, "out.mp4")); } catch { /* 忽略 */ }
+                    (status, stderrTail) = await Run([.. head, .. selection.EncoderArgs, .. Tail(audio)]).ConfigureAwait(false);
+                    if (status == 0) break;
+                    if (control?.IsCancelled == true) throw MoongateException.Cancelled();
+                    if (IsUnfixable(stderrTail)) { advanceToNextCandidate = false; break; }
+                    // copy 音轨失败常因音频不进 mp4 容器：aac 再试（同候选）。
+                    advanceToNextCandidate = true;
+                }
+                if (status == 0 || IsUnfixable(stderrTail)) break;
+                _ = advanceToNextCandidate; // 本候选 copy/aac 都失败：进入下一候选（软件回退）。
+            }
+
             if (status != 0)
             {
                 // 取消归一化：onStart 在取消时杀了进程树，ffmpeg 以非 0 退出，
@@ -434,25 +589,21 @@ public sealed class FFmpegBurner : ISubtitleBurner
         targetShortSide is { } th ? (isPortrait ? $"scale={th}:-2" : $"scale=-2:{th}") : null;
 
     /// <summary>
-    /// 计算 -maxrate 的 k 值（CRF 编码下仅作封顶，防高复杂度片段码率失控、体积膨胀）。
-    /// 实测校准：目标是体积压回源附近，不再用任何下限抬高低码率源。
-    /// - 不缩放：min(源整体码率 × 1.5, 按源高度档位上限)；缺源码率时退回档位上限。
-    /// - 缩放：min(目标高度档位上限, 源整体码率 × 1.5)；源更小时不浪费。
+    /// 计算缩放场景的 -maxrate k 值（CRF/质量编码下仅作封顶）。仅在用户开启「缩放到 1080p」时使用：
+    /// 按目标分辨率档位封顶，并与源码率×1.5 取 min（源更小时不浪费）。
+    /// 不缩放场景不调用本函数（走纯 CRF / 恒定质量，无上限），保证全分辨率输出画质一致。
     /// 档位上限：2160p≈16000，1440p≈10000，1080p≈6000，720p≈3000，480p≈1500。
     /// </summary>
-    internal static int MaxrateK(double? sourceBitRateBps, int? sourceHeight, int? targetHeight)
+    internal static int MaxrateK(double? sourceBitRateBps, int? sourceHeight, int targetHeight)
     {
         int? sourceK = sourceBitRateBps is { } bps && bps > 0 ? (int)(bps / 1000 * 1.5) : null;
-        if (targetHeight is { } target)
-        {
-            // 缩放场景：按目标分辨率封顶，并与源码率×1.5 取 min（源更小时不浪费）。
-            var tier = BitrateForHeight(target);
-            return Math.Min(tier, sourceK ?? tier);
-        }
-        // 不缩放：以源码率×1.5 为上限，并按源高度档位封顶；缺源码率退回档位。
-        var tierK = sourceHeight is { } height ? BitrateForHeight(height) : 6000;
-        return sourceK is { } k ? Math.Min(k, tierK) : tierK;
+        var tier = BitrateForHeight(targetHeight);
+        return Math.Min(tier, sourceK ?? tier);
     }
+
+    /// <summary>-maxrate/-bufsize 参数：仅缩放场景（maxrateK 非 null）才封顶；null 时为空（纯 CRF）。</summary>
+    internal static string[] MaxrateFlags(int? maxrateK) =>
+        maxrateK is { } k ? ["-maxrate", $"{k}k", "-bufsize", $"{k * 2}k"] : [];
 
     internal static int BitrateForHeight(int height) => height switch
     {
@@ -493,13 +644,15 @@ public sealed class FFmpegBurner : ISubtitleBurner
     // MARK: ASS 生成（双语两级字号，按视频长宽比自适应）
 
     private const int ChineseFontSize = 15;
-    private const int OriginalFontSize = 11;
+    /// <summary>原文字号相对译文字号的比例（不分语言，永远 80%）。</summary>
+    private const double OriginalSizeRatio = 0.8;
+    /// <summary>原文不透明度（80%）对应的 ASS alpha 十六进制（00=不透明，FF=全透明）。round((1-0.8)*255)=51=0x33。</summary>
+    internal const string OriginalAlphaHex = "33";
 
     /// <summary>
     /// 按视频长宽比推导的 ASS 布局参数。
-    /// 字号仍按「高度的固定比例」调校（横屏 16:9 下 15/288≈5.2% 视频高），
-    /// 但阅读宽度不能跟着视频宽度无限增长：16:9 下约 26 个中文字符一行，
-    /// 竖屏维持约 19 个字符，超宽屏最多约 30 个字符。
+    /// 字号按「高度的固定比例」调校（横屏 16:9 下译文 15/288≈5.2% 视频高，原文为其 80%）。
+    /// 换行采用自动布局：左右只留最小边距（约画面 4%），只有真的放不下才换行。
     /// </summary>
     internal readonly struct AssLayout
     {
@@ -511,6 +664,8 @@ public sealed class FFmpegBurner : ISubtitleBurner
         public int MarginV => 20;
         /// <summary>中文行预换行容量（字符数）；null 表示不预换行（交给 libass）。</summary>
         public int? CjkWrapCapacity { get; }
+        /// <summary>原文若为 CJK 文字（日/韩）的按字预换行容量（按更小的 OriginalSize 算）；null 表示不预换行。</summary>
+        public int? OriginalCjkWrapCapacity { get; }
         /// <summary>原文（拉丁文字）行按词预换行容量（字符数）；null 表示不预换行。</summary>
         public int? LatinWrapCapacity { get; }
 
@@ -519,48 +674,21 @@ public sealed class FFmpegBurner : ISubtitleBurner
             var safeAspect = double.IsFinite(aspect) && aspect > 0.1 ? Math.Min(aspect, 4.0) : 16.0 / 9.0;
             // 脚本坐标系与视频同比例（取偶数），横向边距/字号的单位才不会被拉伸
             PlayResX = Math.Max(120, (int)Math.Round(288.0 * safeAspect / 2, MidpointRounding.AwayFromZero) * 2);
-            if (safeAspect >= 1)
-            {
-                ChineseSize = ChineseFontSize;
-                OriginalSize = OriginalFontSize;
-            }
-            else
-            {
-                var scale = Math.Sqrt(safeAspect / (16.0 / 9.0));
-                ChineseSize = Math.Max(8, (int)Math.Round(ChineseFontSize * scale, MidpointRounding.AwayFromZero));
-                OriginalSize = Math.Max(6, (int)Math.Round(OriginalFontSize * scale, MidpointRounding.AwayFromZero));
-            }
-            var targetCapacity = TargetCjkCapacity(safeAspect);
-            var baseMargin = Math.Max(5, (int)Math.Round(PlayResX * 0.03, MidpointRounding.AwayFromZero));
-            var readableMargin = (int)Math.Ceiling((PlayResX - targetCapacity * ChineseSize) / 2.0);
-            MarginH = Math.Max(baseMargin, readableMargin);
-            // 中文无空格，部分 libass 构建只在空格处断行，长行会横向溢出；
-            // 一律自己按容量预换行（同时把行切得均衡，避免「一长一短」的难看断行）。
-            var availableCapacity = (PlayResX - MarginH * 2) / Math.Max(ChineseSize, 1);
-            var capacity = Math.Min(availableCapacity, targetCapacity);
-            CjkWrapCapacity = capacity >= 6 ? capacity : null;
-            // 原文（拉丁）按词换行容量：拉丁字形平均宽约为字号的 0.55em（含大写/空格的保守上界），
-            // 同样宽度能容纳更多字符。WrapStyle:2 下没有 libass 兜底换行，容量必须保守以防整行溢出画面。
-            var readableWidth = (double)(PlayResX - MarginH * 2);
-            var latinCapacity = (int)Math.Floor(readableWidth / (OriginalSize * 0.55));
+            ChineseSize = safeAspect >= 1
+                ? ChineseFontSize
+                : Math.Max(8, (int)Math.Round(ChineseFontSize * Math.Sqrt(safeAspect / (16.0 / 9.0)), MidpointRounding.AwayFromZero));
+            // 原文字号永远是译文的 80%（不分语言）。
+            OriginalSize = Math.Max(6, (int)Math.Round(ChineseSize * OriginalSizeRatio, MidpointRounding.AwayFromZero));
+            // 自动布局：左右只留一个最小边距（约画面 4%），只有真放不下才换行。
+            MarginH = Math.Max(5, (int)Math.Round(PlayResX * 0.04, MidpointRounding.AwayFromZero));
+            var usableWidth = (double)(PlayResX - MarginH * 2);
+            var cjkCapacity = (int)(usableWidth / Math.Max(ChineseSize, 1));
+            CjkWrapCapacity = cjkCapacity >= 6 ? cjkCapacity : null;
+            var originalCjk = (int)(usableWidth / Math.Max(OriginalSize, 1));
+            OriginalCjkWrapCapacity = originalCjk >= 6 ? originalCjk : null;
+            // 原文（拉丁）按词换行容量：拉丁字形平均宽约为字号的 0.55em（含大写/空格的保守上界）。
+            var latinCapacity = (int)(usableWidth / (OriginalSize * 0.55));
             LatinWrapCapacity = latinCapacity >= 12 ? latinCapacity : null;
-        }
-
-        private static int TargetCjkCapacity(double aspect)
-        {
-            const double wide = 16.0 / 9.0;
-            if (aspect < 1)
-            {
-                var t = Math.Clamp((aspect - 9.0 / 16.0) / (1.0 - 9.0 / 16.0), 0, 1);
-                return (int)Math.Round(19.0 + t * 3.0, MidpointRounding.AwayFromZero);
-            }
-            if (aspect <= wide)
-            {
-                var t = Math.Clamp((aspect - 1.0) / (wide - 1.0), 0, 1);
-                return (int)Math.Round(22.0 + t * 4.0, MidpointRounding.AwayFromZero);
-            }
-            var ultraWideT = Math.Clamp((aspect - wide) / (4.0 - wide), 0, 1);
-            return (int)Math.Round(26.0 + ultraWideT * 4.0, MidpointRounding.AwayFromZero);
         }
     }
 
@@ -585,36 +713,34 @@ public sealed class FFmpegBurner : ISubtitleBurner
                 .ToList();
             if (lines.Count == 0) continue;
 
-            // 双语条目：含中日韩文字的行排上面（正常字号），其余原文行排下面（小字号）。
-            // 不论源文件里两种语言的顺序如何，烧录出来都是中文在上。
+            // 双语条目：简体中文译文排上面（正常字号），原文排下面（80% 字号 + 80% 不透明度）。
+            // 判据是「简体中文」而非「含 CJK」：日文（假名）、韩文（谚文）也含 CJK 区字符，
+            // 若按含 CJK 归类会把日韩原文误判成译文、用满字号且不缩小。简体中文 = 含汉字且不含假名/谚文。
             string text;
-            var cjkLines = new List<string>();
-            foreach (var cjk in lines.Where(ContainsCjk))
+            var zhLines = new List<string>();
+            foreach (var zh in lines.Where(IsSimplifiedChineseLine))
             {
-                if (layout.CjkWrapCapacity is { } capacity) cjkLines.AddRange(WrapCjkLine(cjk, capacity));
-                else cjkLines.Add(cjk);
+                if (layout.CjkWrapCapacity is { } capacity) zhLines.AddRange(WrapCjkLine(zh, capacity));
+                else zhLines.Add(zh);
             }
-            var otherLines = lines.Where(l => !ContainsCjk(l)).ToList();
-            // 原文（拉丁）行：源 SRT 常把一句话拆成多行，窄列下显得很碎。
-            // 先合并成整句、再按词重新折行，行宽与中文阅读列对齐。
-            if (layout.LatinWrapCapacity is { } latinCapacity && otherLines.Count > 0)
+            // 原文行（非简体中文）：可能是拉丁文字（按词折行）或 CJK 文字（日韩，按字折行）。
+            var rawOtherLines = lines.Where(l => !IsSimplifiedChineseLine(l)).ToList();
+            var otherLines = WrapOriginalLines(rawOtherLines, layout);
+            if (zhLines.Count > 0 && otherLines.Count > 0)
             {
-                otherLines = WrapLatinLine(string.Join(" ", otherLines), latinCapacity);
-            }
-            if (cjkLines.Count > 0 && otherLines.Count > 0)
-            {
-                text = string.Join("\\N", cjkLines)
-                    + $"\\N{{\\fs{layout.OriginalSize}}}"
+                // 原文整体（字+描边）淡到 80% 不透明：\alpha 同时作用于 Primary/Outline/Back。
+                text = string.Join("\\N", zhLines)
+                    + $"\\N{{\\fs{layout.OriginalSize}\\alpha&H{OriginalAlphaHex}&}}"
                     + string.Join("\\N", otherLines);
             }
-            else if (cjkLines.Count > 0)
+            else if (zhLines.Count > 0)
             {
-                text = string.Join("\\N", cjkLines);
+                text = string.Join("\\N", zhLines);
             }
             else
             {
-                // 纯原文（无中文）条目：也按词折行，避免长英文行在窄列被 libass 乱断。
-                text = string.Join("\\N", otherLines);
+                // 纯原文（无中文译文）条目：用原文字号显示（仍折行，避免溢出/乱断）。
+                text = $"{{\\fs{layout.OriginalSize}}}" + string.Join("\\N", otherLines);
             }
             dialogues.Add($"Dialogue: 0,{start},{end},ZH,,0,0,0,,{text}");
         }
@@ -745,6 +871,48 @@ public sealed class FFmpegBurner : ISubtitleBurner
                 or >= 0x3400 and <= 0x4DBF               // 扩展 A
                 or >= 0x3040 and <= 0x30FF               // 日文假名
                 or >= 0xAC00 and <= 0xD7AF);             // 谚文
+
+    /// <summary>日文假名（平假名/片假名）。</summary>
+    private static bool HasKana(string text) =>
+        text.EnumerateRunes().Any(r => r.Value is >= 0x3040 and <= 0x30FF);
+
+    /// <summary>朝鲜文谚文音节/字母。</summary>
+    private static bool HasHangul(string text) =>
+        text.EnumerateRunes().Any(r => r.Value is (>= 0xAC00 and <= 0xD7AF) or (>= 0x1100 and <= 0x11FF));
+
+    /// <summary>汉字（CJK 统一表意，含扩展 A）。</summary>
+    private static bool HasHan(string text) =>
+        text.EnumerateRunes().Any(r => r.Value is (>= 0x4E00 and <= 0x9FFF) or (>= 0x3400 and <= 0x4DBF));
+
+    /// <summary>
+    /// 是否「简体中文译文行」：含汉字且不含假名/谚文。译文恒为简体中文（含汉字、无假名/谚文）；
+    /// 日文必含假名、韩文必含谚文，据此与原文区分，避免日韩原文（也落在 CJK 区）被误判成译文。
+    /// </summary>
+    internal static bool IsSimplifiedChineseLine(string text) =>
+        HasHan(text) && !HasKana(text) && !HasHangul(text);
+
+    /// <summary>
+    /// 折行原文（非简体中文）：CJK 文字（日/韩）按字折行，拉丁文字按词折行。
+    /// 先把源 SRT 的碎行合并，再按对应容量重排；无可用容量时原样返回（交给 libass）。
+    /// </summary>
+    internal static List<string> WrapOriginalLines(IReadOnlyList<string> rawLines, AssLayout layout)
+    {
+        if (rawLines.Count == 0) return [];
+        var isCjkText = rawLines.Any(l => HasKana(l) || HasHangul(l) || HasHan(l));
+        if (isCjkText)
+        {
+            // 日韩等无空格 CJK 原文：合并后按字折行（容量按更小的原文字号算）。
+            var joined = string.Concat(rawLines);
+            return layout.OriginalCjkWrapCapacity is { } capacity
+                ? WrapCjkLine(joined, capacity)
+                : [joined];
+        }
+        // 拉丁原文：合并后按词折行。
+        var joinedLatin = string.Join(" ", rawLines);
+        return layout.LatinWrapCapacity is { } latinCapacity
+            ? WrapLatinLine(joinedLatin, latinCapacity)
+            : [joinedLatin];
+    }
 
     /// <summary>切行用的单字符判定；四个区段都在 BMP，按 char 比较即可（与 ContainsCjk 同区段）。</summary>
     private static bool IsCjkChar(char c) =>

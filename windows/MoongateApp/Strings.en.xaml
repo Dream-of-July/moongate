@@ -48,7 +48,7 @@
     <sys:String x:Key="L.Summary.Hint">Let AI tell you what this video is before downloading.</sys:String>
     <sys:String x:Key="L.Summary.Running">Understanding the video…</sys:String>
     <sys:String x:Key="L.Summary.Regenerate">↻ Regenerate</sys:String>
-    <sys:String x:Key="L.Summary.Unconfigured">Summary needs an AI service configured in Settings (shared with translation): base URL, model, and credential.</sys:String>
+    <sys:String x:Key="L.Summary.Unconfigured">Summary needs a usable AI service configured in Settings: base URL, model, and credential.</sys:String>
 
     <!-- Output options -->
     <sys:String x:Key="L.Output.Section">Output options</sys:String>
@@ -126,7 +126,11 @@
     <sys:String x:Key="L.Settings.Language">Language</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">Follow system</sys:String>
     <sys:String x:Key="L.Settings.LangHint">Takes effect immediately; status text of running tasks switches on their next refresh.</sys:String>
+    <sys:String x:Key="L.Settings.AIService">AI service</sys:String>
+    <sys:String x:Key="L.Settings.AIServiceHint">The default AI service is reused by translation and summaries; override below when a different model is needed.</sys:String>
     <sys:String x:Key="L.Settings.Translation">Translation service</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefault">Translation follows the default AI service</sys:String>
+    <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">Reuses the service above by default. Turn this off to give translation its own model or gateway.</sys:String>
     <sys:String x:Key="L.Settings.Protocol">API protocol</sys:String>
     <sys:String x:Key="L.Settings.BaseUrl">Service URL</sys:String>
     <sys:String x:Key="L.Settings.Credential">API credential</sys:String>
@@ -144,11 +148,22 @@
     <sys:String x:Key="L.Settings.Testing">Testing…</sys:String>
     <sys:String x:Key="L.Settings.TestOk">Connection OK</sys:String>
     <sys:String x:Key="L.Settings.TestFailedFmt">Connection failed: {0}</sys:String>
+    <sys:String x:Key="L.Settings.SummaryConfig">AI summary</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefault">Summary follows the default AI service</sys:String>
+    <sys:String x:Key="L.Settings.SummaryFollowsDefaultHint">Uses the service above by default. Turn this off to give summaries their own model or gateway.</sys:String>
+    <sys:String x:Key="L.Settings.SummaryModelHint">Summaries use this model; leave it empty and the summary button stays unconfigured.</sys:String>
     <sys:String x:Key="L.Settings.SubtitleStyle">Subtitle style</sys:String>
     <sys:String x:Key="L.Settings.StyleLabel">Chinese subtitle style</sys:String>
     <sys:String x:Key="L.Settings.StyleBilingual">Bilingual (original + Chinese)</sys:String>
     <sys:String x:Key="L.Settings.StyleChineseOnly">Chinese only</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">Burn-in quality</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackend">Encoder</sys:String>
+    <sys:String x:Key="L.Settings.EncodeAuto">Auto</sys:String>
+    <sys:String x:Key="L.Settings.EncodeHardware">Prefer hardware</sys:String>
+    <sys:String x:Key="L.Settings.EncodeSoftware">Software</sys:String>
+    <sys:String x:Key="L.Settings.EncodeBackendHint">Auto prefers NVENC / QSV / AMF. Software encoding is slower but more predictable.</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264">Always output H.264</sys:String>
+    <sys:String x:Key="L.Settings.BurnAlwaysH264Hint">Best for compatibility. When off, Moongate keeps the source codec when possible, such as HEVC input to HEVC output.</sys:String>
     <sys:String x:Key="L.Settings.Limit1080">Scale to 1080p when burning high-res video (faster and smaller, recommended)</sys:String>
     <sys:String x:Key="L.Settings.Limit1080Hint">When off, burns at the source resolution (4K is much slower and larger). Only affects subtitle burn-in, not plain downloads.</sys:String>
     <sys:String x:Key="L.Settings.Performance">Performance</sys:String>

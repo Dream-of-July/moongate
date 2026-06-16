@@ -61,65 +61,10 @@ final class AppleTranslationExecutorTests: XCTestCase {
         ])
     }
 
-    func testAppleTranslationPathPreservesOriginalTextWhenFewResponsesAreMissing() async throws {
+    func testAppleTranslationPathFailsWhenAnyResponseIsMissing() async throws {
         let executor = RecordingAppleTranslationExecutor(responses: [
             1: "第一句",
             3: "第三句"
-        ])
-        let translator = ConfiguredTranslator(
-            settings: AppSettings(
-                translationEngine: .appleTranslationHighFidelity,
-                translationBaseURL: "",
-                translationModel: "",
-                translationAuthToken: ""
-            ),
-            appleTranslationExecutor: executor
-        )
-        let source = try writeSRT("""
-        1
-        00:00:01,000 --> 00:00:02,000
-        First.
-
-        2
-        00:00:03,000 --> 00:00:04,000
-        Second.
-
-        3
-        00:00:05,000 --> 00:00:06,000
-        Third.
-
-        """)
-
-        let output = try await translator.translate(
-            srtFile: source,
-            style: .bilingual,
-            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
-            control: nil
-        ) { _ in }
-
-        let written = try String(contentsOf: output, encoding: .utf8)
-        XCTAssertEqual(written, """
-        1
-        00:00:01,000 --> 00:00:02,000
-        第一句
-        First.
-
-        2
-        00:00:03,000 --> 00:00:04,000
-        Second.
-
-        3
-        00:00:05,000 --> 00:00:06,000
-        第三句
-        Third.
-
-        """)
-    }
-
-    func testAppleTranslationPathFailsWhenTooManyResponsesAreMissing() async throws {
-        let executor = RecordingAppleTranslationExecutor(responses: [
-            1: "第一句",
-            2: "第二句"
         ])
         let translator = ConfiguredTranslator(
             settings: AppSettings(
@@ -143,14 +88,6 @@ final class AppleTranslationExecutorTests: XCTestCase {
         00:00:05,000 --> 00:00:06,000
         Three.
 
-        4
-        00:00:07,000 --> 00:00:08,000
-        Four.
-
-        5
-        00:00:09,000 --> 00:00:10,000
-        Five.
-
         """)
 
         do {
@@ -160,9 +97,9 @@ final class AppleTranslationExecutorTests: XCTestCase {
                 context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
                 control: nil
             ) { _ in }
-            XCTFail("Expected excessive missing Apple Translation responses to fail.")
+            XCTFail("Expected missing Apple Translation responses to fail.")
         } catch MoongateError.translateFailed(let message) {
-            XCTAssertTrue(message.contains("缺失过多译文行"))
+            XCTAssertTrue(message.contains("缺失译文行"))
         }
     }
 

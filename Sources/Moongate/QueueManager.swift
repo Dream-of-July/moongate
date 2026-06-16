@@ -114,14 +114,19 @@ final class QueueManager: ObservableObject {
     var maxConcurrentDownloads: Int {
         didSet { downloadPool.wakeAll() }
     }
-    /// 同时压制数。
+    /// 同时压制数（设置里的原始值）。
     var maxConcurrentBurns: Int {
         didSet { burnPool.wakeAll() }
+    }
+    /// 实际压制并发上限：硬件编码后端时比原始值多放一路（编码走媒体引擎、不占 CPU），
+    /// 软件后端时等于原始值。由 syncConcurrency 从 settings.effectiveMaxConcurrentBurns 同步。
+    private var effectiveBurnCapacity: Int {
+        didSet { if effectiveBurnCapacity != oldValue { burnPool.wakeAll() } }
     }
 
     private let engine: any DownloadEngine
     private lazy var downloadPool = StageSlotPool { [weak self] in self?.maxConcurrentDownloads ?? 3 }
-    private lazy var burnPool = StageSlotPool { [weak self] in self?.maxConcurrentBurns ?? 2 }
+    private lazy var burnPool = StageSlotPool { [weak self] in self?.effectiveBurnCapacity ?? 2 }
     /// 翻译并发固定 2（每项内部还有 3 路分块并行，再高容易撞网关限流）。
     private lazy var translatePool = StageSlotPool { 2 }
     /// 正在占用槽位的项（暂停让位 / 阶段结束释放用）。带代际：重试后旧流水线的
@@ -140,6 +145,7 @@ final class QueueManager: ObservableObject {
         let settings = AppSettings.load()
         self.maxConcurrentDownloads = settings.maxConcurrentDownloads
         self.maxConcurrentBurns = settings.maxConcurrentBurns
+        self.effectiveBurnCapacity = settings.effectiveMaxConcurrentBurns
     }
 
     /// 设置保存后同步并发上限（didSet 会唤醒排队者）。
@@ -149,6 +155,10 @@ final class QueueManager: ObservableObject {
         }
         if maxConcurrentBurns != settings.maxConcurrentBurns {
             maxConcurrentBurns = settings.maxConcurrentBurns
+        }
+        // 后端切换（硬件/软件）会改变有效压制并发，即使原始压制数没变也要同步。
+        if effectiveBurnCapacity != settings.effectiveMaxConcurrentBurns {
+            effectiveBurnCapacity = settings.effectiveMaxConcurrentBurns
         }
     }
 
@@ -301,11 +311,14 @@ final class QueueManager: ObservableObject {
                         $0.isPostDownloadProcessing = true
                     }
                     do {
+                        // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
+                        let requestedHDRFallback = current.request.preferHDR
                         let transcoded = try await Transcoder().transcode(
                             inputFile: videoFile,
                             format: current.request.outputFormat,
                             sourceVCodec: nil,
-                            sourceIsHDR: current.request.preferHDR,
+                            sourceIsHDR: requestedHDRFallback,
+                            backend: settings.encodeBackend,
                             control: control
                         ) { [weak self] frac in
                             Task { @MainActor in
@@ -396,6 +409,8 @@ final class QueueManager: ObservableObject {
                     video: video,
                     subtitle: srtFile,
                     maxHeight: settings.maxBurnHeight,
+                    backend: settings.encodeBackend,
+                    alwaysH264: settings.burnAlwaysH264,
                     control: control,
                     outputTag: "（字幕版）"
                 ) { [weak self] p in
@@ -445,6 +460,8 @@ final class QueueManager: ObservableObject {
                     video: video,
                     subtitle: srtFile,
                     maxHeight: settings.maxBurnHeight,
+                    backend: settings.encodeBackend,
+                    alwaysH264: settings.burnAlwaysH264,
                     control: control
                 ) { [weak self] p in
                     Task { @MainActor in
@@ -519,6 +536,8 @@ final class QueueManager: ObservableObject {
                 video: video,
                 subtitle: zhSrt,
                 maxHeight: settings.maxBurnHeight,
+                backend: settings.encodeBackend,
+                alwaysH264: settings.burnAlwaysH264,
                 control: control
             ) { [weak self] p in
                 Task { @MainActor in
@@ -614,10 +633,13 @@ final class QueueManager: ObservableObject {
         guard let target = item(id), Self.isOpen(target.stage), !target.isPaused else { return }
         target.control.pause()
         // 让出占用的下载/压制槽位给其它任务；恢复时重新排队领取。
+        // 翻译请求不是本地可挂起进程，暂停后仍可能有分块请求在飞行中，不能释放翻译并发位。
         if let holding = holdingPool[id], holding.generation == target.generation {
-            holdingPool.removeValue(forKey: id)
-            holding.pool.release()
-            resumePool[id] = holding
+            if holding.pool !== translatePool {
+                holdingPool.removeValue(forKey: id)
+                holding.pool.release()
+                resumePool[id] = holding
+            }
         }
         update(id) { $0.isPaused = true }
     }
