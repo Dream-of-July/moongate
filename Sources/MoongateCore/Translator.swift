@@ -96,6 +96,12 @@ private let nonSpeechMarkerRegex: NSRegularExpression? = try? NSRegularExpressio
     options: [.caseInsensitive]
 )
 
+/// 音乐音符（U+2669–U+266C）：自动字幕用它标音乐/歌唱，全语言通用，直接从行内移除（裸 ♪ 歌词 ♪ 去符号留词）。
+private let musicalNoteCharacters: Set<Character> = ["♩", "♪", "♫", "♬"]
+
+/// 非语音词表。**注意**：方括号 `[]` / 角括号 `【】` 已按括号样式无条件清除（见 stripNonSpeechMarkers），
+/// 不再依赖本表；本表如今只作**圆括号 `()（）` 行内**的已知词兜底（圆括号保守，避免误删对白插入语）。
+/// 因此无需再为新语言往这里加词——通用清除靠括号样式，不靠词义。
 private let nonSpeechMarkerTerms: Set<String> = [
     "music", "bgm", "backgroundmusic", "instrumentalmusic", "song", "singing", "sings", "lyrics",
     "musica", "música", "musique", "musik", "muziek", "музыка", "♪",
@@ -121,7 +127,10 @@ private let nonSpeechMarkerTerms: Set<String> = [
     "dooropens", "doorcloses", "phonerings", "phoneringing", "ringing", "footsteps", "steps",
     "knocking", "knocks", "beep", "beeping", "bellrings", "alarm", "siren", "windblowing", "rainfalling",
     "门开", "門開", "开门", "開門", "关门", "關門", "门关", "門關", "脚步", "腳步", "脚步声", "腳步聲",
-    "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲"
+    "敲门", "敲門", "电话响", "電話響", "铃声", "鈴聲", "警报", "警報", "风声", "風聲", "雨声", "雨聲", "人群声", "人群聲",
+    // 日文写法（YouTube 日语自动字幕常见）：注意「音楽(楽)」与简体「音乐(乐)」、繁体「音樂(樂)」是不同的字，需单列。
+    "音楽", "演奏", "効果音", "歓声", "歓声と拍手", "拍手と歓声", "ため息", "溜め息", "吐息", "息",
+    "咳", "咳払い", "くしゃみ", "あくび", "鼻歌", "口笛", "物音", "足音", "ノイズ", "無音", "静寂", "沈黙"
 ]
 
 private func normalizedNonSpeechMarker(_ raw: String) -> String {
@@ -130,19 +139,36 @@ private func normalizedNonSpeechMarker(_ raw: String) -> String {
     }
 }
 
+/// 清除自动字幕的非语音标记（音效/掌声/音乐等），全语言通用，不靠词义靠括号样式：
+/// - 音符 ♪♫♬♩：直接移除；
+/// - 方括号 `[…]` / 角括号 `【…】`：自动字幕里几乎只用于音效，**无条件剥除**（任何语言）；
+/// - 圆括号 `(…)（…）`：保守——整行就是一个圆括号才删；行内仅命中词表才剥，以保留对白插入语/译注；
+/// - 「」『』 引号、《》〈〉 等不在 regex 内，不受影响。
+/// 整行清空后丢弃该行。
 private func stripNonSpeechMarkers(_ text: String) -> String {
     text.components(separatedBy: .newlines).compactMap { rawLine in
+        // 先去音符（全语言通用）。
+        var line = rawLine
+        line.removeAll { musicalNoteCharacters.contains($0) }
         guard let regex = nonSpeechMarkerRegex else {
-            let fallback = collapseSubtitleWhitespace(rawLine)
+            let fallback = collapseSubtitleWhitespace(line)
             return fallback.isEmpty ? nil : fallback
         }
-        var line = rawLine
         let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
         for match in matches.reversed() {
             guard let contentRange = Range(match.range(at: 1), in: line),
                   let markerRange = Range(match.range(at: 0), in: line) else { continue }
+            // 方括号 / 角括号：无条件剥（regex 内容上限 48 字已防失控）。
+            let opener = line[markerRange].first
+            if opener == "[" || opener == "【" {
+                line.replaceSubrange(markerRange, with: " ")
+                continue
+            }
+            // 圆括号（含全角）：整行就是这一个圆括号则删整行；否则仅已知词兜底，保留 (插入语)。
+            let isWholeLine = String(line[markerRange]).trimmingCharacters(in: .whitespaces)
+                == line.trimmingCharacters(in: .whitespaces)
             let marker = normalizedNonSpeechMarker(String(line[contentRange]))
-            if nonSpeechMarkerTerms.contains(marker) {
+            if isWholeLine || nonSpeechMarkerTerms.contains(marker) {
                 line.replaceSubrange(markerRange, with: " ")
             }
         }
@@ -1265,6 +1291,26 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     /// 每次请求翻译的字幕条数
     private static let chunkSize = 30
 
+    /// 整条字幕不超过这个条数时，整段作为单块翻译，给模型全曲/全片上下文，
+    /// 避免一句（尤其歌词）被切在分块边界上——跨行合并、重排只能在同一块内发生。
+    /// 歌曲一般 40~60 条，足够覆盖；超出则回到 chunkSize 分块并行。
+    /// 单块若撞上输出上限，translateChunk 会自动减半重试兜底。
+    private static let singleChunkMaxCues = 80
+
+    /// 计算分块区间：短字幕整首单块，长字幕按 chunkSize 顺序切分。
+    static func chunkRanges(forCueCount count: Int) -> [Range<Int>] {
+        guard count > 0 else { return [] }
+        if count <= singleChunkMaxCues { return [0..<count] }
+        var ranges: [Range<Int>] = []
+        var start = 0
+        while start < count {
+            let upper = min(start + chunkSize, count)
+            ranges.append(start..<upper)
+            start = upper
+        }
+        return ranges
+    }
+
     /// 翻译系统提示词。目标语言由 context 决定（简体中文 / 繁體中文 / English），不再写死。
     internal static func systemPrompt(
         targetLanguageDisplayName: String,
@@ -1283,6 +1329,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。
         2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。
         3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
+        4) 圆括号 (…) 或全角（…）里如果是音效、音乐、掌声、笑声、环境声等非语音提示，删掉不译；若是说话人真正说出的话、语气补充或必要说明，则保留并照常翻译。删除后该行通常还有其它内容，照常输出，不要因此减少行数。
         """
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
         if TranslationLanguage.normalizedScript(sourceLanguageCode ?? "") == "ja" {
@@ -1385,15 +1432,10 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
         // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
+        // 短字幕整段单块（见 chunkRanges），长字幕按 chunkSize 切分。
         // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
         var output = cues
-        var chunkRanges: [Range<Int>] = []
-        var rangeStart = 0
-        while rangeStart < cues.count {
-            let upper = min(rangeStart + Self.chunkSize, cues.count)
-            chunkRanges.append(rangeStart..<upper)
-            rangeStart = upper
-        }
+        let chunkRanges = Self.chunkRanges(forCueCount: cues.count)
         let maxInFlight = 3
         var merged: [Int: String] = [:]
         var completedCues = 0
