@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+    xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Moongate Updates</title>
+        <link>https://dream-of-july.github.io/moongate/</link>
+        <description>Moongate macOS updates</description>
+        <language>zh-cn</language>
+        <item>
+            <title>Moongate 0.7.0</title>
+            <link>https://github.com/Dream-of-July/moongate/releases/tag/v0.7.0</link>
+            <sparkle:version>700</sparkle:version>
+            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
+            <pubDate>Wed, 17 Jun 2026 15:50:18 +0000</pubDate>
+            <enclosure url="https://github.com/Dream-of-July/moongate/releases/download/v0.7.0/Moongate-macOS-v0.7.0.zip"
+                sparkle:edSignature="PlZnU/wgwsxr1qf9EMiraAHscJzs0lNC0eNxK0Pf97/T6bO4UwtEZ+AOEmZCHtGfrElU+MIOCYj9RZorLz6nBA==" length="4142628"
+                type="application/zip" />
+        </item>
+    </channel>
+</rss>
