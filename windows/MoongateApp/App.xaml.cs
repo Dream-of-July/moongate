@@ -72,8 +72,6 @@ public partial class App : Application
             Shutdown(1);
             return;
         }
-
-        RunFirstLaunchDependencyCheck(MainWindow!);
     }
 
     /// <summary>检测渲染能力并在必要时回退软件渲染，规避部分机器的白屏（硬件渲染初始化失败）。</summary>
@@ -109,7 +107,7 @@ public partial class App : Application
     }
 
     /// <summary>启动时检查依赖：缺失则弹模态进度窗逐项下载，完成前主窗口不可用。</summary>
-    private static void RunFirstLaunchDependencyCheck(Window owner)
+    internal static void RunFirstLaunchDependencyCheck(Window owner)
     {
         try
         {
