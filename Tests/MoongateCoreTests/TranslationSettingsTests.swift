@@ -116,7 +116,7 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(advice.terms.count, 2)
         let prompt = ConfiguredTranslator.systemPrompt(
             targetLanguageDisplayName: "简体中文",
-            sourceLanguageDisplayName: "日语",
+            sourceLanguageCode: "ja",
             advice: advice
         )
         XCTAssertTrue(prompt.contains("这是一首关于告别的歌曲。"))
@@ -125,33 +125,50 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Plusonica"))
         XCTAssertTrue(prompt.contains("不要把上下文里没有对应原文的信息加进译文"))
         XCTAssertTrue(prompt.contains("歌词"))
-        XCTAssertTrue(prompt.contains("画面感"))
         XCTAssertTrue(prompt.contains("呼吸感"))
         XCTAssertFalse(prompt.contains("不要擅自扩写"))
         // 源语言点名 + 自然语序/防悬空规则：避免日语语序直接漏进中文。
-        XCTAssertTrue(prompt.contains("日语"))
+        XCTAssertTrue(prompt.contains("正在把日语字幕翻译成简体中文"))
         XCTAssertTrue(prompt.contains("自然语序"))
         XCTAssertTrue(prompt.contains("不要让某行停在"))
+        // 拆行时不得在前面的行提前译出靠后行的动词、造成重复。
+        XCTAssertTrue(prompt.contains("不要提前把动词译出来"))
         // 上下文尾句不再要求逐字贴原文，改为允许同句相邻行间重排。
         XCTAssertFalse(prompt.contains("逐字逐句贴近原文"))
+        // 日语源语言：含少样本重排范例。
+        XCTAssertTrue(prompt.contains("日文→中文重排示例"))
+        XCTAssertTrue(prompt.contains("别让某行停在「你的」"))
+        // 歌曲：文学化改写 + 放宽不增不减（带护栏）。
+        XCTAssertTrue(prompt.contains("文学性"))
+        XCTAssertTrue(prompt.contains("放宽前面第 3 条"))
+        XCTAssertTrue(prompt.contains("不得编造原文完全没有的情节或事实"))
     }
 
-    func testSystemPromptOmitsSourceLanguageWhenUnknown() {
-        let withSource = ConfiguredTranslator.systemPrompt(
+    func testSystemPromptSourceLanguageAndJapaneseExamplesGating() {
+        let ja = ConfiguredTranslator.systemPrompt(
             targetLanguageDisplayName: "简体中文",
-            sourceLanguageDisplayName: "日语"
+            sourceLanguageCode: "ja"
         )
-        XCTAssertTrue(withSource.contains("正在把日语字幕翻译成简体中文"))
+        XCTAssertTrue(ja.contains("正在把日语字幕翻译成简体中文"))
+        XCTAssertTrue(ja.contains("日文→中文重排示例"))
 
-        let withoutSource = ConfiguredTranslator.systemPrompt(
+        let unknown = ConfiguredTranslator.systemPrompt(
             targetLanguageDisplayName: "简体中文",
-            sourceLanguageDisplayName: nil
+            sourceLanguageCode: nil
         )
-        // 不点名源语言（"正在把…字幕"句式消失）；"日语"作为规则1的通用举例仍会出现，不能据此断言。
-        XCTAssertFalse(withoutSource.contains("正在把"))
-        XCTAssertTrue(withoutSource.contains("把用户给出的字幕翻译成简体中文"))
-        // 自然语序规则与源语言无关，两种情况都应包含。
-        XCTAssertTrue(withoutSource.contains("自然语序"))
+        // 未知源语言：不点名、不加日语范例；自然语序规则与源语言无关，仍应在。
+        XCTAssertFalse(unknown.contains("正在把"))
+        XCTAssertTrue(unknown.contains("把用户给出的字幕翻译成简体中文"))
+        XCTAssertFalse(unknown.contains("日文→中文重排示例"))
+        XCTAssertTrue(unknown.contains("自然语序"))
+
+        // 非日语源语言（英语）：点名但不加日语范例。
+        let en = ConfiguredTranslator.systemPrompt(
+            targetLanguageDisplayName: "简体中文",
+            sourceLanguageCode: "en"
+        )
+        XCTAssertTrue(en.contains("正在把英语字幕翻译成简体中文"))
+        XCTAssertFalse(en.contains("日文→中文重排示例"))
     }
 
     func testSmartTranslationAdviceKeepsLegacySummaryOnlyJSONCompatible() throws {
@@ -188,6 +205,8 @@ final class TranslationSettingsTests: XCTestCase {
 
             XCTAssertTrue(prompt.contains(expectedHint), rawPreset)
             XCTAssertTrue(prompt.contains("测试摘要"), rawPreset)
+            // 文学化"放宽不增不减"只对歌曲开放，不得泄漏到其它内容类型。
+            XCTAssertFalse(prompt.contains("放宽前面第 3 条"), rawPreset)
         }
     }
 

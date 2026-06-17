@@ -1268,10 +1268,11 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     /// 翻译系统提示词。目标语言由 context 决定（简体中文 / 繁體中文 / English），不再写死。
     internal static func systemPrompt(
         targetLanguageDisplayName: String,
-        sourceLanguageDisplayName: String? = nil,
+        sourceLanguageCode: String? = nil,
         advice: TranslationPromptAdvice? = nil
     ) -> String {
         // 点名源语言能让模型针对日语/韩语等谓语后置、修饰语前置的语言主动调整语序；未知源语言时退回不点名的措辞。
+        let sourceLanguageDisplayName = TranslationLanguage.sourceDisplayName(for: sourceLanguageCode)
         let sourceClause = sourceLanguageDisplayName.map { "正在把\($0)字幕翻译成\(targetLanguageDisplayName)" }
             ?? "把用户给出的字幕翻译成\(targetLanguageDisplayName)"
         var prompt = """
@@ -1280,9 +1281,18 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         输出必须严格逐行 编号|译文，行数与输入完全一致、编号不变，不要输出任何其他内容。
         要求：
         1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。
-        2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。
+        2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。
         3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
         """
+        // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
+        if TranslationLanguage.normalizedScript(sourceLanguageCode ?? "") == "ja" {
+            prompt += """
+
+            日文→中文重排示例（务必按中文语序，不要留悬空成分）：
+            - 「左隣、あなたの」「横顔を月が照らした」→「你坐在我的左侧」「月光映照着你的侧脸」（领属词上移，别让某行停在「你的」）
+            - 「確かにほら救われたんだよ」「あなたに」→「你看，我确实被拯救了」「是被你拯救的」（把谓语补完整，别让某行只剩「被你」）
+            """
+        }
         guard let advice else { return prompt }
         prompt += "\n\n翻译前上下文：\n内容摘要：\(advice.summary)"
         if !advice.context.isEmpty {
@@ -1296,7 +1306,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         case .general:
             prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
         case .songLyrics:
-            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。翻译时优先保留画面感、情绪流动、意象和可吟唱的自然度；不必逐字贴着原句，但要守住原意、语气和每一句的情绪重心。若原文有重复、副歌或短句节奏，译文也尽量保留这种呼吸感。歌词里一句常被拆成多行短句，更要先把整句吃透再按自然语序重组分行；宁可让相邻几行整体顺畅，也不要逐行硬贴原文语序。"
+            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 3 条「不增不减」的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
         case .interviewConversation:
             prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
         case .tutorialHowTo:
@@ -1478,7 +1488,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             settings: settings,
             system: Self.systemPrompt(
                 targetLanguageDisplayName: context.targetLanguageDisplayName,
-                sourceLanguageDisplayName: TranslationLanguage.sourceDisplayName(for: context.sourceLanguage),
+                sourceLanguageCode: context.sourceLanguage,
                 advice: advice
             ),
             userContent: userContent,
