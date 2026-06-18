@@ -51,7 +51,7 @@
 
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
-| SETTINGS-001 | P1 | Both | In progress (Win done) | windows: SettingsWindow.xaml.cs | 行为修复，UI 路径 | Not validated on real hardware | Windows 登录跳转保存失败时保持窗口打开/不设 pending；macOS requestLogin/requestDependencySetup 待同样处理 |
+| SETTINGS-001 | P1 | Both | Done (code) | windows: SettingsWindow.xaml.cs; macOS: Sources/Moongate/ViewModel.swift | 行为修复 | Not validated on real hardware | 两端登录/依赖跳转在保存失败时保持设置窗打开、不设 pending、显示原因（macOS requestLogin/requestDependencySetup guard saveSettings()） |
 | MAC-DEP-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 卸载误删用户自装 Homebrew 包 |
 | PROC-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 暂停乐观更新，失败仍释放并发槽 |
 | PROC-MAC-002 | P1 | macOS | Not started | — | — | Not validated on real hardware | 取消可能留下孤儿 ffmpeg 子进程 |
@@ -92,7 +92,7 @@
 | Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
 | Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | Not started |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | Not started |
-| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **基本完成** — 仅剩 SETTINGS-001(mac)；其余 done |
+| Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **Done (code)** — 全部完成（真机/UI 验证待定） |
 | Phase 6 | UI/UX 与无障碍 | Not started（UI 重，难单测，需真机） |
 | Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | **Blocked** — 需 Apple Developer ID 与 Authenticode 证书等外部资源，本环境无法产出已签名包 |
 

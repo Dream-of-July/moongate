@@ -952,18 +952,19 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    /// 设置窗里点「登录 ××」：先保存设置并收起设置窗，等 sheet 收起后再弹登录窗。
+    /// 设置窗里点「登录 ××」：先保存设置再收起设置窗。保存失败则保持设置窗打开、不进入登录
+    /// （settingsNotice 已写明原因），避免静默丢掉用户刚改的草稿（SETTINGS-001）。
     func requestLogin(site: String) {
-        saveSettings()
+        guard saveSettings() else { return }
         pendingLoginSite = site
         showSettings = false
     }
 
-    /// 设置窗里点「配置依赖」：先保存设置并收起设置窗，再弹依赖配置窗，避免 sheet 叠 sheet。
+    /// 设置窗里点「配置依赖」：先保存设置再收起设置窗。保存失败则保持设置窗打开、不进入依赖流程。
     /// 与 requestLogin 一致先 save：设置窗 onDisappear 会用磁盘值回滚 model.settings，
     /// 不先落盘就会丢掉用户在设置里改了但还没点「完成」的草稿。
     func requestDependencySetup() {
-        saveSettings()
+        guard saveSettings() else { return }
         pendingDependencySetup = true
         showSettings = false
     }
