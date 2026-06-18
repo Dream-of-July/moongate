@@ -42,7 +42,7 @@
 |---|---|---|---|---|---|---|---|
 | WIN-UPD-001 | P0 | Windows | Done (code) | UpdateService.cs, App.xaml.cs, MainWindow.xaml.cs, SettingsWindow.xaml.cs, installer/installer.nsi, Strings.*.xaml | UpdateCheckerTests, 安装器 makensis 编译通过 | Not validated on real hardware | 队列 preflight + /UPDATEPID 等待 + 专用退出态；helper 进程未引入（用 NSIS 等待 PID 替代），需真机验证覆盖安装 |
 | SEC-COOKIE-001 | P0 | Both | Done (code) | win: CookieSites.cs/CookieFile.cs/Engine.cs/LoginWindow.xaml.cs/SettingsViewModel.cs/App.xaml.cs; mac: CookieSites.swift/Settings.swift/Engine.swift/LoginWebView.swift/SettingsView.swift/App.swift | CookieIsolationTests(16, win), CookieSitesTests(6, mac) | Not validated on real hardware | 两端按站点隔离 jar + 域过滤 + 认证 cookie 判定 + 旧文件迁移；WebView 导出/清除需真机验证 |
-| SEC-CRED-001 | P0 | Both | In progress (Win done) | win: CredentialStore.cs, Settings.cs, DpapiCredentialStore.cs, App.xaml.cs | SettingsTests.Credentials_*（迁移/不丢/无明文落盘，4） | Not validated on real hardware | Windows DPAPI 凭证存储 + 可注入抽象 + 事务化迁移（store 先写、成功才抹明文，失败不丢）；settings.json 不再含明文 Token；卸载删 %APPDATA%\Moongate 一并清凭证。**待**：macOS Keychain 侧；DPAPI 跨重启/换用户真机验证 |
+| SEC-CRED-001 | P0 | Both | Done (code) | win: CredentialStore.cs/Settings.cs/DpapiCredentialStore.cs/App.xaml.cs; mac: CredentialStore.swift/Settings.swift/App.swift | SettingsTests.Credentials_*(4)、TranslationSettingsTests.testCredentials*(3) | Not validated on real hardware | 两端 Token 移出 settings.json：Windows DPAPI、macOS Keychain；可注入抽象 + 事务化迁移（store 先写、成功才抹明文，失败不丢）；卸载/清数据删安全存储。**待真机验证**：DPAPI 跨重启/换用户、Keychain 首次授权 |
 | WIN-DEP-001 | P0 | Windows | Done (code) | DependencyWindow.xaml(.cs), Dependencies.cs, Strings.*.xaml | DependenciesTests.FormatBytes, i18n 进度测试 | Not validated on real hardware | 加取消按钮/可取消 token/关窗确认/字节+速度进度；断点续传未做 |
 | WIN-DEP-002 | P0 | Windows | Done (code) | SettingsWindow.xaml.cs, Dependencies.cs | DependenciesTests.RedownloadAll_NetworkFailure_KeepsExistingBinaries, PlanAll | Not validated on real hardware | 改为 staging 先下后换；SHA-256/PE 架构/能力校验留待 Phase 3 (DEP-WIN-003) |
 | DEP-SUPPLY-001 | P0 | Windows | In progress (机制完成) | windows/MoongateCore/Dependencies.cs | DependenciesTests.VerifyDownloadIntegrity*/FileSha256Hex* | Not validated on real hardware | SHA-256 校验机制 + DependencyDownload.Sha256 字段已就位（设置后下载即校验、不符拒装）；**待**：填入固定版本的真实哈希 manifest（需抓取真实发布二进制算 hash），并改 latest URL 为固定版本 |
@@ -105,9 +105,11 @@
 
 本批改动均为**可在本机用单测验证**的项。以下为剩余项的执行约束与建议，未盲目落地：
 
-### SEC-CRED-001（P0，凭证安全存储）——需评审 + 真机验证后落地
-**为何未在本会话落地**：这是对两端 `Settings` 凭证持久化的核心改造，DPAPI（Windows）/ Keychain（macOS）
-**无法在本机运行时验证**，且迁移写错会丢用户 Token。盲改违背「保护凭证 / 不堆未验证复杂度」。
+### SEC-CRED-001（P0，凭证安全存储）—— ✅ 已落地（代码 + 单测），仅余真机验证
+**已实现**（按下方原计划）：可注入 `ICredentialStore`/`CredentialStore` + Windows DPAPI / macOS Keychain
+实现 + 事务化迁移（store 先写、成功才抹明文、失败不丢），settings.json 不再含明文 Token，迁移编排用
+内存/抛错假存储单测覆盖。**仅余真机验证**：Windows DPAPI 跨重启/换用户解密、macOS Keychain 首次授权。
+原始实现计划保留如下供对照：
 
 **建议实现（可注入抽象 + 假存储单测迁移编排）**：
 1. 定义 `ICredentialStore`（C#）/ `CredentialStore`（Swift）：`Get/Set/Delete(key)`。

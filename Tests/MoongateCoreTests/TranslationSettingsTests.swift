@@ -563,8 +563,8 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: settingsURL.path))
         XCTAssertEqual(try filePermissions(at: settingsURL) & 0o777, 0o600)
-        let loaded = try JSONDecoder().decode(AppSettings.self, from: Data(contentsOf: settingsURL))
-        XCTAssertEqual(loaded.translationAuthToken, "TEST_SECRET_VALUE_DO_NOT_STORE")
+        // SEC-CRED-001：settings.json 不再含明文 Token（已进安全存储）。
+        XCTAssertFalse(try String(contentsOf: settingsURL, encoding: .utf8).contains("TEST_SECRET_VALUE_DO_NOT_STORE"))
         #endif
     }
 
@@ -584,8 +584,8 @@ final class TranslationSettingsTests: XCTestCase {
             .save(supportDirectory: directory, settingsFileURL: settingsURL)
 
         XCTAssertEqual(try filePermissions(at: settingsURL) & 0o777, 0o600)
-        let loaded = try JSONDecoder().decode(AppSettings.self, from: Data(contentsOf: settingsURL))
-        XCTAssertEqual(loaded.translationAuthToken, "TEST_SECRET_VALUE_DO_NOT_STORE")
+        // SEC-CRED-001：settings.json 不再含明文 Token（已进安全存储）。
+        XCTAssertFalse(try String(contentsOf: settingsURL, encoding: .utf8).contains("TEST_SECRET_VALUE_DO_NOT_STORE"))
         #endif
     }
 
@@ -645,6 +645,83 @@ final class TranslationSettingsTests: XCTestCase {
         let backups = try FileManager.default.contentsOfDirectory(atPath: currentDirectory.path)
             .filter { $0.hasPrefix("settings.corrupt-") }
         XCTAssertEqual(backups.count, 1)
+    }
+
+    // MARK: - SEC-CRED-001 凭证安全存储
+
+    private final class ThrowingCredentialStore: CredentialStore, @unchecked Sendable {
+        func get(_ key: String) -> String? { nil }
+        func set(_ key: String, _ value: String) throws { throw NSError(domain: "test", code: 1) }
+        func delete(_ key: String) {}
+    }
+
+    func testCredentialsMigrateLegacyPlaintextIntoStoreAndStripFromDisk() throws {
+        let prevStore = AppSettings.credentialStore
+        defer { AppSettings.credentialStore = prevStore }
+        let store = InMemoryCredentialStore()
+        AppSettings.credentialStore = store
+
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("月之门", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let settingsURL = dir.appendingPathComponent("settings.json")
+        // 旧版文件：明文 Token 直接编码进 JSON（encode(to:) 仍含 token）。
+        var legacy = AppSettings()
+        legacy.translationAuthToken = "secret-t"
+        legacy.aiAuthToken = "secret-ai"
+        try JSONEncoder().encode(legacy).write(to: settingsURL)
+
+        let loaded = AppSettings.load(supportDirectory: dir, legacySupportDirectory: root.appendingPathComponent("none"))
+
+        XCTAssertEqual(store.get("translationAuthToken"), "secret-t")
+        XCTAssertEqual(store.get("aiAuthToken"), "secret-ai")
+        XCTAssertEqual(loaded.translationAuthToken, "secret-t")
+        let raw = try String(contentsOf: settingsURL, encoding: .utf8)
+        XCTAssertFalse(raw.contains("secret-t"))
+        XCTAssertFalse(raw.contains("secret-ai"))
+    }
+
+    func testCredentialsSaveWritesNoPlaintextButRoundTripsViaStore() throws {
+        let prevStore = AppSettings.credentialStore
+        defer { AppSettings.credentialStore = prevStore }
+        let store = InMemoryCredentialStore()
+        AppSettings.credentialStore = store
+
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("月之门", isDirectory: true)
+        let settingsURL = dir.appendingPathComponent("settings.json")
+        var s = AppSettings()
+        s.translationAuthToken = "plaintext-xyz"
+        try s.save(supportDirectory: dir, settingsFileURL: settingsURL)
+
+        let raw = try String(contentsOf: settingsURL, encoding: .utf8)
+        XCTAssertFalse(raw.contains("plaintext-xyz"))
+        XCTAssertEqual(store.get("translationAuthToken"), "plaintext-xyz")
+        let loaded = AppSettings.load(supportDirectory: dir, legacySupportDirectory: root.appendingPathComponent("none"))
+        XCTAssertEqual(loaded.translationAuthToken, "plaintext-xyz")
+    }
+
+    func testCredentialsMigrationStoreFailureKeepsTokenNotLost() throws {
+        let prevStore = AppSettings.credentialStore
+        defer { AppSettings.credentialStore = prevStore }
+        AppSettings.credentialStore = ThrowingCredentialStore()
+
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("月之门", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let settingsURL = dir.appendingPathComponent("settings.json")
+        var legacy = AppSettings()
+        legacy.translationAuthToken = "secret-t"
+        try JSONEncoder().encode(legacy).write(to: settingsURL)
+
+        let loaded = AppSettings.load(supportDirectory: dir, legacySupportDirectory: root.appendingPathComponent("none"))
+
+        // 安全存储写入失败：Token 不丢——内存仍有，磁盘明文仍保留。
+        XCTAssertEqual(loaded.translationAuthToken, "secret-t")
+        XCTAssertTrue(try String(contentsOf: settingsURL, encoding: .utf8).contains("secret-t"))
     }
 
     func testLoadingSettingsMigratesLegacyCookiesEvenWhenLegacySettingsAbsent() throws {        #if os(Windows)

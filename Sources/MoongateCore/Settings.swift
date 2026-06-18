@@ -312,6 +312,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 上次 load 把损坏的 settings.json 备份后的路径（供 UI 一次性提示）；正常加载为 nil。
     public static var lastCorruptBackupPath: String?
 
+    /// 凭证安全存储（SEC-CRED-001）。App 启动时注入 Keychain 实现；默认内存实现供 CLI/测试。
+    public static var credentialStore: CredentialStore = InMemoryCredentialStore()
+
+    static let translationTokenKey = "translationAuthToken"
+    static let aiTokenKey = "aiAuthToken"
+    static let summaryTokenKey = "summaryAuthToken"
+
     public static func load() -> AppSettings {
         load(
             supportDirectory: supportDirectory,
@@ -325,21 +332,22 @@ public struct AppSettings: Codable, Sendable, Equatable {
         settingsFileName: String = "settings.json",
         cookieFileName: String = "cookies.txt"
     ) -> AppSettings {
+        let settingsURL = supportDirectory.appendingPathComponent(settingsFileName)
         guard let data = try? migratedData(
             supportDirectory: supportDirectory,
             legacySupportDirectory: legacySupportDirectory,
             settingsFileName: settingsFileName,
             cookieFileName: cookieFileName
         ) else {
-            return AppSettings()
+            return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
         }
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            return settings
+            return applyAndMigrateCredentials(settings, settingsFileURL: settingsURL)
         }
         // 数据存在但解析失败：不静默回默认并在下次保存时覆盖，而是先把损坏文件改名备份、
         // 置位一次性提示，再返回默认。用户的旧凭证/配置仍有机会人工恢复（DATA-SETTINGS-002）。
-        backupCorruptSettings(at: supportDirectory.appendingPathComponent(settingsFileName))
-        return AppSettings()
+        backupCorruptSettings(at: settingsURL)
+        return applyAndMigrateCredentials(AppSettings(), settingsFileURL: settingsURL)
     }
 
     /// 把损坏的 settings.json 改名为 settings.corrupt-<timestamp>.json。
@@ -416,12 +424,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
     }
 
     func save(supportDirectory dir: URL, settingsFileURL url: URL) throws {
+        // 凭证（SEC-CRED-001）：先写入安全存储，成功后才写不含明文 Token 的 JSON。
+        // store 写失败直接抛出、不动 settings.json，旧值不丢。
+        try writeTokensToStore()
+        try Self.writePersistedJSON(self, supportDirectory: dir, settingsFileURL: url)
+    }
+
+    /// 原子写不含明文 Token 的 settings.json（不触碰安全存储）。
+    static func writePersistedJSON(_ settings: AppSettings, supportDirectory dir: URL, settingsFileURL url: URL) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(self)
-        // 先写临时文件再原子替换：写失败时旧配置（含凭证）原样保留，不能像以前那样
-        // 删旧文件导致磁盘满/权限问题时配置全丢。临时文件一步创建即 0600。
+        let data = try encoder.encode(settings.withClearedTokens())
+        // 先写临时文件再原子替换：写失败时旧配置原样保留。临时文件一步创建即 0600。
         let temp = dir.appendingPathComponent("settings.json.tmp-\(UUID().uuidString)")
         #if os(Windows)
         let attributes: [FileAttributeKey: Any]? = nil
@@ -448,6 +463,49 @@ public struct AppSettings: Codable, Sendable, Equatable {
             try? FileManager.default.removeItem(at: temp)
             throw error
         }
+    }
+
+    /// 返回 Token 字段清空的副本（落盘 / 持久化用）。
+    func withClearedTokens() -> AppSettings {
+        var copy = self
+        copy.translationAuthToken = ""
+        copy.aiAuthToken = ""
+        copy.summaryAuthToken = ""
+        return copy
+    }
+
+    /// 把三个 Token 写入安全存储（空值则删除）。任一写入失败向上抛。
+    func writeTokensToStore() throws {
+        try Self.setOrDeleteToken(Self.translationTokenKey, translationAuthToken)
+        try Self.setOrDeleteToken(Self.aiTokenKey, aiAuthToken)
+        try Self.setOrDeleteToken(Self.summaryTokenKey, summaryAuthToken)
+    }
+
+    private static func setOrDeleteToken(_ key: String, _ value: String) throws {
+        if value.isEmpty { credentialStore.delete(key) } else { try credentialStore.set(key, value) }
+    }
+
+    /// 凭证读取/迁移（SEC-CRED-001）：旧版 settings.json 带明文 Token 时先写入安全存储，
+    /// 成功后才把明文从磁盘抹去（store 写失败则保留明文、绝不丢失），再用安全存储里的值覆盖内存配置。
+    static func applyAndMigrateCredentials(_ parsed: AppSettings, settingsFileURL url: URL?) -> AppSettings {
+        let hasLegacyPlaintext = !parsed.translationAuthToken.isEmpty
+            || !parsed.aiAuthToken.isEmpty
+            || !parsed.summaryAuthToken.isEmpty
+        if hasLegacyPlaintext {
+            do {
+                try parsed.writeTokensToStore()
+                if let url {
+                    try? writePersistedJSON(parsed, supportDirectory: url.deletingLastPathComponent(), settingsFileURL: url)
+                }
+            } catch {
+                return parsed  // 安全存储写入失败：保留明文，不丢 Token
+            }
+        }
+        var result = parsed
+        result.translationAuthToken = credentialStore.get(translationTokenKey) ?? parsed.translationAuthToken
+        result.aiAuthToken = credentialStore.get(aiTokenKey) ?? parsed.aiAuthToken
+        result.summaryAuthToken = credentialStore.get(summaryTokenKey) ?? parsed.summaryAuthToken
+        return result
     }
 
     // MARK: 有效配置（翻译/总结实际运行时用的端点）

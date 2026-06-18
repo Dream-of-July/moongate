@@ -5,9 +5,18 @@ import SwiftUI
 @main
 struct MoongateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = ViewModel()
+    @StateObject private var model: ViewModel
     // 0.7 i18n：运行时界面语言切换器。持久化权威是 AppSettings.appLanguage，运行时权威是 localizer。
-    @StateObject private var localizer = Localizer(language: AppLanguage(rawValue: ViewModel.persistedAppLanguage) ?? .auto)
+    @StateObject private var localizer: Localizer
+
+    init() {
+        // SEC-CRED-001：在任何 AppSettings.load()（ViewModel/Localizer 初始化即会触发）之前注入
+        // Keychain 凭证存储，旧版 settings.json 里的明文 Token 会在首次加载时迁移进 Keychain 并从磁盘抹除。
+        AppSettings.credentialStore = KeychainCredentialStore()
+        _model = StateObject(wrappedValue: ViewModel())
+        _localizer = StateObject(wrappedValue: Localizer(
+            language: AppLanguage(rawValue: ViewModel.persistedAppLanguage) ?? .auto))
+    }
 
     var body: some Scene {
         // Window（非 WindowGroup）：单窗口，天然禁掉 Cmd+N 多窗。
