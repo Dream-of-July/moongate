@@ -242,6 +242,7 @@
     <sys:String x:Key="L.Login.SaveFailedFmt">保存登录信息失败：{0}</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 运行时</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">这台电脑还没有安装 WebView2 运行时，登录窗口需要它才能显示网页。&#x0a;请前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下载安装，然后重新打开登录窗口。</sys:String>
+    <sys:String x:Key="L.Login.WebView2Install">安装 WebView2 运行时</sys:String>
     <sys:String x:Key="L.Login.InitFailedFmt">登录窗口初始化失败：{0}</sys:String>
     <sys:String x:Key="L.Login.Bilibili">哔哩哔哩</sys:String>
 

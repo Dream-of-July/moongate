@@ -242,6 +242,7 @@
     <sys:String x:Key="L.Login.SaveFailedFmt">儲存登入資訊失敗：{0}</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 執行階段</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">這台電腦還沒有安裝 WebView2 執行階段，登入視窗需要它才能顯示網頁。&#x0a;請前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下載安裝，然後重新開啟登入視窗。</sys:String>
+    <sys:String x:Key="L.Login.WebView2Install">安裝 WebView2 執行階段</sys:String>
     <sys:String x:Key="L.Login.InitFailedFmt">登入視窗初始化失敗：{0}</sys:String>
     <sys:String x:Key="L.Login.Bilibili">嗶哩嗶哩</sys:String>
 

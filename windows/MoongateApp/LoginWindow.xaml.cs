@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
@@ -43,10 +44,24 @@ public partial class LoginWindow : Window
         }
         catch (WebView2RuntimeNotFoundException)
         {
-            MessageBox.Show(
+            // 不止提示：给一个直接去装 WebView2 运行时的入口（UX-WIN-004），而不是让用户自己找。
+            var install = ConfirmWindow.Show(
                 this,
                 Loc.S("L.Login.WebView2MissingBody"),
-                Loc.S("L.Login.WebView2MissingTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+                detail: null,
+                confirmText: Loc.S("L.Login.WebView2Install"));
+            if (install)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(
+                        "https://developer.microsoft.com/microsoft-edge/webview2/") { UseShellExecute = true });
+                }
+                catch
+                {
+                    // 打不开浏览器（极端环境）就算了，用户仍可手动安装。
+                }
+            }
             Close();
         }
         catch (Exception error)

@@ -242,6 +242,7 @@
     <sys:String x:Key="L.Login.SaveFailedFmt">Failed to save sign-in: {0}</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">WebView2 runtime missing</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">This PC does not have the WebView2 runtime, which the sign-in window needs to display web pages.&#x0a;Download it from https://developer.microsoft.com/microsoft-edge/webview2/ and reopen this window.</sys:String>
+    <sys:String x:Key="L.Login.WebView2Install">Install WebView2 runtime</sys:String>
     <sys:String x:Key="L.Login.InitFailedFmt">Sign-in window failed to initialize: {0}</sys:String>
     <sys:String x:Key="L.Login.Bilibili">Bilibili</sys:String>
 
