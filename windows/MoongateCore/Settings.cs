@@ -153,8 +153,15 @@ public sealed record AppSettings
 
     public static string SettingsFilePath => Path.Combine(SupportDirectory, "settings.json");
 
-    /// <summary>站点登录后导出的 Netscape 格式 cookies 文件；存在时引擎自动以 --cookies 传给 yt-dlp。</summary>
+    /// <summary>旧版全局 cookies 文件（仅用于一次性迁移到按站点隔离的 jar；新代码不再写入）。</summary>
     public static string CookieFilePath => Path.Combine(SupportDirectory, "cookies.txt");
+
+    /// <summary>按站点隔离的 cookie 目录（cookies/youtube.txt、cookies/bilibili.txt）。</summary>
+    public static string CookieDirectory => Path.Combine(SupportDirectory, "cookies");
+
+    /// <summary>某站点的 cookie 文件路径（如 siteKey="youtube" → cookies/youtube.txt）。</summary>
+    public static string SiteCookieFilePath(string siteKey) =>
+        Path.Combine(CookieDirectory, siteKey + ".txt");
 
     // MARK: 读写
 

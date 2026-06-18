@@ -75,7 +75,7 @@ public partial class LoginWindow : Window
         DialogResult = false;
     }
 
-    /// <summary>导出当前会话全部 cookies 为 Netscape 文件；成功即关窗（由调用方触发重试）。</summary>
+    /// <summary>导出当前会话 cookies（按站点过滤后写入该站点专属文件）；成功即关窗（由调用方触发重试）。</summary>
     private async void OnFinishLoginClick(object sender, RoutedEventArgs e)
     {
         if (_exporting) return;
@@ -102,7 +102,26 @@ public partial class LoginWindow : Window
                     ExpiresEpochSeconds = ExpiryEpochSeconds(cookie),
                 });
             }
-            NetscapeCookieFile.Write(records, AppSettings.CookieFilePath);
+            // 按站点隔离：只导出本站点允许域的 cookie，绝不把其它站点会话写进来。
+            var site = CookieSites.ForLoginSite(_site);
+            if (site is null)
+            {
+                // 非受支持的登录站点（理论上不会发生，UI 只提供 YouTube/Bilibili）。
+                throw new InvalidOperationException(Loc.S("L.Login.NotReady"));
+            }
+            var filtered = NetscapeCookieFile.FilterToSite(records, site);
+            // 未检测到认证 cookie：可能还没真正登录完成，让用户确认而不是默默写一个无效登录态。
+            if (!CookieSites.ContainsAuthCookie(site, filtered))
+            {
+                var proceed = ConfirmWindow.Show(
+                    this, Loc.S("L.Login.NotSignedInConfirm"), Loc.S("L.Login.NotSignedInDetail"),
+                    confirmText: Loc.S("L.Login.SaveAnyway"));
+                if (!proceed)
+                {
+                    return;
+                }
+            }
+            NetscapeCookieFile.Write(filtered, AppSettings.SiteCookieFilePath(site.Key));
             DialogResult = true;
         }
         catch (Exception error)

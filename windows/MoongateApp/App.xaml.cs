@@ -18,6 +18,23 @@ public partial class App : Application
     /// <summary>标记进入更新退出流程（由 UpdateService 在启动安装器前调用）。</summary>
     public static void MarkUpdateShutdown() => IsUpdateShutdown = true;
 
+    /// <summary>
+    /// 「清除全部登录」时若 WebView2 目录被占用删不掉，会留下待删标记；此时进程已重启、
+    /// 目录不再被锁，在这里补删并移除标记。
+    /// </summary>
+    private static void TryCleanPendingWebView2Delete()
+    {
+        try
+        {
+            var marker = SettingsViewModel.WebView2PendingDeleteMarkerPath;
+            if (!System.IO.File.Exists(marker)) return;
+            var dataFolder = System.IO.Path.Combine(AppSettings.SupportDirectory, "WebView2");
+            if (System.IO.Directory.Exists(dataFolder)) System.IO.Directory.Delete(dataFolder, recursive: true);
+            if (!System.IO.Directory.Exists(dataFolder)) System.IO.File.Delete(marker);
+        }
+        catch { /* 仍被占用则下次再清 */ }
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -25,6 +42,12 @@ public partial class App : Application
 
         // 清理上一轮更新遗留的临时安装器目录（成功安装后安装器无法自删所在目录）。
         UpdateService.CleanStaleUpdateDirs();
+
+        // 凭证/登录隔离的启动维护：旧全局 cookies.txt 拆分到按站点 jar；清除登录时删不掉的
+        // WebView2 目录在这里补删（标记存在时）。两步都尽力而为，失败不阻塞启动。
+        try { CookieMigration.MigrateGlobalToPerSite(AppSettings.CookieFilePath, AppSettings.CookieDirectory); }
+        catch { /* 迁移失败不阻塞启动；旧文件仍在，下次再试 */ }
+        TryCleanPendingWebView2Delete();
 
         // 先注册全局异常处理器：任何后续步骤抛错都能落盘 + 提示，而不是变成无窗口僵尸进程。
         DispatcherUnhandledException += OnDispatcherUnhandledException;

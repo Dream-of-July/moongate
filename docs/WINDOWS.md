@@ -34,8 +34,13 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
    到 `%LOCALAPPDATA%\Moongate\bin`（需联网；设置里可重新下载、单独更新 yt-dlp）。
 3. 之后与 macOS 版一致：粘贴链接 → 选画质字幕 → 下载/翻译/烧录，多文件任务自动建文件夹。
 4. 站点登录走 WebView2（Win 11 自带运行时；缺失时 App 会引导安装）。
-5. 卸载：设置 → 应用 → 月之门。已下载的依赖与设置保留在
-   `%LOCALAPPDATA%\Moongate`，彻底清理需手动删除该目录。
+5. 卸载：设置 → 应用 → 月之门，或运行安装目录下的 `Uninstall.exe`。卸载时会询问是否
+   一并删除用户数据：
+   - 设置与登录数据：`%APPDATA%\Moongate`（settings.json、按站点隔离的 cookies、WebView2 登录会话）。
+   - 依赖缓存：`%LOCALAPPDATA%\Moongate`（yt-dlp / ffmpeg / deno）。
+   两处都保留时，重装无需重新下载依赖、也不必重新登录；勾选删除则彻底清理对应数据。
+   注意：API Token、Cookie、WebView 登录态都在 `%APPDATA%\Moongate`，只删 `%LOCALAPPDATA%`
+   并不会清掉登录与凭证。
 
 ## 已知平台差异
 

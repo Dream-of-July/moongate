@@ -41,7 +41,7 @@
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
 | WIN-UPD-001 | P0 | Windows | Done (code) | UpdateService.cs, App.xaml.cs, MainWindow.xaml.cs, SettingsWindow.xaml.cs, installer/installer.nsi, Strings.*.xaml | UpdateCheckerTests, 安装器 makensis 编译通过 | Not validated on real hardware | 队列 preflight + /UPDATEPID 等待 + 专用退出态；helper 进程未引入（用 NSIS 等待 PID 替代），需真机验证覆盖安装 |
-| SEC-COOKIE-001 | P0 | Both | Not started | — | — | Not validated on real hardware | WebView 全量 Cookie 导出，未按站点隔离（Phase 2） |
+| SEC-COOKIE-001 | P0 | Both | In progress (Win done) | windows: CookieSites.cs, CookieFile.cs, Settings.cs, Engine.cs, LoginWindow.xaml.cs, SettingsViewModel.cs, App.xaml.cs, Strings.*.xaml | CookieIsolationTests (16) | Not validated on real hardware | Windows 按站点隔离 jar + 域过滤 + 认证 cookie 判定 + 旧文件迁移完成；macOS 侧待做 |
 | SEC-CRED-001 | P0 | Both | Not started | — | — | Not validated on real hardware | API Token 明文落盘（Phase 2） |
 | WIN-DEP-001 | P0 | Windows | Done (code) | DependencyWindow.xaml(.cs), Dependencies.cs, Strings.*.xaml | DependenciesTests.FormatBytes, i18n 进度测试 | Not validated on real hardware | 加取消按钮/可取消 token/关窗确认/字节+速度进度；断点续传未做 |
 | WIN-DEP-002 | P0 | Windows | Done (code) | SettingsWindow.xaml.cs, Dependencies.cs | DependenciesTests.RedownloadAll_NetworkFailure_KeepsExistingBinaries, PlanAll | Not validated on real hardware | 改为 staging 先下后换；SHA-256/PE 架构/能力校验留待 Phase 3 (DEP-WIN-003) |
@@ -57,8 +57,8 @@
 | PROC-MAC-002 | P1 | macOS | Not started | — | — | Not validated on real hardware | 取消可能留下孤儿 ffmpeg 子进程 |
 | UPDATE-MAC-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 显式“静默检查更新”实为 no-op |
 | UPDATE-WIN-002 | P1 | Windows | Done (code) | UpdateChecker.cs, Settings.cs, UpdateService.cs | UpdateCheckerTests.SemVer_PrereleasePrecedence / StableChannel_*, SettingsTests.ReceiveBetaUpdates | Not validated on real hardware | SemVer 完整预发布优先级 + 通道过滤；默认 ReceiveBetaUpdates=true（当前发布全是 prerelease，待首个正式版后改默认） |
-| LOGIN-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 清除全部登录即使失败也显示成功 |
-| DATA-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 卸载说明遗漏 %APPDATA% 凭证/Cookie |
+| LOGIN-WIN-001 | P1 | Windows | Done (code) | SettingsViewModel.cs, App.xaml.cs, Strings.*.xaml | CookieIsolationTests 间接覆盖；ClearAllLogins 逻辑 | Not validated on real hardware | 清除登录区分 cookie/ WebView 成功，部分失败显示「部分清除」并写待删标记下次启动清理 |
+| DATA-WIN-001 | P1 | Windows | Done (code) | docs/WINDOWS.md, installer/installer.nsi | makensis 编译通过 | Not validated on real hardware | 卸载器询问删除 %APPDATA%\Moongate + %LOCALAPPDATA%\Moongate；文档修正 |
 | DATA-SETTINGS-002 | P1 | Both | Not started | — | — | Not validated on real hardware | 设置损坏静默回默认，无备份/提示 |
 | PATH-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 文件夹名净化未处理保留设备名 |
 | DEP-WIN-003 | P1 | Windows | Not started | — | — | Not validated on real hardware | 依赖“已安装”仅检查文件存在 |

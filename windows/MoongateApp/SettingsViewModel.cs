@@ -587,15 +587,18 @@ public sealed class SettingsViewModel : ObservableObject
     private string? _clearFeedback;
     public string? ClearFeedback { get => _clearFeedback; private set => SetProperty(ref _clearFeedback, value); }
 
-    /// <summary>登录状态行的数据源：cookies.txt 的修改日期。</summary>
+    /// <summary>登录状态行的数据源：任一站点 cookie 文件存在即视为已登录，时间取最新。</summary>
     public void RefreshLoginStatus()
     {
         try
         {
-            var path = AppSettings.CookieFilePath;
-            if (File.Exists(path))
+            var paths = CookieSites.All
+                .Select(site => AppSettings.SiteCookieFilePath(site.Key))
+                .Where(File.Exists)
+                .ToList();
+            if (paths.Count > 0)
             {
-                var date = File.GetLastWriteTime(path);
+                var date = paths.Max(File.GetLastWriteTime);
                 HasLogin = true;
                 var dateText = LocalizationManager.IsEnglish
                     ? date.ToString("MMM d", System.Globalization.CultureInfo.GetCultureInfo("en-US"))
@@ -615,22 +618,63 @@ public sealed class SettingsViewModel : ObservableObject
         }
     }
 
-    /// <summary>清除导出的 cookies 文件，并尽力删掉 WebView2 的持久化数据目录。</summary>
+    /// <summary>
+    /// 清除全部站点的 cookie 文件，并尽力删掉 WebView2 持久化数据目录。
+    /// 任一步失败（如 WebView2 目录被本次会话占用）都只报「部分清除」并写下次启动待删标记，
+    /// 不再无条件显示「已清除」——避免用户以为隐私已彻底清干净但其实 WebView 会话还在。
+    /// </summary>
     public void ClearAllLogins()
     {
-        NetscapeCookieFile.Clear(AppSettings.CookieFilePath);
+        var allCleared = true;
+        foreach (var site in CookieSites.All)
+        {
+            allCleared &= TryDeleteFile(AppSettings.SiteCookieFilePath(site.Key));
+        }
+        // 旧版全局文件若还在也一并清掉。
+        allCleared &= TryDeleteFile(AppSettings.CookieFilePath);
+
+        var webViewCleared = TryDeleteWebView2Profile();
+        if (!webViewCleared)
+        {
+            // 目录被占用删不掉：写待删标记，下次启动前清理。
+            try { File.WriteAllText(WebView2PendingDeleteMarkerPath, ""); } catch { /* 标记失败忽略 */ }
+        }
+
+        ClearFeedback = allCleared && webViewCleared
+            ? Loc.S("L.Settings.Cleared")
+            : Loc.S("L.Settings.ClearedPartial");
+        RefreshLoginStatus();
+    }
+
+    /// <summary>WebView2 数据目录被占用删不掉时的待删标记，App 启动时据此清理。</summary>
+    internal static string WebView2PendingDeleteMarkerPath =>
+        Path.Combine(AppSettings.SupportDirectory, ".webview2-pending-delete");
+
+    private static bool TryDeleteFile(string path)
+    {
         try
         {
-            // 登录窗本次会话用过时目录可能被占用，删不掉就留给下次（cookies.txt 已清，yt-dlp 不再带登录态）。
-            var dataFolder = Path.Combine(AppSettings.SupportDirectory, "WebView2");
-            if (Directory.Exists(dataFolder)) Directory.Delete(dataFolder, recursive: true);
+            if (File.Exists(path)) File.Delete(path);
+            return !File.Exists(path);
         }
         catch
         {
-            // 忽略
+            return false;
         }
-        ClearFeedback = Loc.S("L.Settings.Cleared");
-        RefreshLoginStatus();
+    }
+
+    private static bool TryDeleteWebView2Profile()
+    {
+        try
+        {
+            var dataFolder = Path.Combine(AppSettings.SupportDirectory, "WebView2");
+            if (Directory.Exists(dataFolder)) Directory.Delete(dataFolder, recursive: true);
+            return !Directory.Exists(dataFolder);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // MARK: - 依赖组件

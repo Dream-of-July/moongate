@@ -312,15 +312,16 @@ public class YtDlpEngine : IDownloadEngine
     // MARK: 站点登录 cookies
 
     /// <summary>
-    /// 站点登录导出的 cookies 文件存在时，所有 yt-dlp 调用都带上 --cookies。
-    /// yt-dlp 的 --cookies 是「读取并在退出时**写回**」语义：并发任务共用主 cookies.txt
+    /// 按下载 URL 的 host 选择对应站点的 cookie jar，存在时所有 yt-dlp 调用都带上 --cookies。
+    /// 按站点隔离：YouTube 下载只用 youtube jar，绝不把 Bilibili 等其它站点的会话带进去。
+    /// yt-dlp 的 --cookies 是「读取并在退出时**写回**」语义：并发任务共用同一文件
     /// 会互相覆写甚至损坏。因此每次启动子进程都发一份任务私有临时副本
     /// （写回只落在副本上），用后由 cleanup 删除。
     /// </summary>
-    internal static (List<string> Args, Action Cleanup) MakeCookieArguments()
+    internal static (List<string> Args, Action Cleanup) MakeCookieArguments(string urlString)
     {
-        var master = AppSettings.CookieFilePath;
-        if (!File.Exists(master)) return ([], () => { });
+        var master = CookieFileForUrl(urlString);
+        if (master is null || !File.Exists(master)) return ([], () => { });
         var temp = Path.Combine(Path.GetTempPath(), $"moongate-cookies-{Guid.NewGuid():N}.txt");
         try
         {
@@ -331,6 +332,21 @@ public class YtDlpEngine : IDownloadEngine
             return ([], () => { });  // 副本失败就不带 cookies，不阻塞下载
         }
         return (["--cookies", temp], () => { try { File.Delete(temp); } catch { /* 忽略 */ } });
+    }
+
+    /// <summary>按 URL host 解析对应站点的 cookie 文件路径；非受支持站点返回 null。</summary>
+    internal static string? CookieFileForUrl(string urlString)
+    {
+        var host = Uri.TryCreate(urlString, UriKind.Absolute, out var u) ? u.Host : "";
+        var site = CookieSites.ForHost(host);
+        return site is null ? null : AppSettings.SiteCookieFilePath(site.Key);
+    }
+
+    /// <summary>该 URL 对应站点是否已有导出的登录 cookie 文件。</summary>
+    internal static bool HasCookiesForUrl(string urlString)
+    {
+        var path = CookieFileForUrl(urlString);
+        return path is not null && File.Exists(path);
     }
 
     /// <summary>登录检测正则：编译一次复用，避免每次错误处理都 new Regex。与 macOS detectLoginRequired 同构。</summary>
@@ -387,7 +403,7 @@ public class YtDlpEngine : IDownloadEngine
     }
 
     private static MoongateException? DetectLoginRequired(string stderr, string urlString) =>
-        DetectLoginRequired(stderr, urlString, File.Exists(AppSettings.CookieFilePath));
+        DetectLoginRequired(stderr, urlString, HasCookiesForUrl(urlString));
 
     // MARK: 信息缓存
 
@@ -550,7 +566,7 @@ public class YtDlpEngine : IDownloadEngine
     {
         var ytdlp = YtDlpPath();
         var ffmpegDir = FfmpegDirectory();
-        var (cookieArgs, cleanup) = MakeCookieArguments();
+        var (cookieArgs, cleanup) = MakeCookieArguments(url);
         try
         {
             var lastStderr = "";
@@ -801,7 +817,7 @@ public class YtDlpEngine : IDownloadEngine
                 .ToList();
             var langArg = langs.Count == 0 ? "all" : string.Join(",", langs) + ",all";
 
-            var (cookieArgs, cleanup) = MakeCookieArguments();
+            var (cookieArgs, cleanup) = MakeCookieArguments(url);
             try
             {
                 var args = new List<string>
@@ -1191,7 +1207,7 @@ public class YtDlpEngine : IDownloadEngine
             "--retries", "10",
             "--fragment-retries", "10",
         };
-        var (cookieArgs, cleanup) = MakeCookieArguments();
+        var (cookieArgs, cleanup) = MakeCookieArguments(request.Url);
         try
         {
             args.AddRange(cookieArgs);

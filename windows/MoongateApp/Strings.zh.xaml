@@ -189,6 +189,7 @@
     <sys:String x:Key="L.Settings.LoginBilibili">登录哔哩哔哩</sys:String>
     <sys:String x:Key="L.Settings.ClearLogins">清除所有登录</sys:String>
     <sys:String x:Key="L.Settings.Cleared">已清除</sys:String>
+    <sys:String x:Key="L.Settings.ClearedPartial">已清除 cookie，但 WebView 登录数据未能完全删除，将在下次启动时清理。</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusNone">尚未登录任何站点</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusFmt">已保存登录信息（{0} 导出）</sys:String>
     <sys:String x:Key="L.Settings.Dependencies">依赖组件</sys:String>
@@ -232,6 +233,9 @@
     <sys:String x:Key="L.Login.LoadingPage">正在加载登录页…</sys:String>
     <sys:String x:Key="L.Login.PageLoadFailed">页面加载失败，请检查网络后重试</sys:String>
     <sys:String x:Key="L.Login.NotReady">登录页尚未加载完成</sys:String>
+    <sys:String x:Key="L.Login.NotSignedInConfirm">未检测到登录状态，仍要保存吗？</sys:String>
+    <sys:String x:Key="L.Login.NotSignedInDetail">没有发现该站点的认证 Cookie，可能还没登录成功。建议在页面里完成登录后再保存。</sys:String>
+    <sys:String x:Key="L.Login.SaveAnyway">仍然保存</sys:String>
     <sys:String x:Key="L.Login.SaveFailedFmt">保存登录信息失败：{0}</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 运行时</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">这台电脑还没有安装 WebView2 运行时，登录窗口需要它才能显示网页。&#x0a;请前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下载安装，然后重新打开登录窗口。</sys:String>

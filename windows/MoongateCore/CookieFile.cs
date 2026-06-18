@@ -55,4 +55,36 @@ public static class NetscapeCookieFile
     {
         try { File.Delete(path); } catch { /* 忽略 */ }
     }
+
+    /// <summary>
+    /// 读取 Netscape 格式 cookies 文件为记录列表（跳过注释与空行、字段不足的行）。
+    /// 用于旧文件迁移与按域过滤。文件不存在返回空列表。
+    /// </summary>
+    public static List<CookieRecord> Read(string path)
+    {
+        var records = new List<CookieRecord>();
+        if (!File.Exists(path)) return records;
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var f = line.Split('\t');
+            if (f.Length < 7) continue;
+            var expiry = long.TryParse(f[4], out var e) && e > 0 ? e : (long?)null;
+            records.Add(new CookieRecord
+            {
+                Domain = f[0],
+                Path = f[2],
+                IsSecure = string.Equals(f[3], "TRUE", StringComparison.OrdinalIgnoreCase),
+                ExpiresEpochSeconds = expiry,
+                Name = f[5],
+                Value = f[6],
+            });
+        }
+        return records;
+    }
+
+    /// <summary>只保留属于该站点允许域的 cookie（导出隔离用）。</summary>
+    public static List<CookieRecord> FilterToSite(IEnumerable<CookieRecord> cookies, CookieSite site) =>
+        cookies.Where(c => CookieSites.DomainAllowed(site, c.Domain)).ToList();
 }

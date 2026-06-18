@@ -94,6 +94,11 @@ skipRecursiveRemove:
   RMDir "$INSTDIR"
 uninstallRegistry:
   DeleteRegKey HKCU "${UNINSTKEY}"
-  ; 注意：刻意保留 %LOCALAPPDATA%\Moongate（下载的 yt-dlp/ffmpeg 与设置），
-  ; 重装无需重新下载依赖；用户想彻底清理可手动删除该目录。
+  ; 询问是否删除用户数据。默认保留（便于重装免重下依赖、免重新登录）。
+  ; 关键：设置 / 凭证 / Cookie / WebView2 登录态在 %APPDATA%\Moongate，
+  ; 依赖缓存在 %LOCALAPPDATA%\Moongate——只删其一不会清干净登录与凭证。
+  MessageBox MB_YESNO|MB_ICONQUESTION "是否同时删除用户数据？$\r$\n包含：设置、API 凭证、登录 Cookie 与 WebView 登录态（%APPDATA%\Moongate），以及已下载的 yt-dlp/ffmpeg/deno（%LOCALAPPDATA%\Moongate）。$\r$\n选择「否」保留这些数据，便于以后重装。" IDNO keepUserData
+  RMDir /r "$APPDATA\Moongate"
+  RMDir /r "$LOCALAPPDATA\Moongate"
+keepUserData:
 SectionEnd

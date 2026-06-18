@@ -189,6 +189,7 @@
     <sys:String x:Key="L.Settings.LoginBilibili">登入嗶哩嗶哩</sys:String>
     <sys:String x:Key="L.Settings.ClearLogins">清除所有登入</sys:String>
     <sys:String x:Key="L.Settings.Cleared">已清除</sys:String>
+    <sys:String x:Key="L.Settings.ClearedPartial">已清除 cookie，但 WebView 登入資料未能完全刪除，將在下次啟動時清理。</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusNone">尚未登入任何站點</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusFmt">已儲存登入資訊（{0} 匯出）</sys:String>
     <sys:String x:Key="L.Settings.Dependencies">依賴元件</sys:String>
@@ -232,6 +233,9 @@
     <sys:String x:Key="L.Login.LoadingPage">正在載入登入頁…</sys:String>
     <sys:String x:Key="L.Login.PageLoadFailed">頁面載入失敗，請檢查網路後重試</sys:String>
     <sys:String x:Key="L.Login.NotReady">登入頁尚未載入完成</sys:String>
+    <sys:String x:Key="L.Login.NotSignedInConfirm">未偵測到登入狀態，仍要儲存嗎？</sys:String>
+    <sys:String x:Key="L.Login.NotSignedInDetail">沒有發現該站點的認證 Cookie，可能還沒登入成功。建議在頁面裡完成登入後再儲存。</sys:String>
+    <sys:String x:Key="L.Login.SaveAnyway">仍然儲存</sys:String>
     <sys:String x:Key="L.Login.SaveFailedFmt">儲存登入資訊失敗：{0}</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 執行階段</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">這台電腦還沒有安裝 WebView2 執行階段，登入視窗需要它才能顯示網頁。&#x0a;請前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下載安裝，然後重新開啟登入視窗。</sys:String>
