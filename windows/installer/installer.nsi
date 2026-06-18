@@ -6,6 +6,7 @@
 Unicode true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 !ifndef APPVERSION
   !define APPVERSION "0.7.2"
@@ -39,6 +40,20 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Section "安装"
+  ; 更新安装：App 以 /UPDATEPID=<pid> 启动本安装器，这里先等旧进程完全退出再覆盖文件，
+  ; 避免「安装器已启动但旧 App 仍占用 $INSTDIR 文件」的竞态导致部分覆盖 / 更新后无法启动。
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/UPDATEPID=" $R1
+  ${If} $R1 != ""
+    ; OpenProcess(SYNCHRONIZE=0x00100000, FALSE, pid)
+    System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i $R1) i .R2'
+    ${If} $R2 <> 0
+      ; 最多等 15s；旧进程已退出会立即返回。
+      System::Call 'kernel32::WaitForSingleObject(i $R2, i 15000)'
+      System::Call 'kernel32::CloseHandle(i $R2)'
+    ${EndIf}
+  ${EndIf}
+
   SetOutPath "$INSTDIR"
   File /r "${PUBLISH_DIR}\*"
   FileOpen $0 "$INSTDIR\${INSTALL_MARKER}" w

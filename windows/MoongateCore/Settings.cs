@@ -122,6 +122,11 @@ public sealed record AppSettings
     public bool OnboardingCompleted { get; init; }
     /// <summary>开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。</summary>
     public bool SmartTranslationPromptsEnabled { get; init; }
+    /// <summary>
+    /// 是否接收测试版（预发布）更新。当前项目发布全部标记为 prerelease，默认 true 以免老用户收不到更新；
+    /// 待首个正式版发布后应把默认改为 false，让稳定通道只收正式版。详见 UpdateChecker 的通道过滤。
+    /// </summary>
+    public bool ReceiveBetaUpdates { get; init; } = true;
 
     /// <summary>
     /// 实际压制并发上限：硬件后端可比兼容路径多放一路并行提高吞吐；
@@ -233,6 +238,9 @@ public sealed record AppSettings
             && obc.ValueKind == JsonValueKind.True;
         var smartTranslationPromptsEnabled = root.TryGetProperty("smartTranslationPromptsEnabled", out var stp)
             && stp.ValueKind == JsonValueKind.True;
+        // 接收测试版更新：缺键默认 true（当前发布全是 prerelease）；仅显式 false 关闭。
+        var receiveBetaUpdates = !root.TryGetProperty("receiveBetaUpdates", out var rbu)
+            || rbu.ValueKind != JsonValueKind.False;
 
         // 编码后端：缺键默认 Auto；烧录始终 H.264 默认关（跟随源）。
         var encodeBackend = EncodeBackendExtensions.FromRawValue(StringField(root, "encodeBackend"));
@@ -267,6 +275,7 @@ public sealed record AppSettings
             TranslationTargetLanguage = translationTargetLanguage,
             OnboardingCompleted = onboardingCompleted,
             SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
+            ReceiveBetaUpdates = receiveBetaUpdates,
         };
     }
 
@@ -300,6 +309,7 @@ public sealed record AppSettings
             ["translationTargetLanguage"] = TranslationTargetLanguage,
             ["onboardingCompleted"] = OnboardingCompleted,
             ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
+            ["receiveBetaUpdates"] = ReceiveBetaUpdates,
         };
         return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
     }

@@ -218,6 +218,11 @@
     <sys:String x:Key="L.Update.Installing">正在启动安装程序，应用将退出以完成更新…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">更新包地址不可信，已阻止。请到 GitHub 手动下载。</sys:String>
     <sys:String x:Key="L.Update.DownloadFailed">下载更新包失败。</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyFmt">队列中还有 {0} 个任务在进行。现在更新会取消全部任务。</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyPausedFmt">队列中还有 {0} 个任务（含 {1} 个已暂停）。现在更新会取消全部任务。</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyDetail">安装更新前需要退出应用，未完成的下载与处理会中止。</sys:String>
+    <sys:String x:Key="L.Update.CancelTasksAndUpdate">取消全部任务并更新</sys:String>
+    <sys:String x:Key="L.Update.KeepTasks">继续任务</sys:String>
 
     <!-- 站点登录窗 -->
     <sys:String x:Key="L.Login.Title">站点登录</sys:String>
@@ -239,5 +244,11 @@
     <sys:String x:Key="L.Dep.Checking">正在检查组件…</sys:String>
     <sys:String x:Key="L.Dep.DownloadFailed">下载失败</sys:String>
     <sys:String x:Key="L.Dep.CheckFailedFmt">依赖组件检查失败：{0}</sys:String>
+    <sys:String x:Key="L.Dep.Cancel">取消下载</sys:String>
+    <sys:String x:Key="L.Dep.Cancelled">已取消下载</sys:String>
+    <sys:String x:Key="L.Dep.CancelConfirm">停止下载并关闭？</sys:String>
+    <sys:String x:Key="L.Dep.CancelConfirmDetail">正在下载的组件会中止，已下载的部分会被清理。可稍后在设置里重新下载。</sys:String>
+    <sys:String x:Key="L.Dep.StopAndClose">停止并关闭</sys:String>
+    <sys:String x:Key="L.Dep.ProgressFmt">正在下载 {0}… {1}</sys:String>
 
 </ResourceDictionary>

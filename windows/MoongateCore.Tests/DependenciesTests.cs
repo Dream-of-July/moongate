@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using Moongate.Core;
 
@@ -152,5 +153,77 @@ public class ZipExtractionTests : IDisposable
             {
                 ["bin/ffmpeg.exe"] = "ffmpeg.exe",
             }, _binDir));
+    }
+}
+
+/// <summary>「重新下载依赖」事务化：先下后换，失败不破坏现有可用文件。</summary>
+public class RedownloadTransactionTests : IDisposable
+{
+    private readonly string _binDir;
+
+    public RedownloadTransactionTests()
+    {
+        _binDir = Path.Combine(Path.GetTempPath(), $"moongate-redl-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_binDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_binDir, true); } catch { /* 忽略 */ }
+    }
+
+    [Fact]
+    public void PlanAll_ReturnsAllThree_RegardlessOfExisting()
+    {
+        foreach (var file in new[] { "yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe", "deno.exe" })
+        {
+            File.WriteAllText(Path.Combine(_binDir, file), "OLD");
+        }
+        var manager = new DependencyManager(_binDir, new FailingHandler());
+        var plans = manager.PlanAll();
+        Assert.Equal(new[] { "yt-dlp", "ffmpeg", "deno" }, plans.Select(p => p.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task RedownloadAll_NetworkFailure_KeepsExistingBinaries()
+    {
+        // 现有可用环境。
+        foreach (var file in new[] { "yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe", "deno.exe" })
+        {
+            File.WriteAllText(Path.Combine(_binDir, file), "OLD");
+        }
+        var manager = new DependencyManager(_binDir, new FailingHandler());
+
+        await Assert.ThrowsAnyAsync<Exception>(() => manager.RedownloadAllAsync());
+
+        // 关键回归：旧实现会先删后下、断网即破坏环境；新实现先下后换，失败时旧文件原样保留。
+        foreach (var file in new[] { "yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe", "deno.exe" })
+        {
+            Assert.True(File.Exists(Path.Combine(_binDir, file)), $"{file} 应仍存在");
+            Assert.Equal("OLD", File.ReadAllText(Path.Combine(_binDir, file)));
+        }
+        // 失败不残留 .tmp 临时文件。
+        Assert.Empty(Directory.GetFiles(_binDir, "*.tmp"));
+    }
+
+    [Theory]
+    [InlineData(0, "0 B")]
+    [InlineData(512, "512 B")]
+    [InlineData(1536, "1.5 KB")]
+    [InlineData(5 * 1024 * 1024, "5.0 MB")]
+    public void FormatBytes_HumanReadable(long bytes, string expected)
+    {
+        Assert.Equal(expected, DependencyManager.FormatBytes(bytes));
+    }
+
+    /// <summary>所有请求都失败的 handler（模拟断网/代理失败）。</summary>
+    private sealed class FailingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent(""),
+            });
     }
 }

@@ -5,47 +5,103 @@ namespace Moongate.Core;
 
 // MARK: - 语义版本
 
-/// <summary>简单语义版本：major.minor.patch，容忍前缀 "v" 和多余段。与 Swift 版 SemVer 同构。</summary>
+/// <summary>
+/// 语义版本：major.minor.patch[-prerelease]，容忍前缀 "v" 和多余段；构建元数据（+ 之后）忽略。
+/// 与 Swift 版 SemVer 同构。按 SemVer 2.0 优先级比较：正式版高于同号预发布版
+/// （0.8.0 &gt; 0.8.0-rc.1 &gt; 0.8.0-beta），预发布标识按点分段逐段比较（数字段按数值、其余按 ASCII）。
+/// </summary>
 public readonly struct SemVer : IComparable<SemVer>, IEquatable<SemVer>
 {
     public int Major { get; }
     public int Minor { get; }
     public int Patch { get; }
+    /// <summary>预发布标识（"beta" / "rc.1" 等）；空串表示正式版。</summary>
+    public string Prerelease { get; }
 
-    public SemVer(int major, int minor, int patch)
+    /// <summary>是否为预发布版本（带 -beta / -rc 之类后缀）。</summary>
+    public bool IsPrerelease => Prerelease.Length > 0;
+
+    public SemVer(int major, int minor, int patch, string prerelease = "")
     {
         Major = major;
         Minor = minor;
         Patch = patch;
+        Prerelease = prerelease ?? "";
     }
 
-    /// <summary>从 "v0.4.0" / "0.4" / "0.4.0-beta" 等解析；失败返回 null。</summary>
+    /// <summary>从 "v0.4.0" / "0.4" / "0.4.0-beta" / "0.8.0-rc.1+build" 等解析；失败返回 null。</summary>
     public static SemVer? Parse(string raw)
     {
         var s = raw.Trim();
         if (s.StartsWith('v') || s.StartsWith('V')) s = s[1..];
-        // 去掉构建/预发布后缀（- 或 + 之后）。
-        var cut = s.IndexOfAny(['-', '+']);
-        if (cut >= 0) s = s[..cut];
+        // 构建元数据（+ 之后）不参与版本语义，先丢弃。
+        var plus = s.IndexOf('+');
+        if (plus >= 0) s = s[..plus];
+        // 预发布后缀（首个 - 之后）单独保留用于优先级比较。
+        var prerelease = "";
+        var dash = s.IndexOf('-');
+        if (dash >= 0)
+        {
+            prerelease = s[(dash + 1)..];
+            s = s[..dash];
+        }
         var parts = s.Split('.');
         if (parts.Length == 0 || !int.TryParse(parts[0], out var major)) return null;
         var minor = parts.Length > 1 && int.TryParse(parts[1], out var mi) ? mi : 0;
         var patch = parts.Length > 2 && int.TryParse(parts[2], out var pa) ? pa : 0;
-        return new SemVer(major, minor, patch);
+        return new SemVer(major, minor, patch, prerelease);
     }
 
-    public override string ToString() => $"{Major}.{Minor}.{Patch}";
+    public override string ToString() =>
+        Prerelease.Length > 0 ? $"{Major}.{Minor}.{Patch}-{Prerelease}" : $"{Major}.{Minor}.{Patch}";
 
     public int CompareTo(SemVer other)
     {
         if (Major != other.Major) return Major.CompareTo(other.Major);
         if (Minor != other.Minor) return Minor.CompareTo(other.Minor);
-        return Patch.CompareTo(other.Patch);
+        if (Patch != other.Patch) return Patch.CompareTo(other.Patch);
+        return ComparePrerelease(Prerelease, other.Prerelease);
     }
 
-    public bool Equals(SemVer other) => Major == other.Major && Minor == other.Minor && Patch == other.Patch;
+    /// <summary>
+    /// SemVer 2.0 预发布优先级：无预发布段（正式版）高于有预发布段；
+    /// 两者都有时按点分标识逐段比较（纯数字段按数值大小且低于非数字段，其余按 ASCII），
+    /// 前缀相同则段更多者更高（rc.1.1 &gt; rc.1）。
+    /// </summary>
+    private static int ComparePrerelease(string a, string b)
+    {
+        if (a.Length == 0 && b.Length == 0) return 0;
+        if (a.Length == 0) return 1;  // 正式版 > 预发布
+        if (b.Length == 0) return -1;
+        var ai = a.Split('.');
+        var bi = b.Split('.');
+        var count = Math.Min(ai.Length, bi.Length);
+        for (var i = 0; i < count; i++)
+        {
+            var aNum = int.TryParse(ai[i], out var an);
+            var bNum = int.TryParse(bi[i], out var bn);
+            if (aNum && bNum)
+            {
+                if (an != bn) return an.CompareTo(bn);
+            }
+            else if (aNum != bNum)
+            {
+                return aNum ? -1 : 1;  // 数字段优先级低于非数字段
+            }
+            else
+            {
+                var cmp = string.CompareOrdinal(ai[i], bi[i]);
+                if (cmp != 0) return cmp;
+            }
+        }
+        return ai.Length.CompareTo(bi.Length);
+    }
+
+    public bool Equals(SemVer other) =>
+        Major == other.Major && Minor == other.Minor && Patch == other.Patch
+        && string.Equals(Prerelease, other.Prerelease, StringComparison.Ordinal);
     public override bool Equals(object? obj) => obj is SemVer s && Equals(s);
-    public override int GetHashCode() => HashCode.Combine(Major, Minor, Patch);
+    public override int GetHashCode() => HashCode.Combine(Major, Minor, Patch, Prerelease);
     public static bool operator <(SemVer a, SemVer b) => a.CompareTo(b) < 0;
     public static bool operator >(SemVer a, SemVer b) => a.CompareTo(b) > 0;
     public static bool operator <=(SemVer a, SemVer b) => a.CompareTo(b) <= 0;
@@ -96,7 +152,8 @@ public sealed class UpdateChecker
     public async Task<UpdateInfo?> CheckForUpdateAsync(
         string currentVersion,
         HttpMessageHandler? httpHandler = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool includePrerelease = true)
     {
         if (SemVer.Parse(currentVersion) is not { } current)
             throw MoongateException.UpdateFailed(L10n.T(
@@ -151,15 +208,16 @@ public sealed class UpdateChecker
             if (!response.IsSuccessStatusCode)
                 throw MoongateException.UpdateFailed($"HTTP {(int)response.StatusCode}。");
             var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return LatestWindowsUpdate(json, current);
+            return LatestWindowsUpdate(json, current, includePrerelease);
         }
     }
 
     /// <summary>
     /// 纯解析：从 releases 列表 JSON 里挑出含 Windows 安装包、版本号最高且 &gt; current 的 release。
-    /// 与网络解耦，便于测试。
+    /// 与网络解耦，便于测试。includePrerelease=false 时跳过 GitHub 标记为 prerelease 的 release
+    /// 以及 tag 带预发布后缀（如 -beta）的 release（稳定通道）。
     /// </summary>
-    public static UpdateInfo? LatestWindowsUpdate(string json, SemVer current)
+    public static UpdateInfo? LatestWindowsUpdate(string json, SemVer current, bool includePrerelease = true)
     {
         JsonElement root;
         try
@@ -175,10 +233,13 @@ public sealed class UpdateChecker
         UpdateInfo? newest = null;
         foreach (var release in root.EnumerateArray())
         {
-            // 草稿跳过；预发布也接受（项目目前全是 prerelease）。
+            // 草稿跳过；预发布按通道过滤（稳定通道跳过 GitHub prerelease=true 或 tag 带 -beta 等后缀）。
             if (release.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True) continue;
             var tag = StringProp(release, "tag_name") ?? StringProp(release, "name") ?? "";
             if (SemVer.Parse(tag) is not { } version) continue;
+            var githubPrerelease = release.TryGetProperty("prerelease", out var pre)
+                && pre.ValueKind == JsonValueKind.True;
+            if (!includePrerelease && (githubPrerelease || version.IsPrerelease)) continue;
             var notes = StringProp(release, "body") ?? "";
             if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) continue;
 
@@ -213,9 +274,14 @@ public sealed class UpdateChecker
 
     public static bool AssetNameMatchesVersion(string assetName, SemVer version)
     {
+        // 只比较核心 major.minor.patch：资产名通常不带 -beta 等通道后缀，
+        // 通道由 GitHub release 的 prerelease 标记决定，不靠文件名。
         foreach (Match match in VersionTokenRegex.Matches(assetName))
         {
-            if (SemVer.Parse(match.Value) is { } parsed && parsed.Equals(version)) return true;
+            if (SemVer.Parse(match.Value) is { } parsed
+                && parsed.Major == version.Major
+                && parsed.Minor == version.Minor
+                && parsed.Patch == version.Patch) return true;
         }
         return false;
     }

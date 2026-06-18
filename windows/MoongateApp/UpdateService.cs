@@ -74,6 +74,12 @@ public sealed class UpdateService : ObservableObject
 
     public string ReleasesPageUrl => _checker.ReleasesPageUrl;
 
+    /// <summary>
+    /// 安装前最后一道闸：返回 false 则中止安装（不退出、不启动安装器）。
+    /// 由 SettingsWindow 注入，用于检查队列是否有未完成任务并向用户确认。
+    /// </summary>
+    public Func<bool>? ConfirmInstallReady { get; set; }
+
     /// <summary>检查更新。silent=true 时失败不改状态（启动静默检查用）。</summary>
     public async void Check(bool silent = false)
     {
@@ -82,9 +88,12 @@ public sealed class UpdateService : ObservableObject
         var cts = new CancellationTokenSource();
         _cts = cts;
         if (!silent) State = Phase.Checking;
+        // 稳定/测试通道：跟随设置，默认接收预发布（当前发布全是 prerelease）。
+        var includePrerelease = AppSettings.Load().ReceiveBetaUpdates;
         try
         {
-            var info = await _checker.CheckForUpdateAsync(CurrentVersion, httpHandler: null, cts.Token)
+            var info = await _checker.CheckForUpdateAsync(CurrentVersion, httpHandler: null, cts.Token,
+                    includePrerelease)
                 .ConfigureAwait(true);
             if (cts.IsCancellationRequested) return;
             if (info is not null)
@@ -132,27 +141,69 @@ public sealed class UpdateService : ObservableObject
         _cts = cts;
         DownloadFraction = 0;
         State = Phase.Downloading;
+        string? downloadDir = null;
         try
         {
             var installerPath = await DownloadAsync(info.SetupUrl, info.AssetName,
                 f => DownloadFraction = f, cts.Token).ConfigureAwait(true);
-            if (cts.IsCancellationRequested) return;
+            downloadDir = Path.GetDirectoryName(installerPath);
+            if (cts.IsCancellationRequested) { CleanupDir(downloadDir); return; }
             if (!InstallerNameMatchesVersion(installerPath, info.Version))
                 throw MoongateException.DownloadFailed(Loc.S("L.Update.DownloadFailed"));
             var expectedSha256 = await DownloadSha256Async(info.Sha256Url, cts.Token).ConfigureAwait(true);
             if (!FileSha256Matches(installerPath, expectedSha256))
                 throw MoongateException.DownloadFailed(Loc.S("L.Update.DownloadFailed"));
+            // 安装前闸：有未完成任务时由调用方向用户确认（继续任务 / 取消全部任务并更新）。
+            // 返回 false：保留已下载的安装器目录由下次启动清理，回到「可安装」态，不退出。
+            if (ConfirmInstallReady is { } gate && !gate())
+            {
+                State = Phase.Available;
+                return;
+            }
             State = Phase.Installing;
-            // 运行安装器（NSIS，每用户安装会就地覆盖并可重启），随后退出本应用让其完成替换。
-            Process.Start(new ProcessStartInfo(installerPath) { UseShellExecute = true });
+            // 运行安装器（NSIS，每用户安装会就地覆盖并可重启）。传入当前 PID，安装器会先等待
+            // 本进程完全退出再覆盖安装目录，避免「安装器已启动但旧 App 仍占用文件」的竞态。
+            // 标记为更新退出：主窗口关窗确认不再拦截这次退出（专用状态，避免互相打架）。
+            App.MarkUpdateShutdown();
+            Process.Start(new ProcessStartInfo(installerPath)
+            {
+                UseShellExecute = true,
+                Arguments = $"/UPDATEPID={Environment.ProcessId}",
+            });
             Application.Current.Shutdown();
         }
         catch (Exception e)
         {
+            CleanupDir(downloadDir);
             if (cts.IsCancellationRequested) return;
             FailureReason = e.Message;
             State = Phase.Failed;
         }
+    }
+
+    /// <summary>删除一次更新下载的临时目录（尽力而为）。</summary>
+    private static void CleanupDir(string? dir)
+    {
+        if (string.IsNullOrEmpty(dir)) return;
+        try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+        catch { /* 占用/权限问题忽略，留给启动期清理 */ }
+    }
+
+    /// <summary>
+    /// 启动时清理遗留的更新临时目录（moongate-update-*）。成功安装后安装器无法删除自身所在目录，
+    /// 由下次启动统一清掉；取消/失败路径已即时清理，这里兜底历史残留。
+    /// </summary>
+    public static void CleanStaleUpdateDirs()
+    {
+        try
+        {
+            var temp = Path.GetTempPath();
+            foreach (var dir in Directory.EnumerateDirectories(temp, "moongate-update-*"))
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { /* 仍被占用则下次再清 */ }
+            }
+        }
+        catch { /* 临时目录不可枚举时忽略 */ }
     }
 
     public void Cancel()

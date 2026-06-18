@@ -100,9 +100,10 @@ public class WindowsCoreI18nTests
 
             await manager.EnsureAsync(new Progress<string>(progress.Add));
 
-            Assert.Contains("正在下載 yt-dlp…", progress);
-            Assert.Contains("正在下載 ffmpeg…", progress);
-            Assert.Contains("正在下載 deno…", progress);
+            // 进度文案现在带字节/速度后缀（如「正在下載 yt-dlp… 6 B / 6 B · 5.9 KB/s」），按前缀断言。
+            Assert.Contains(progress, p => p.StartsWith("正在下載 yt-dlp…"));
+            Assert.Contains(progress, p => p.StartsWith("正在下載 ffmpeg…"));
+            Assert.Contains(progress, p => p.StartsWith("正在下載 deno…"));
             Assert.Contains("依賴元件已就緒", progress);
         }
         finally

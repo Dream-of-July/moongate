@@ -9,10 +9,22 @@ namespace Moongate.App;
 /// <summary>应用入口：界面语言装载 + 未捕获异常兜底 + 首次启动依赖引导。</summary>
 public partial class App : Application
 {
+    /// <summary>
+    /// 正处于「更新退出」流程：UpdateService 启动安装器后置位，主窗口关窗确认据此放行，
+    /// 不再用普通的「有未完成任务」确认拦截这次退出。
+    /// </summary>
+    public static bool IsUpdateShutdown { get; private set; }
+
+    /// <summary>标记进入更新退出流程（由 UpdateService 在启动安装器前调用）。</summary>
+    public static void MarkUpdateShutdown() => IsUpdateShutdown = true;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         StartupDiagnostics.Mark("OnStartup begin");
+
+        // 清理上一轮更新遗留的临时安装器目录（成功安装后安装器无法自删所在目录）。
+        UpdateService.CleanStaleUpdateDirs();
 
         // 先注册全局异常处理器：任何后续步骤抛错都能落盘 + 提示，而不是变成无窗口僵尸进程。
         DispatcherUnhandledException += OnDispatcherUnhandledException;

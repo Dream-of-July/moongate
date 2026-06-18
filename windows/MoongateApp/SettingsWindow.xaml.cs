@@ -30,6 +30,8 @@ public partial class SettingsWindow : Window
         AITokenBox.Password = _vm.AIAuthToken;
         TokenBox.Password = _vm.AuthToken;
         SummaryTokenBox.Password = _vm.SummaryAuthToken;
+        // 安装更新前的队列闸：有未完成任务时先向用户确认（继续任务 / 取消全部任务并更新）。
+        Updater.ConfirmInstallReady = ConfirmUpdateInstall;
         Closed += (_, _) =>
         {
             _vm.CancelOperations();
@@ -113,17 +115,12 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            // 先删旧文件再走 EnsureAsync（缺什么下什么）；被占用删不掉的会跳过重下。
-            var bin = BinaryLocator.BinDirectory;
-            foreach (var file in new[] { "yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe", "deno.exe" })
-            {
-                try { File.Delete(Path.Combine(bin, file)); } catch { /* 占用中跳过 */ }
-            }
+            // 不再先删旧文件：下载到 staging 校验成功后才原子替换，网络失败时原有可用环境完整保留。
             var manager = new DependencyManager();
             var window = new DependencyWindow(
                 Loc.S("L.Settings.RedownloadTitle"),
                 Loc.S("L.Settings.RedownloadCaption"),
-                (progress, ct) => manager.EnsureAsync(progress, ct))
+                (progress, ct) => manager.RedownloadAllAsync(progress, ct))
             {
                 Owner = this,
             };
@@ -170,6 +167,27 @@ public partial class SettingsWindow : Window
     private void OnDownloadUpdateClick(object sender, RoutedEventArgs e) => Updater.DownloadAndInstall();
 
     private void OnCancelUpdateClick(object sender, RoutedEventArgs e) => Updater.Cancel();
+
+    /// <summary>
+    /// 安装更新前的队列闸：无未完成任务直接放行；有则弹确认，
+    /// 用户选「取消全部任务并更新」才中止队列并放行，选「继续任务」则取消本次更新。
+    /// </summary>
+    private bool ConfirmUpdateInstall()
+    {
+        var open = _main.Queue.OpenTaskCount;
+        if (open == 0) return true;
+        var paused = _main.Queue.PausedOpenTaskCount;
+        var message = paused > 0
+            ? Loc.F("L.Update.QueueBusyPausedFmt", open, paused)
+            : Loc.F("L.Update.QueueBusyFmt", open);
+        var confirmed = ConfirmWindow.Show(
+            this, message, Loc.S("L.Update.QueueBusyDetail"),
+            confirmText: Loc.S("L.Update.CancelTasksAndUpdate"),
+            cancelText: Loc.S("L.Update.KeepTasks"));
+        if (!confirmed) return false;
+        _main.AbortAllTasks();
+        return true;
+    }
 
     private void OnOpenReleasesClick(object sender, RoutedEventArgs e)
     {

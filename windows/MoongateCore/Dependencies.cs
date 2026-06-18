@@ -52,47 +52,43 @@ public sealed class DependencyManager
     internal static List<DependencyDownload> PlanMissing(string binDirectory)
     {
         bool Missing(string file) => !File.Exists(Path.Combine(binDirectory, file));
-
-        var plans = new List<DependencyDownload>();
-        if (Missing("yt-dlp.exe"))
-        {
-            plans.Add(new DependencyDownload
-            {
-                Name = "yt-dlp",
-                Url = YtDlpUrl,
-                Kind = DependencyDownload.DownloadKind.Executable,
-                ProvidesFiles = ["yt-dlp.exe"],
-            });
-        }
-        // ffmpeg 与 ffprobe 同包：任一缺失都重新下 zip（两个一起提取）。
-        if (Missing("ffmpeg.exe") || Missing("ffprobe.exe"))
-        {
-            plans.Add(new DependencyDownload
-            {
-                Name = "ffmpeg",
-                Url = FfmpegZipUrl,
-                Kind = DependencyDownload.DownloadKind.Zip,
-                ProvidesFiles = ["ffmpeg.exe", "ffprobe.exe"],
-                ZipEntries = new Dictionary<string, string>
-                {
-                    ["bin/ffmpeg.exe"] = "ffmpeg.exe",
-                    ["bin/ffprobe.exe"] = "ffprobe.exe",
-                },
-            });
-        }
-        if (Missing("deno.exe"))
-        {
-            plans.Add(new DependencyDownload
-            {
-                Name = "deno",
-                Url = DenoZipUrl,
-                Kind = DependencyDownload.DownloadKind.Zip,
-                ProvidesFiles = ["deno.exe"],
-                ZipEntries = new Dictionary<string, string> { ["deno.exe"] = "deno.exe" },
-            });
-        }
-        return plans;
+        return AllPlans().Where(plan => plan.ProvidesFiles.Any(Missing)).ToList();
     }
+
+    /// <summary>不论是否已存在，规划全部受管依赖的下载（「重新下载依赖」用）。</summary>
+    public IReadOnlyList<DependencyDownload> PlanAll() => AllPlans();
+
+    /// <summary>受管依赖的完整下载计划（顺序：yt-dlp → ffmpeg → deno）。</summary>
+    internal static List<DependencyDownload> AllPlans() =>
+    [
+        new DependencyDownload
+        {
+            Name = "yt-dlp",
+            Url = YtDlpUrl,
+            Kind = DependencyDownload.DownloadKind.Executable,
+            ProvidesFiles = ["yt-dlp.exe"],
+        },
+        new DependencyDownload
+        {
+            Name = "ffmpeg",
+            Url = FfmpegZipUrl,
+            Kind = DependencyDownload.DownloadKind.Zip,
+            ProvidesFiles = ["ffmpeg.exe", "ffprobe.exe"],
+            ZipEntries = new Dictionary<string, string>
+            {
+                ["bin/ffmpeg.exe"] = "ffmpeg.exe",
+                ["bin/ffprobe.exe"] = "ffprobe.exe",
+            },
+        },
+        new DependencyDownload
+        {
+            Name = "deno",
+            Url = DenoZipUrl,
+            Kind = DependencyDownload.DownloadKind.Zip,
+            ProvidesFiles = ["deno.exe"],
+            ZipEntries = new Dictionary<string, string> { ["deno.exe"] = "deno.exe" },
+        },
+    ];
 
     /// <summary>确保所有依赖就位：缺失的逐个下载安装。progress 上报人话进度文案。</summary>
     public async Task EnsureAsync(IProgress<string>? progress = null, CancellationToken ct = default)
@@ -103,28 +99,42 @@ public sealed class DependencyManager
         foreach (var plan in plans)
         {
             ct.ThrowIfCancellationRequested();
-            progress?.Report(L10n.T($"正在下载 {plan.Name}…", $"正在下載 {plan.Name}…", $"Downloading {plan.Name}…"));
-            await DownloadAndInstallAsync(plan, ct).ConfigureAwait(false);
+            await DownloadAndInstallAsync(plan, progress, ct).ConfigureAwait(false);
         }
         progress?.Report(L10n.T("依赖组件已就绪", "依賴元件已就緒", "All components are ready"));
+    }
+
+    /// <summary>
+    /// 重新下载全部依赖：每项都先下到 .tmp、校验/提取成功后才原子替换。
+    /// 关键是「先下后换」——网络失败时旧的可用文件原样保留，不会像旧实现那样先删后下、一断网就破坏环境。
+    /// </summary>
+    public async Task RedownloadAllAsync(IProgress<string>? progress = null, CancellationToken ct = default)
+    {
+        Directory.CreateDirectory(_binDirectory);
+        foreach (var plan in AllPlans())
+        {
+            ct.ThrowIfCancellationRequested();
+            await DownloadAndInstallAsync(plan, progress, ct).ConfigureAwait(false);
+        }
+        progress?.Report(L10n.T("依赖组件已更新", "依賴元件已更新", "All components are up to date"));
     }
 
     /// <summary>单独更新 yt-dlp（站点规则频繁变化，提供手动更新入口）。</summary>
     public async Task UpdateYtDlpAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_binDirectory);
-        progress?.Report(L10n.T("正在下载 yt-dlp…", "正在下載 yt-dlp…", "Downloading yt-dlp…"));
         await DownloadAndInstallAsync(new DependencyDownload
         {
             Name = "yt-dlp",
             Url = YtDlpUrl,
             Kind = DependencyDownload.DownloadKind.Executable,
             ProvidesFiles = ["yt-dlp.exe"],
-        }, ct).ConfigureAwait(false);
+        }, progress, ct).ConfigureAwait(false);
         progress?.Report(L10n.T("yt-dlp 已更新", "yt-dlp 已更新", "yt-dlp updated"));
     }
 
-    private async Task DownloadAndInstallAsync(DependencyDownload plan, CancellationToken ct)
+    private async Task DownloadAndInstallAsync(
+        DependencyDownload plan, IProgress<string>? progress, CancellationToken ct)
     {
         // 先全部下到 .tmp，校验/提取成功后原子改名，失败不留半截产物。
         var tempPath = Path.Combine(_binDirectory, $"{plan.Name}-{Guid.NewGuid():N}.tmp");
@@ -135,11 +145,13 @@ public sealed class DependencyManager
             {
                 response.EnsureSuccessStatusCode();
                 var expected = response.Content.Headers.ContentLength;
+                await using (var src = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
                 await using (var fileStream = File.Create(tempPath))
                 {
-                    await response.Content.CopyToAsync(fileStream, ct).ConfigureAwait(false);
+                    await CopyWithProgressAsync(src, fileStream, plan.Name, expected, progress, ct)
+                        .ConfigureAwait(false);
                 }
-                // 完整性校验：弱网/VPN/CDN 抖动会让连接中途断开却让 CopyToAsync 正常返回，
+                // 完整性校验：弱网/VPN/CDN 抖动会让连接中途断开却让读取正常返回，
                 // 留下截断文件。可执行文件被直接改名安装成损坏二进制（zip 解压会自爆，exe 不会）。
                 // Content-Length 已知时必须匹配，否则视为下载失败、删临时文件重来。
                 if (expected is { } total)
@@ -174,6 +186,47 @@ public sealed class DependencyManager
             try { File.Delete(tempPath); } catch { /* 忽略 */ }
             throw;
         }
+    }
+
+    /// <summary>
+    /// 流式拷贝并按节流上报真实进度：组件名 + 已下载/总大小 + 速度。
+    /// 总大小未知（无 Content-Length）时只报已下载大小与速度。节流到约每 200ms 一次，避免刷屏。
+    /// </summary>
+    private static async Task CopyWithProgressAsync(
+        Stream src, Stream dst, string name, long? total,
+        IProgress<string>? progress, CancellationToken ct)
+    {
+        var buffer = new byte[81920];
+        long received = 0;
+        var lastReportTicks = 0L;
+        var startTicks = Environment.TickCount64;
+        int read;
+        while ((read = await src.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            await dst.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            received += read;
+            var now = Environment.TickCount64;
+            if (progress is null || now - lastReportTicks < 200) continue;
+            lastReportTicks = now;
+            var elapsed = Math.Max(1, now - startTicks) / 1000.0;
+            var speed = FormatBytes((long)(received / elapsed)) + "/s";
+            var sizeText = total is { } t
+                ? $"{FormatBytes(received)} / {FormatBytes(t)} · {speed}"
+                : $"{FormatBytes(received)} · {speed}";
+            progress.Report(L10n.T(
+                $"正在下载 {name}… {sizeText}", $"正在下載 {name}… {sizeText}", $"Downloading {name}… {sizeText}"));
+        }
+    }
+
+    /// <summary>把字节数格式化成人类可读大小（KB/MB/GB），保留一位小数。</summary>
+    internal static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        double value = bytes;
+        string[] units = ["KB", "MB", "GB"];
+        var unit = -1;
+        do { value /= 1024; unit++; } while (value >= 1024 && unit < units.Length - 1);
+        return $"{value:0.0} {units[unit]}";
     }
 
     /// <summary>

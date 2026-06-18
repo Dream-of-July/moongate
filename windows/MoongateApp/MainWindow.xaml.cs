@@ -120,6 +120,13 @@ public partial class MainWindow : Window
     /// <summary>关窗且有未完成任务（含已暂停）→ 确认对话框，确认则全部中止。</summary>
     protected override void OnClosing(CancelEventArgs e)
     {
+        // 更新退出流程：安装器已等待本进程退出，这次关窗必须放行，不再被普通确认拦截。
+        // 队列在进入安装前已由更新闸单独处理（继续任务则不会走到这里）。
+        if (App.IsUpdateShutdown)
+        {
+            base.OnClosing(e);
+            return;
+        }
         if (_vm.AbortConfirmationMessage() is { } message)
         {
             var confirmed = ConfirmWindow.Show(

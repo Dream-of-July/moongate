@@ -218,6 +218,11 @@
     <sys:String x:Key="L.Update.Installing">Launching the installer. The app will exit to finish updating…</sys:String>
     <sys:String x:Key="L.Update.Untrusted">The update URL is not trusted and was blocked. Please download manually from GitHub.</sys:String>
     <sys:String x:Key="L.Update.DownloadFailed">Failed to download the update package.</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyFmt">{0} task(s) are still running in the queue. Updating now will cancel them all.</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyPausedFmt">{0} task(s) are still in the queue ({1} paused). Updating now will cancel them all.</sys:String>
+    <sys:String x:Key="L.Update.QueueBusyDetail">The app must quit before installing the update; unfinished downloads and processing will stop.</sys:String>
+    <sys:String x:Key="L.Update.CancelTasksAndUpdate">Cancel all tasks and update</sys:String>
+    <sys:String x:Key="L.Update.KeepTasks">Keep tasks</sys:String>
 
     <!-- Sign-in window -->
     <sys:String x:Key="L.Login.Title">Site sign-in</sys:String>
@@ -239,5 +244,11 @@
     <sys:String x:Key="L.Dep.Checking">Checking components…</sys:String>
     <sys:String x:Key="L.Dep.DownloadFailed">Download failed</sys:String>
     <sys:String x:Key="L.Dep.CheckFailedFmt">Component check failed: {0}</sys:String>
+    <sys:String x:Key="L.Dep.Cancel">Cancel download</sys:String>
+    <sys:String x:Key="L.Dep.Cancelled">Download cancelled</sys:String>
+    <sys:String x:Key="L.Dep.CancelConfirm">Stop downloading and close?</sys:String>
+    <sys:String x:Key="L.Dep.CancelConfirmDetail">The component being downloaded will stop and partial files will be cleaned up. You can re-download later in Settings.</sys:String>
+    <sys:String x:Key="L.Dep.StopAndClose">Stop and close</sys:String>
+    <sys:String x:Key="L.Dep.ProgressFmt">Downloading {0}… {1}</sys:String>
 
 </ResourceDictionary>

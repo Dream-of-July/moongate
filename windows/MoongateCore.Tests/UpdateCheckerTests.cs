@@ -13,11 +13,30 @@ public class UpdateCheckerTests
     {
         Assert.Equal(new SemVer(0, 4, 0), SemVer.Parse("v0.4.0"));
         Assert.Equal(new SemVer(0, 4, 0), SemVer.Parse("0.4"));
-        Assert.Equal(new SemVer(1, 2, 3), SemVer.Parse("1.2.3-beta"));
+        Assert.Equal(new SemVer(1, 2, 3, "beta"), SemVer.Parse("1.2.3-beta"));
         Assert.Null(SemVer.Parse("not-a-version"));
         Assert.True(SemVer.Parse("0.4.0")!.Value > SemVer.Parse("0.3.9")!.Value);
         Assert.True(SemVer.Parse("v1.0.0")!.Value > SemVer.Parse("0.99.99")!.Value);
         Assert.False(SemVer.Parse("0.4.0")!.Value > SemVer.Parse("0.4.0")!.Value);
+    }
+
+    [Fact]
+    public void SemVer_PrereleasePrecedence()
+    {
+        // 正式版高于同号预发布版。
+        Assert.True(SemVer.Parse("0.8.0")!.Value > SemVer.Parse("0.8.0-beta")!.Value);
+        Assert.True(SemVer.Parse("0.8.0")!.Value > SemVer.Parse("0.8.0-rc.1")!.Value);
+        // 之前的 bug：去掉后缀后 0.8.0-beta 与 0.8.0 相等，正式版无法覆盖 beta。
+        Assert.False(SemVer.Parse("0.8.0")!.Value.Equals(SemVer.Parse("0.8.0-beta")!.Value));
+        // 预发布之间按点分标识比较：数字段按数值。
+        Assert.True(SemVer.Parse("0.8.0-rc.2")!.Value > SemVer.Parse("0.8.0-rc.1")!.Value);
+        Assert.True(SemVer.Parse("0.8.0-rc.1")!.Value > SemVer.Parse("0.8.0-beta")!.Value);
+        // 段更多者更高（rc.1.1 > rc.1）。
+        Assert.True(SemVer.Parse("0.8.0-rc.1.1")!.Value > SemVer.Parse("0.8.0-rc.1")!.Value);
+        Assert.True(SemVer.Parse("0.8.0-beta")!.Value.IsPrerelease);
+        Assert.False(SemVer.Parse("0.8.0")!.Value.IsPrerelease);
+        // 正式版升级路径：beta → stable、rc → stable 都应被识别为「更新」。
+        Assert.True(SemVer.Parse("0.8.0")!.Value > SemVer.Parse("0.8.0-rc.3")!.Value);
     }
 
     private static string ReleasesJson(params (string Tag, string[] Assets)[] entries)
@@ -36,6 +55,57 @@ public class UpdateCheckerTests
             }).ToArray(),
         }).ToArray();
         return JsonSerializer.Serialize(arr);
+    }
+
+    /// <summary>可控制 prerelease 标记的 release JSON（通道过滤测试用）。</summary>
+    private static string ReleasesJsonWithChannel(params (string Tag, bool Prerelease, string[] Assets)[] entries)
+    {
+        var arr = entries.Select(e => new Dictionary<string, object>
+        {
+            ["tag_name"] = e.Tag,
+            ["body"] = $"release notes for {e.Tag}",
+            ["draft"] = false,
+            ["prerelease"] = e.Prerelease,
+            ["assets"] = e.Assets.Select(name => new Dictionary<string, object>
+            {
+                ["name"] = name,
+                ["browser_download_url"] =
+                    $"https://github.com/Dream-of-July/moongate/releases/download/{e.Tag}/{name}",
+            }).ToArray(),
+        }).ToArray();
+        return JsonSerializer.Serialize(arr);
+    }
+
+    [Fact]
+    public void StableChannel_SkipsPrereleaseFlaggedReleases()
+    {
+        var json = ReleasesJsonWithChannel(
+            ("v0.6.0", true, ["月之门-Windows-Setup-v0.6.0.exe", "月之门-Windows-Setup-v0.6.0.exe.sha256"]),
+            ("v0.5.0", false, ["月之门-Windows-Setup-v0.5.0.exe", "月之门-Windows-Setup-v0.5.0.exe.sha256"]));
+
+        // 稳定通道：跳过 prerelease=true 的 0.6.0，落到正式版 0.5.0。
+        var stable = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value, includePrerelease: false);
+        Assert.Equal("v0.5.0", stable!.Tag);
+
+        // 测试通道：接收预发布，拿到更高的 0.6.0。
+        var beta = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value, includePrerelease: true);
+        Assert.Equal("v0.6.0", beta!.Tag);
+    }
+
+    [Fact]
+    public void StableChannel_SkipsTagSuffixedPrereleases()
+    {
+        var json = ReleasesJsonWithChannel(
+            // tag 带 -beta 后缀但 GitHub 未标 prerelease：稳定通道也应跳过。
+            ("v0.7.0-beta", false, ["月之门-Windows-Setup-v0.7.0.exe", "月之门-Windows-Setup-v0.7.0.exe.sha256"]),
+            ("v0.5.0", false, ["月之门-Windows-Setup-v0.5.0.exe", "月之门-Windows-Setup-v0.5.0.exe.sha256"]));
+
+        var stable = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value, includePrerelease: false);
+        Assert.Equal("v0.5.0", stable!.Tag);
+        // 通道允许预发布时，带后缀的 0.7.0-beta 仍能匹配其不带后缀的资产名。
+        var beta = UpdateChecker.LatestWindowsUpdate(json, SemVer.Parse("0.4.0")!.Value, includePrerelease: true);
+        Assert.Equal("v0.7.0-beta", beta!.Tag);
+        Assert.Equal("月之门-Windows-Setup-v0.7.0.exe", beta.AssetName);
     }
 
     [Fact]

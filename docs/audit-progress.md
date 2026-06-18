@@ -40,12 +40,12 @@
 
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
-| WIN-UPD-001 | P0 | Windows | Not started | — | — | Not validated on real hardware | 更新安装进程退出竞态 |
-| SEC-COOKIE-001 | P0 | Both | Not started | — | — | Not validated on real hardware | WebView 全量 Cookie 导出，未按站点隔离 |
-| SEC-CRED-001 | P0 | Both | Not started | — | — | Not validated on real hardware | API Token 明文落盘 |
-| WIN-DEP-001 | P0 | Windows | Not started | — | — | Not validated on real hardware | 首次依赖下载不可取消，窗口被锁 |
-| WIN-DEP-002 | P0 | Windows | Not started | — | — | Not validated on real hardware | “重新下载依赖”先删现有可用版本 |
-| DEP-SUPPLY-001 | P0 | Windows | Not started | — | — | Not validated on real hardware | 下载执行未固定/未签名 latest 二进制 |
+| WIN-UPD-001 | P0 | Windows | Done (code) | UpdateService.cs, App.xaml.cs, MainWindow.xaml.cs, SettingsWindow.xaml.cs, installer/installer.nsi, Strings.*.xaml | UpdateCheckerTests, 安装器 makensis 编译通过 | Not validated on real hardware | 队列 preflight + /UPDATEPID 等待 + 专用退出态；helper 进程未引入（用 NSIS 等待 PID 替代），需真机验证覆盖安装 |
+| SEC-COOKIE-001 | P0 | Both | Not started | — | — | Not validated on real hardware | WebView 全量 Cookie 导出，未按站点隔离（Phase 2） |
+| SEC-CRED-001 | P0 | Both | Not started | — | — | Not validated on real hardware | API Token 明文落盘（Phase 2） |
+| WIN-DEP-001 | P0 | Windows | Done (code) | DependencyWindow.xaml(.cs), Dependencies.cs, Strings.*.xaml | DependenciesTests.FormatBytes, i18n 进度测试 | Not validated on real hardware | 加取消按钮/可取消 token/关窗确认/字节+速度进度；断点续传未做 |
+| WIN-DEP-002 | P0 | Windows | Done (code) | SettingsWindow.xaml.cs, Dependencies.cs | DependenciesTests.RedownloadAll_NetworkFailure_KeepsExistingBinaries, PlanAll | Not validated on real hardware | 改为 staging 先下后换；SHA-256/PE 架构/能力校验留待 Phase 3 (DEP-WIN-003) |
+| DEP-SUPPLY-001 | P0 | Windows | Not started | — | — | Not validated on real hardware | 下载执行未固定/未签名 latest 二进制（Phase 3）；更新器侧已有 SHA-256 |
 
 ### P1 · 高优先级
 
@@ -56,7 +56,7 @@
 | PROC-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 暂停乐观更新，失败仍释放并发槽 |
 | PROC-MAC-002 | P1 | macOS | Not started | — | — | Not validated on real hardware | 取消可能留下孤儿 ffmpeg 子进程 |
 | UPDATE-MAC-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 显式“静默检查更新”实为 no-op |
-| UPDATE-WIN-002 | P1 | Windows | Not started | — | — | Not validated on real hardware | SemVer 不正确处理 prerelease |
+| UPDATE-WIN-002 | P1 | Windows | Done (code) | UpdateChecker.cs, Settings.cs, UpdateService.cs | UpdateCheckerTests.SemVer_PrereleasePrecedence / StableChannel_*, SettingsTests.ReceiveBetaUpdates | Not validated on real hardware | SemVer 完整预发布优先级 + 通道过滤；默认 ReceiveBetaUpdates=true（当前发布全是 prerelease，待首个正式版后改默认） |
 | LOGIN-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 清除全部登录即使失败也显示成功 |
 | DATA-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 卸载说明遗漏 %APPDATA% 凭证/Cookie |
 | DATA-SETTINGS-002 | P1 | Both | Not started | — | — | Not validated on real hardware | 设置损坏静默回默认，无备份/提示 |
@@ -76,7 +76,7 @@
 | UX-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 安装器只有简体中文 |
 | UX-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | WebView2 缺失无直接修复入口 |
 | REL-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 仅发布 x64，ARM 仅模拟 |
-| UPDATE-WIN-003 | P2 | Windows | Not started | — | — | Not validated on real hardware | 更新临时目录未清理 |
+| UPDATE-WIN-003 | P2 | Windows | Done (code) | UpdateService.cs, App.xaml.cs | 经现有更新测试覆盖编译 | Not validated on real hardware | 取消/失败即时清理临时目录 + 启动清理 moongate-update-* 残留 |
 | UPDATE-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | 每次开设置新建更新器并静默请求 GitHub |
 | UX-QUEUE-001 | P2 | Both | Not started | — | — | Not validated on real hardware | 自动收起队列可能在交互时关闭 |
 | DOC-001 | P2 | macOS | Not started | — | — | Not validated on real hardware | README 对 Swift 依赖描述自相矛盾 |
@@ -88,7 +88,7 @@
 | Phase | 范围 | 状态 |
 |---|---|---|
 | Phase 0 | 建立可验证基线 + 本跟踪文档 | **Done**（基线全绿，见上） |
-| Phase 1 | Windows 更新与依赖阻断项（WIN-UPD-001、WIN-DEP-001/002、UPDATE-WIN-003/002） | Not started |
+| Phase 1 | Windows 更新与依赖阻断项（WIN-UPD-001、WIN-DEP-001/002、UPDATE-WIN-003/002） | **Done (code)** — dotnet test 321 通过（+10），NSIS 编译通过；覆盖安装/取消下载需真机验证 |
 | Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
 | Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | Not started |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | Not started |

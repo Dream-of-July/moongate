@@ -63,6 +63,19 @@ public class SettingsTests
     }
 
     [Fact]
+    public void ReceiveBetaUpdates_DefaultsOnAndRoundTrips()
+    {
+        // 默认接收测试版（当前发布全是 prerelease，避免老用户收不到更新）。
+        Assert.True(new AppSettings().ReceiveBetaUpdates);
+        Assert.True(AppSettings.FromJson("{}").ReceiveBetaUpdates);
+        // 仅显式 false 关闭，且能往返。
+        var off = AppSettings.FromJson("""{"receiveBetaUpdates": false}""");
+        Assert.False(off.ReceiveBetaUpdates);
+        Assert.False(AppSettings.FromJson(off.ToJson()).ReceiveBetaUpdates);
+        Assert.Contains("\"receiveBetaUpdates\"", off.ToJson());
+    }
+
+    [Fact]
     public void SingleLineFields_AreTrimmedWhenRoundTripping()
     {
         var settings = new AppSettings
