@@ -72,31 +72,20 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertFalse(helpBody.contains("installer.install()"))
     }
 
-    func testDependencyUninstallIsConfirmationGatedAndDestructive() throws {
+    func testDependencyUninstallFeatureRemoved() throws {
+        // MAC-DEP-001：App 不应替用户管理全局 Homebrew 环境（检测到的 ffmpeg/JS 运行时
+        // 可能是用户为别的项目装的）。在 App 内提供「卸载依赖」会误伤其它工具，已整体移除。
         let source = try dependencySetupSource()
-        let sheetBody = try XCTUnwrap(functionBody(prefix: "var body", in: source))
-
-        // 删除按钮只在「已检测 + brew 可用 + 有已安装组件」时出现，且只置位确认 flag，
-        // 绝不直接 installer.uninstall()。
-        let deleteButton = try XCTUnwrap(sourceSlice(
-            from: "Button(localizer.t(L.Dependency.deleteDependencies), role: .destructive)",
-            to: "Spacer()",
-            in: sheetBody
-        ))
-        XCTAssertTrue(deleteButton.contains("showUninstallConfirm = true"))
-        XCTAssertFalse(deleteButton.contains("installer.uninstall()"))
-        XCTAssertTrue(sheetBody.contains("installer.hasChecked && installer.brewAvailable && installer.hasInstalled"))
-
-        // 真正的卸载只发生在确认 alert 的 destructive 按钮里。
-        let alertBlock = try XCTUnwrap(sourceSlice(
-            from: ".alert(localizer.t(L.Dependency.uninstallAlertTitle)",
-            to: "} message:",
-            in: sheetBody
-        ))
-        XCTAssertTrue(alertBlock.contains("Button(localizer.t(L.Common.cancel), role: .cancel)"))
-        XCTAssertTrue(alertBlock.contains("Button(localizer.t(L.Dependency.delete), role: .destructive)"))
-        XCTAssertTrue(alertBlock.contains("installer.uninstall()"))
-        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.uninstallMessage, installer.installedFormulaList)"))
+        XCTAssertFalse(source.contains("func uninstall()"))
+        XCTAssertFalse(source.contains("installer.uninstall()"))
+        XCTAssertFalse(source.contains("showUninstallConfirm"))
+        XCTAssertFalse(source.contains("brew uninstall"))
+        XCTAssertFalse(source.contains("uninstallIncomplete"))
+        XCTAssertFalse(source.contains("L.Dependency.deleteDependencies"))
+        XCTAssertFalse(source.contains("L.Dependency.uninstallAlertTitle"))
+        // 安装路径仍在。
+        XCTAssertTrue(source.contains("func install()"))
+        XCTAssertTrue(source.contains("subcommand: \"install\""))
     }
 
     func testDependencySetupSheetExposesAccessibleStatusSemantics() throws {

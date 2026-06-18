@@ -8,11 +8,12 @@ enum DependencyInstallFailure: Equatable {
     case brewLaunchFailed(String)
     case installCompletedButMissing
     case installIncomplete(Int32)
-    case uninstallIncomplete(Int32)
 }
 
 /// 依赖组件安装：体检 → `brew install` 缺失项（流式日志）→ 完成后回到业务流程。
 /// Homebrew 不存在时不静默装（curl|bash 不可接受），引导用户去 brew.sh。
+/// 注意（MAC-DEP-001）：刻意不提供「卸载依赖」入口——App 不应替用户管理全局开发环境，
+/// 检测到的 ffmpeg/JS 运行时可能是用户为别的项目装的，卸载会误伤其它工具。
 @MainActor
 final class DependencyInstaller: ObservableObject {
     // 初值为空：依赖体检会 spawn ffmpeg 子进程并 waitUntilExit（重入 runloop），
@@ -54,12 +55,6 @@ final class DependencyInstaller: ObservableObject {
     func install() {
         let formulas = missing.map(\.formula)
         runBrew(subcommand: "install", formulas: formulas)
-    }
-
-    /// 卸载已安装的依赖组件（brew uninstall）。删除操作，UI 侧必须先确认。
-    func uninstall() {
-        let formulas = installed.map(\.formula)
-        runBrew(subcommand: "uninstall", formulas: formulas)
     }
 
     private func runBrew(subcommand: String, formulas: [String]) {
@@ -119,14 +114,8 @@ final class DependencyInstaller: ObservableObject {
     private func refreshAfterBrew(subcommand: String, status: Int32) async {
         await refresh()
         inFlightFormulas = []
-        if subcommand == "install" {
-            if !allInstalled {
-                error = status == 0 ? .installCompletedButMissing : .installIncomplete(status)
-            }
-        } else {
-            if status != 0 {
-                error = .uninstallIncomplete(status)
-            }
+        if !allInstalled {
+            error = status == 0 ? .installCompletedButMissing : .installIncomplete(status)
         }
     }
 }
@@ -134,7 +123,6 @@ final class DependencyInstaller: ObservableObject {
 struct DependencySetupSheet: View {
     @ObservedObject var model: ViewModel
     @StateObject private var installer = DependencyInstaller()
-    @State private var showUninstallConfirm = false
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
@@ -263,17 +251,6 @@ struct DependencySetupSheet: View {
                 .disabled(installer.isRunning || !installer.hasChecked)
                 .help(localizer.t(L.Dependency.refreshHelp))
                 .accessibilityHint(localizer.t(L.Dependency.refreshHint))
-                if installer.hasChecked && installer.brewAvailable && installer.hasInstalled {
-                    Button(localizer.t(L.Dependency.deleteDependencies), role: .destructive) {
-                        showUninstallConfirm = true
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .foregroundStyle(.red)
-                    .disabled(installer.isRunning)
-                    .help(localizer.t(L.Dependency.deleteHelp))
-                    .accessibilityHint(localizer.t(L.Dependency.deleteHint))
-                }
                 Spacer()
                 Button {
                     installer.cancel()
@@ -315,14 +292,6 @@ struct DependencySetupSheet: View {
         .padding(20)
         .frame(width: 480)
         .task { await installer.refresh() }
-        .alert(localizer.t(L.Dependency.uninstallAlertTitle), isPresented: $showUninstallConfirm) {
-            Button(localizer.t(L.Common.cancel), role: .cancel) {}
-            Button(localizer.t(L.Dependency.delete), role: .destructive) {
-                installer.uninstall()
-            }
-        } message: {
-            Text(localizer.t(L.Dependency.uninstallMessage, installer.installedFormulaList))
-        }
     }
 
     private func componentAccessibilityLabel(_ component: DependencySetup.Component) -> String {
@@ -380,8 +349,6 @@ struct DependencySetupSheet: View {
             return localizer.t(L.Dependency.installCompletedButMissing)
         case .installIncomplete(let status):
             return localizer.t(L.Dependency.installIncomplete, Int(status))
-        case .uninstallIncomplete(let status):
-            return localizer.t(L.Dependency.uninstallIncomplete, Int(status))
         }
     }
 }
