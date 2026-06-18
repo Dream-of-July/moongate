@@ -45,6 +45,9 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(source.contains("prepareForUpdateUI?()"))
         XCTAssertTrue(source.contains("updaterController.checkForUpdates(nil)"))
         XCTAssertTrue(source.contains("blockInstallDueToOpenTasks"))
+        // UPDATE-MAC-001：移除实为 no-op 的「静默检查」（silent=true 直接 return），改为依赖 Sparkle 调度。
+        XCTAssertFalse(source.contains("func check(silent:"))
+        XCTAssertFalse(source.contains("guard !silent"))
         XCTAssertFalse(source.contains("pkgutil"))
         XCTAssertFalse(source.contains("spctl"))
         XCTAssertFalse(source.contains("URLSession"))

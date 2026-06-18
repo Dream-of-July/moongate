@@ -81,7 +81,7 @@ struct SettingsView: View {
             await refreshDependencies()
         }
         .task {
-            // 打开设置时静默检查一次（有新版才在更新区提示，不打扰）。
+            // 后台更新检查由 Sparkle 调度驱动（见 UpdateService / Info.plist）；打开设置不强制立即检查。
             model.checkForUpdatesIfNeeded()
         }
         .onDisappear {

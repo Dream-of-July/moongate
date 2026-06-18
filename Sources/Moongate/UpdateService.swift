@@ -50,12 +50,9 @@ final class UpdateService: NSObject, ObservableObject {
         URL(string: "https://github.com/Dream-of-July/moongate/releases")!
     }
 
-    /// Sparkle 后台检查由 Info.plist 的自动检查配置驱动；silent 调用保持兼容，不额外干预调度。
-    func check(silent: Bool = false) {
-        guard !silent else { return }
-        checkForUpdates()
-    }
-
+    /// 后台更新检查由 Sparkle 的调度驱动（Info.plist: SUEnableAutomaticChecks +
+    /// SUScheduledCheckInterval）。此处只暴露用户主动触发的显式检查；不再保留之前那个
+    /// silent=true 直接 return 的 no-op（它从不真正检查，注释却声称会，属误导）。
     func checkForUpdates() {
         state = .idle
         updaterController.checkForUpdates(nil)

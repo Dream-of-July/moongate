@@ -1,7 +1,7 @@
 import XCTest
 
 final class MacOSViewModelBoundaryTests: XCTestCase {
-    func testViewModelOwnsUpdaterAndChecksSilentlyOnAppear() throws {
+    func testViewModelOwnsUpdaterAndDefersBackgroundChecksToSparkle() throws {
         let source = try viewModelSource()
 
         XCTAssertTrue(source.contains("let updater: UpdateService"))
@@ -12,9 +12,9 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let onAppearBody = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
         XCTAssertTrue(onAppearBody.contains("checkForUpdatesIfNeeded()"))
 
+        // UPDATE-MAC-001：不再调用实为 no-op 的 updater.check(silent: true)，后台检查交给 Sparkle 调度。
         let checkBody = try XCTUnwrap(functionBody(prefix: "func checkForUpdatesIfNeeded", in: source))
-        XCTAssertTrue(checkBody.contains("if case .idle = updater.state"))
-        XCTAssertTrue(checkBody.contains("updater.check(silent: true)"))
+        XCTAssertFalse(checkBody.contains("updater.check(silent: true)"))
 
         let dismissBody = try XCTUnwrap(functionBody(prefix: "func dismissSheetsForUpdateUI", in: source))
         XCTAssertTrue(dismissBody.contains("showSettings = false"))

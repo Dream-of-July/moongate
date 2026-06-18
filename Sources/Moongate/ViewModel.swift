@@ -179,9 +179,9 @@ final class ViewModel: ObservableObject {
     }
 
     func checkForUpdatesIfNeeded() {
-        if case .idle = updater.state {
-            updater.check(silent: true)
-        }
+        // 后台更新检查由 Sparkle 的自动调度驱动（Info.plist 的 SUEnableAutomaticChecks +
+        // SUScheduledCheckInterval=86400）。之前这里调用的 updater.check(silent:true) 实为 no-op，
+        // 既不真正检查、注释又声称会检查，已删除——显式检查仍由更新区的「检查更新」按钮触发。
     }
 
     func dismissSheetsForUpdateUI() {

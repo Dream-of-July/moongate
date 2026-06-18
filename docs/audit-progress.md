@@ -55,7 +55,7 @@
 | MAC-DEP-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 卸载误删用户自装 Homebrew 包 |
 | PROC-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 暂停乐观更新，失败仍释放并发槽 |
 | PROC-MAC-002 | P1 | macOS | Not started | — | — | Not validated on real hardware | 取消可能留下孤儿 ffmpeg 子进程 |
-| UPDATE-MAC-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 显式“静默检查更新”实为 no-op |
+| UPDATE-MAC-001 | P1 | macOS | Done (code) | Sources/Moongate/UpdateService.swift, ViewModel.swift, SettingsView.swift | UpdateCheckerTests / MacOS*BoundaryTests 更新断言 | Not validated on real hardware | 删除实为 no-op 的 silent 检查与误导注释，后台检查依赖 Sparkle 调度（Info.plist 已配 SUEnableAutomaticChecks + 86400s） |
 | UPDATE-WIN-002 | P1 | Windows | Done (code) | UpdateChecker.cs, Settings.cs, UpdateService.cs | UpdateCheckerTests.SemVer_PrereleasePrecedence / StableChannel_*, SettingsTests.ReceiveBetaUpdates | Not validated on real hardware | SemVer 完整预发布优先级 + 通道过滤；默认 ReceiveBetaUpdates=true（当前发布全是 prerelease，待首个正式版后改默认） |
 | LOGIN-WIN-001 | P1 | Windows | Done (code) | SettingsViewModel.cs, App.xaml.cs, Strings.*.xaml | CookieIsolationTests 间接覆盖；ClearAllLogins 逻辑 | Not validated on real hardware | 清除登录区分 cookie/ WebView 成功，部分失败显示「部分清除」并写待删标记下次启动清理 |
 | DATA-WIN-001 | P1 | Windows | Done (code) | docs/WINDOWS.md, installer/installer.nsi | makensis 编译通过 | Not validated on real hardware | 卸载器询问删除 %APPDATA%\Moongate + %LOCALAPPDATA%\Moongate；文档修正 |

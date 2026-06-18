@@ -106,7 +106,8 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("prepareForUpdateUI?()"))
         XCTAssertTrue(source.contains("@Published private(set) var canCheckForUpdates"))
         XCTAssertTrue(source.contains("updaterController.checkForUpdates(nil)"))
-        XCTAssertTrue(source.contains("guard !silent else { return }"))
+        // UPDATE-MAC-001：移除 no-op 的 silent 检查，后台检查交给 Sparkle 调度。
+        XCTAssertFalse(source.contains("guard !silent else { return }"))
         XCTAssertTrue(source.contains("NSWorkspace.shared.open(releasesPageURL)"))
         XCTAssertFalse(source.contains("hasAvailableUpdate"))
     }
