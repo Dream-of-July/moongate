@@ -9,7 +9,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.7.2"
+  !define APPVERSION "0.7.3"
 !endif
 !ifndef ICON_PATH
   !define ICON_PATH "windows/assets/app-nsis.ico"
