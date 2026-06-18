@@ -5,6 +5,132 @@ namespace MoongateCore.Tests;
 [Collection(L10nLanguageCollection.Name)]
 public class SettingsTests
 {
+    /// <summary>SEC-CRED-001：迁移失败时不丢 Token 的测试用——Set 永远抛错的存储。</summary>
+    private sealed class ThrowingCredentialStore : ICredentialStore
+    {
+        public string? Get(string key) => null;
+        public void Set(string key, string value) => throw new IOException("store unavailable");
+        public void Delete(string key) { }
+    }
+
+    [Fact]
+    public void Credentials_MigrateLegacyPlaintextIntoStoreAndStripFromDisk()
+    {
+        var prevStore = AppSettings.CredentialStore;
+        var prevDir = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-cred-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            var store = new InMemoryCredentialStore();
+            AppSettings.CredentialStore = store;
+            // 旧版文件：明文 Token 直接写在 JSON 里（ToJson 仍含 token，用来构造 legacy 文件）。
+            File.WriteAllText(AppSettings.SettingsFilePath,
+                new AppSettings { TranslationAuthToken = "secret-t", AIAuthToken = "secret-ai" }.ToJson());
+
+            var loaded = AppSettings.Load();
+
+            // 迁移进安全存储。
+            Assert.Equal("secret-t", store.Get("translationAuthToken"));
+            Assert.Equal("secret-ai", store.Get("aiAuthToken"));
+            // 内存配置仍可用（覆盖回内存）。
+            Assert.Equal("secret-t", loaded.TranslationAuthToken);
+            Assert.Equal("secret-ai", loaded.AIAuthToken);
+            // 磁盘文件已抹去明文。
+            var raw = File.ReadAllText(AppSettings.SettingsFilePath);
+            Assert.DoesNotContain("secret-t", raw);
+            Assert.DoesNotContain("secret-ai", raw);
+        }
+        finally
+        {
+            AppSettings.CredentialStore = prevStore;
+            AppSettings.OverrideSupportDirectory = prevDir;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public void Credentials_SaveWritesNoPlaintextToDiskButRoundTripsViaStore()
+    {
+        var prevStore = AppSettings.CredentialStore;
+        var prevDir = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-cred-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            var store = new InMemoryCredentialStore();
+            AppSettings.CredentialStore = store;
+
+            new AppSettings { TranslationModel = "m", TranslationAuthToken = "plaintext-xyz" }.Save();
+
+            var raw = File.ReadAllText(AppSettings.SettingsFilePath);
+            Assert.DoesNotContain("plaintext-xyz", raw);     // 磁盘无明文
+            Assert.Equal("plaintext-xyz", store.Get("translationAuthToken"));
+            Assert.Equal("plaintext-xyz", AppSettings.Load().TranslationAuthToken); // 从安全存储取回
+        }
+        finally
+        {
+            AppSettings.CredentialStore = prevStore;
+            AppSettings.OverrideSupportDirectory = prevDir;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public void Credentials_MigrationStoreFailure_KeepsLegacyTokenNotLost()
+    {
+        var prevStore = AppSettings.CredentialStore;
+        var prevDir = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-cred-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            AppSettings.CredentialStore = new ThrowingCredentialStore();
+            File.WriteAllText(AppSettings.SettingsFilePath,
+                new AppSettings { TranslationAuthToken = "secret-t" }.ToJson());
+
+            var loaded = AppSettings.Load();
+
+            // 安全存储写入失败：Token 不丢——内存仍有，磁盘明文仍保留（下次启动再试迁移）。
+            Assert.Equal("secret-t", loaded.TranslationAuthToken);
+            Assert.Contains("secret-t", File.ReadAllText(AppSettings.SettingsFilePath));
+        }
+        finally
+        {
+            AppSettings.CredentialStore = prevStore;
+            AppSettings.OverrideSupportDirectory = prevDir;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public void Credentials_SaveStoreFailure_ThrowsAndDoesNotWriteSettings()
+    {
+        var prevStore = AppSettings.CredentialStore;
+        var prevDir = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-cred-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            AppSettings.CredentialStore = new ThrowingCredentialStore();
+
+            Assert.ThrowsAny<Exception>(() =>
+                new AppSettings { TranslationAuthToken = "x" }.Save());
+            // 安全存储先写、失败即抛——settings.json 不应被写出。
+            Assert.False(File.Exists(AppSettings.SettingsFilePath));
+        }
+        finally
+        {
+            AppSettings.CredentialStore = prevStore;
+            AppSettings.OverrideSupportDirectory = prevDir;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
     [Fact]
     public void Load_CorruptFile_BacksUpAndReturnsDefaultsWithoutOverwriting()
     {

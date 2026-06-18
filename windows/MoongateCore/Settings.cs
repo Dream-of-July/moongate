@@ -177,6 +177,16 @@ public sealed record AppSettings
     // MARK: 读写
 
     /// <summary>
+    /// 凭证安全存储（SEC-CRED-001）。App 启动时注入 DPAPI 实现；默认内存实现供 CLI/测试。
+    /// 设为可注入便于单测验证迁移编排（迁移失败不丢旧 Token）。
+    /// </summary>
+    public static ICredentialStore CredentialStore { get; set; } = new InMemoryCredentialStore();
+
+    private const string TranslationTokenKey = "translationAuthToken";
+    private const string AITokenKey = "aiAuthToken";
+    private const string SummaryTokenKey = "summaryAuthToken";
+
+    /// <summary>
     /// 上次 Load 把损坏的 settings.json 备份后的路径（供 UI 一次性提示）；正常加载为 null。
     /// 读取后调用方可置回 null（消费一次）。
     /// </summary>
@@ -184,7 +194,7 @@ public sealed record AppSettings
 
     public static AppSettings Load()
     {
-        if (!File.Exists(SettingsFilePath)) return new AppSettings();
+        if (!File.Exists(SettingsFilePath)) return ApplyAndMigrateCredentials(new AppSettings());
         string text;
         try
         {
@@ -193,19 +203,66 @@ public sealed record AppSettings
         catch
         {
             // 读不到（权限/占用）：不动文件，按默认运行，不误备份。
-            return new AppSettings();
+            return ApplyAndMigrateCredentials(new AppSettings());
         }
         try
         {
-            return FromJson(text);
+            return ApplyAndMigrateCredentials(FromJson(text));
         }
         catch
         {
             // 解析失败：不静默回默认并在下次保存时覆盖原文件，而是先把损坏文件改名备份，
             // 置位一次性提示，再返回默认。这样用户的旧凭证/配置仍有机会人工恢复。
             BackupCorruptSettings();
-            return new AppSettings();
+            return ApplyAndMigrateCredentials(new AppSettings());
         }
+    }
+
+    /// <summary>
+    /// 凭证安全存储的读取/迁移（SEC-CRED-001）：
+    /// 1) 若 settings.json 还带明文 Token（旧版），先写入安全存储——**成功后**才把明文从磁盘抹掉，
+    ///    store 写失败则保留明文、绝不丢失；
+    /// 2) 用安全存储里的值覆盖内存配置（安全存储是凭证的唯一真相）。
+    /// </summary>
+    private static AppSettings ApplyAndMigrateCredentials(AppSettings parsed)
+    {
+        var hasLegacyPlaintext = !string.IsNullOrEmpty(parsed.TranslationAuthToken)
+            || !string.IsNullOrEmpty(parsed.AIAuthToken)
+            || !string.IsNullOrEmpty(parsed.SummaryAuthToken);
+        if (hasLegacyPlaintext)
+        {
+            try
+            {
+                parsed.WriteTokensToStore();
+                // 安全存储已确认写入，才把明文从磁盘移除（最佳努力；失败也无妨，store 已有副本）。
+                try { WritePersistedJson(parsed); } catch { /* 下次保存会再清 */ }
+            }
+            catch
+            {
+                // 安全存储写入失败：保留明文（内存 + 磁盘），不丢 Token；下次启动再尝试迁移。
+                return parsed;
+            }
+        }
+        return parsed with
+        {
+            TranslationAuthToken = CredentialStore.Get(TranslationTokenKey) ?? parsed.TranslationAuthToken,
+            AIAuthToken = CredentialStore.Get(AITokenKey) ?? parsed.AIAuthToken,
+            SummaryAuthToken = CredentialStore.Get(SummaryTokenKey) ?? parsed.SummaryAuthToken,
+        };
+    }
+
+    /// <summary>把三个 Token 写入安全存储（空值则删除）。任一写入失败向上抛。</summary>
+    private void WriteTokensToStore()
+    {
+        SetOrDeleteToken(TranslationTokenKey, TranslationAuthToken);
+        SetOrDeleteToken(AITokenKey, AIAuthToken);
+        SetOrDeleteToken(SummaryTokenKey, SummaryAuthToken);
+    }
+
+    private static void SetOrDeleteToken(string key, string value)
+    {
+        if (string.IsNullOrEmpty(value)) CredentialStore.Delete(key);
+        else CredentialStore.Set(key, value);
     }
 
     /// <summary>把损坏的 settings.json 原子改名为 settings.corrupt-&lt;timestamp&gt;.json。</summary>
@@ -389,17 +446,31 @@ public sealed record AppSettings
     }
 
     /// <summary>
-    /// 原子写：先写临时文件再替换。写失败时旧配置（含凭证）原样保留，
-    /// 不能删旧文件导致磁盘满/权限问题时配置全丢。
+    /// 落盘用 JSON：与 ToJson 相同但三个 Token 字段强制为空——明文凭证只进安全存储，绝不写进 settings.json。
+    /// </summary>
+    private string ToPersistedJson() =>
+        (this with { TranslationAuthToken = "", AIAuthToken = "", SummaryAuthToken = "" }).ToJson();
+
+    /// <summary>
+    /// 原子写：先写临时文件再替换。写失败时旧配置原样保留。
+    /// 凭证（SEC-CRED-001）：先写入安全存储，**成功后**才写不含明文 Token 的 JSON——
+    /// store 写失败直接抛出、不动 settings.json，旧值不丢。
     /// </summary>
     public void Save()
+    {
+        WriteTokensToStore();
+        WritePersistedJson(this);
+    }
+
+    /// <summary>原子写不含明文 Token 的 settings.json。</summary>
+    private static void WritePersistedJson(AppSettings settings)
     {
         var dir = SupportDirectory;
         Directory.CreateDirectory(dir);
         var temp = Path.Combine(dir, $"settings.json.tmp-{Guid.NewGuid():N}");
         try
         {
-            File.WriteAllText(temp, ToJson());
+            File.WriteAllText(temp, settings.ToPersistedJson());
             // File.Move(overwrite: true) 在同一卷上是原子替换
             File.Move(temp, SettingsFilePath, overwrite: true);
         }

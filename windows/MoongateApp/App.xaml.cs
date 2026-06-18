@@ -40,6 +40,10 @@ public partial class App : Application
         base.OnStartup(e);
         StartupDiagnostics.Mark("OnStartup begin");
 
+        // 凭证安全存储（SEC-CRED-001）：在任何 AppSettings.Load() 之前注入 DPAPI 实现，
+        // 这样旧版 settings.json 里的明文 Token 会在首次加载时迁移进 DPAPI 并从磁盘抹除。
+        AppSettings.CredentialStore = new DpapiCredentialStore();
+
         // 清理上一轮更新遗留的临时安装器目录（成功安装后安装器无法自删所在目录）。
         UpdateService.CleanStaleUpdateDirs();
 
