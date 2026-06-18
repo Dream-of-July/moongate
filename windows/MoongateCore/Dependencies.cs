@@ -162,8 +162,10 @@ public sealed class DependencyManager
             }
             else
             {
-                await using var zipStream = File.OpenRead(tempPath);
-                ExtractZipEntries(zipStream, plan.ZipEntries, _binDirectory);
+                await using (var zipStream = File.OpenRead(tempPath))
+                {
+                    ExtractZipEntries(zipStream, plan.ZipEntries, _binDirectory);
+                }
                 File.Delete(tempPath);
             }
         }
