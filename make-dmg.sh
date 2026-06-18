@@ -6,21 +6,20 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 APP_NAME="月之门"
-VERSION="${MOONGATE_VERSION:-0.7.0}"
-# build.sh 把 App 装到 /Applications，这里必须从同一位置取，否则 cp 找不到文件。
-APP="/Applications/$APP_NAME.app"
+VERSION="${MOONGATE_VERSION:-0.7.2}"
 OUT="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.dmg}"
+BUILD_STAGING="$(mktemp -d /tmp/moongate-dmg-build-XXXXXX)"
+DMG_STAGING="$(mktemp -d /tmp/moongate-dmg-XXXXXX)"
+trap 'rm -rf "$BUILD_STAGING" "$DMG_STAGING"' EXIT
+APP="$BUILD_STAGING/Applications/$APP_NAME.app"
 
-"$PROJ_DIR/build.sh"
+INSTALL_DIR="$BUILD_STAGING/Applications" "$PROJ_DIR/build.sh"
 
-STAGING="$(mktemp -d /tmp/moongate-dmg-XXXXXX)"
-trap 'rm -rf "$STAGING"' EXIT
-
-cp -R "$APP" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
+cp -R "$APP" "$DMG_STAGING/"
+ln -s /Applications "$DMG_STAGING/Applications"
 
 rm -f "$OUT"
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$OUT" >/dev/null
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$OUT" >/dev/null
 echo "==> DMG 已生成：$OUT"
 echo "    （ad-hoc 签名：在别的 Mac 上首次打开需右键 → 打开，或先执行"
 echo "      xattr -dr com.apple.quarantine /Applications/$APP_NAME.app）"

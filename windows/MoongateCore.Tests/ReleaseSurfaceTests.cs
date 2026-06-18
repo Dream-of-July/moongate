@@ -20,27 +20,27 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse070()
+    public void ReleaseVersionSurfacesUse072()
     {
-        Assert.Contains("VERSION=\"0.7.0\"", Read("build-windows.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("make-dmg.sh"));
-        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("build.sh"));
-        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-700}\"", Read("build.sh"));
+        Assert.Contains("VERSION=\"0.7.2\"", Read("build-windows.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.2}\"", Read("make-dmg.sh"));
+        Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.7.2}\"", Read("build.sh"));
+        Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-702}\"", Read("build.sh"));
         Assert.Contains("<string>$APP_VERSION</string>", Read("build.sh"));
         Assert.Contains("<string>$APP_BUILD_NUMBER</string>", Read("build.sh"));
-        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.0}\"", Read("make-pkg.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.2}\"", Read("make-pkg.sh"));
         Assert.Contains("productbuild", Read("make-pkg.sh"));
         Assert.Contains("PKG_SIGN_IDENTITY", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"$STAGING/Applications\"", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.7.0", workflow);
-        Assert.Contains("default: 0.7.0", workflow);
+        Assert.Contains("default: v0.7.2", workflow);
+        Assert.Contains("default: 0.7.2", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.7.0\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.7.2\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -125,8 +125,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.0.exe", docs);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.0.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.2.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.2.exe", readme);
     }
 
     [Fact]
