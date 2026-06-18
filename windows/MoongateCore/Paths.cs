@@ -16,9 +16,17 @@ public static class DownloadPaths
         return multiFile ? Path.Combine(downloads, SanitizedFolderName(title)) : downloads;
     }
 
+    /// <summary>Windows 保留设备名（大小写不敏感）：作为文件/文件夹名（含带扩展名形式如 CON.video）会创建失败。</summary>
+    private static readonly HashSet<string> ReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
     /// <summary>
-    /// 标题转安全文件夹名：去路径分隔/控制字符、截长（80 字符）、去结尾点号。
-    /// 在 Swift 版基础上额外剔除 Windows 不允许的文件名字符 &lt;&gt;:"|?*。
+    /// 标题转安全文件夹名：去路径分隔/控制字符、截长（80 字符）、去结尾点号与空格，
+    /// 并规避 Windows 保留设备名。在 Swift 版基础上额外剔除 Windows 不允许的字符 &lt;&gt;:"|?*。
     /// </summary>
     public static string SanitizedFolderName(string title)
     {
@@ -31,8 +39,17 @@ public static class DownloadPaths
         {
             name = name[..80].Trim();
         }
-        name = name.TrimEnd('.');
-        return name.Length == 0 ? L10n.T("视频", "影片", "Video") : name;
+        // 结尾点号与空格在 Windows 都会被静默去除/报错，统一剔除。
+        name = name.TrimEnd('.', ' ');
+        if (name.Length == 0) return L10n.T("视频", "影片", "Video");
+        // 保留设备名（含带扩展名形式 CON.video）：取首个点号前的主名判定，命中则加下划线前缀规避。
+        var firstDot = name.IndexOf('.');
+        var stem = (firstDot >= 0 ? name[..firstDot] : name).Trim();
+        if (ReservedDeviceNames.Contains(stem))
+        {
+            name = "_" + name;
+        }
+        return name;
     }
 
     /// <summary>

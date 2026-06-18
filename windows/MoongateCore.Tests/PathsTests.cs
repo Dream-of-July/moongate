@@ -45,6 +45,46 @@ public class SanitizedFolderNameTests
     [Fact]
     public void ChineseTitle_Preserved() =>
         Assert.Equal("任天堂直面会 2026", DownloadPaths.SanitizedFolderName("任天堂直面会 2026"));
+
+    // PATH-WIN-001：Windows 保留设备名会让建文件夹失败，需规避。
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("con")]
+    [InlineData("PRN")]
+    [InlineData("AUX")]
+    [InlineData("NUL")]
+    [InlineData("COM1")]
+    [InlineData("COM9")]
+    [InlineData("LPT1")]
+    [InlineData("LPT9")]
+    public void ReservedDeviceNames_ArePrefixed(string reserved)
+    {
+        var name = DownloadPaths.SanitizedFolderName(reserved);
+        Assert.NotEqual(reserved, name, StringComparer.OrdinalIgnoreCase);
+        Assert.EndsWith(reserved, name, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith("_", name);
+    }
+
+    [Fact]
+    public void ReservedDeviceName_WithExtension_AlsoPrefixed()
+    {
+        // "CON.video" 的主名是 CON，同样保留 → 规避。
+        Assert.Equal("_CON.video", DownloadPaths.SanitizedFolderName("CON.video"));
+        Assert.Equal("_NUL.mp4", DownloadPaths.SanitizedFolderName("NUL.mp4"));
+    }
+
+    [Fact]
+    public void NonReservedSimilarNames_NotPrefixed()
+    {
+        // COM10 / CONSOLE / 包含但不等于保留名 → 不动。
+        Assert.Equal("COM10", DownloadPaths.SanitizedFolderName("COM10"));
+        Assert.Equal("CONSOLE", DownloadPaths.SanitizedFolderName("CONSOLE"));
+        Assert.Equal("my CON test", DownloadPaths.SanitizedFolderName("my CON test"));
+    }
+
+    [Fact]
+    public void TrailingSpacesAndDots_Removed() =>
+        Assert.Equal("name", DownloadPaths.SanitizedFolderName("name. . "));
 }
 
 public class DestinationDirectoryTests

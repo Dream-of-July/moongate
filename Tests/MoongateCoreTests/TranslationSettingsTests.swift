@@ -622,8 +622,32 @@ final class TranslationSettingsTests: XCTestCase {
         #endif
     }
 
-    func testLoadingSettingsMigratesLegacyCookiesEvenWhenLegacySettingsAbsent() throws {
-        #if os(Windows)
+    func testLoadingCorruptSettingsBacksUpAndReturnsDefaults() throws {
+        // DATA-SETTINGS-002：settings.json 损坏时不静默回默认覆盖，而是改名备份 + 置位提示 + 回默认。
+        let root = try makeTemporarySettingsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let currentDirectory = root.appendingPathComponent("月之门", isDirectory: true)
+        let legacyDirectory = root.appendingPathComponent("视频下载器", isDirectory: true)
+        try FileManager.default.createDirectory(at: currentDirectory, withIntermediateDirectories: true)
+        let settingsURL = currentDirectory.appendingPathComponent("settings.json")
+        try Data("{ this is not valid json ".utf8).write(to: settingsURL)
+        AppSettings.lastCorruptBackupPath = nil
+        defer { AppSettings.lastCorruptBackupPath = nil }
+
+        let loaded = AppSettings.load(
+            supportDirectory: currentDirectory,
+            legacySupportDirectory: legacyDirectory
+        )
+
+        XCTAssertEqual(loaded.translationBaseURL, AppSettings().translationBaseURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsURL.path))
+        XCTAssertNotNil(AppSettings.lastCorruptBackupPath)
+        let backups = try FileManager.default.contentsOfDirectory(atPath: currentDirectory.path)
+            .filter { $0.hasPrefix("settings.corrupt-") }
+        XCTAssertEqual(backups.count, 1)
+    }
+
+    func testLoadingSettingsMigratesLegacyCookiesEvenWhenLegacySettingsAbsent() throws {        #if os(Windows)
         throw XCTSkip("POSIX file permissions are not available on Windows.")
         #else
         // 只登录过站点、从没改过设置的用户：旧目录有 cookies.txt 但没有 settings.json。

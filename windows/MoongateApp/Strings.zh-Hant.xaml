@@ -191,6 +191,7 @@
     <sys:String x:Key="L.Settings.Cleared">已清除</sys:String>
     <sys:String x:Key="L.Settings.ClearedPartial">已清除 cookie，但 WebView 登入資料未能完全刪除，將在下次啟動時清理。</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusNone">尚未登入任何站點</sys:String>
+    <sys:String x:Key="L.Settings.CorruptResetFmt">設定檔已損壞，已備份到 {0} 並還原預設設定。</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusFmt">已儲存登入資訊（{0} 匯出）</sys:String>
     <sys:String x:Key="L.Settings.Dependencies">依賴元件</sys:String>
     <sys:String x:Key="L.Settings.Redownload">重新下載</sys:String>

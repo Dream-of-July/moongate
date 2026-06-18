@@ -309,17 +309,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         TranslationContext(sourceLanguage: sourceLanguage, targetLanguage: resolvedTranslationTargetLanguage)
     }
 
+    /// 上次 load 把损坏的 settings.json 备份后的路径（供 UI 一次性提示）；正常加载为 nil。
+    public static var lastCorruptBackupPath: String?
+
     public static func load() -> AppSettings {
-        guard let data = try? migratedData(
+        load(
             supportDirectory: supportDirectory,
-            legacySupportDirectory: legacySupportDirectory,
-            settingsFileName: "settings.json",
-            cookieFileName: "cookies.txt"
-        ),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
-            return AppSettings()
-        }
-        return settings
+            legacySupportDirectory: legacySupportDirectory
+        )
     }
 
     static func load(
@@ -333,11 +330,32 @@ public struct AppSettings: Codable, Sendable, Equatable {
             legacySupportDirectory: legacySupportDirectory,
             settingsFileName: settingsFileName,
             cookieFileName: cookieFileName
-        ),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
+        ) else {
             return AppSettings()
         }
-        return settings
+        if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
+            return settings
+        }
+        // 数据存在但解析失败：不静默回默认并在下次保存时覆盖，而是先把损坏文件改名备份、
+        // 置位一次性提示，再返回默认。用户的旧凭证/配置仍有机会人工恢复（DATA-SETTINGS-002）。
+        backupCorruptSettings(at: supportDirectory.appendingPathComponent(settingsFileName))
+        return AppSettings()
+    }
+
+    /// 把损坏的 settings.json 改名为 settings.corrupt-<timestamp>.json。
+    private static func backupCorruptSettings(at url: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let backup = url.deletingLastPathComponent()
+            .appendingPathComponent("settings.corrupt-\(stamp).json")
+        do {
+            if fm.fileExists(atPath: backup.path) { try fm.removeItem(at: backup) }
+            try fm.moveItem(at: url, to: backup)
+            lastCorruptBackupPath = backup.path
+        } catch {
+            // 备份失败也不要阻断启动；最坏退回默认。
+        }
     }
 
     private static func migratedData(

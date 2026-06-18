@@ -6,6 +6,63 @@ namespace MoongateCore.Tests;
 public class SettingsTests
 {
     [Fact]
+    public void Load_CorruptFile_BacksUpAndReturnsDefaultsWithoutOverwriting()
+    {
+        var previous = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-corrupt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            AppSettings.LastCorruptBackupPath = null;
+            File.WriteAllText(AppSettings.SettingsFilePath, "{ this is not valid json ");
+
+            var settings = AppSettings.Load();
+
+            // 回默认而非崩溃。
+            Assert.Equal(new AppSettings().TranslationBaseUrl, settings.TranslationBaseUrl);
+            // 损坏文件被改名备份，不再原地等下次保存覆盖。
+            Assert.False(File.Exists(AppSettings.SettingsFilePath));
+            Assert.NotNull(AppSettings.LastCorruptBackupPath);
+            Assert.True(File.Exists(AppSettings.LastCorruptBackupPath!));
+            Assert.Contains("settings.corrupt-", AppSettings.LastCorruptBackupPath!);
+            Assert.Single(Directory.GetFiles(dir, "settings.corrupt-*.json"));
+        }
+        finally
+        {
+            AppSettings.LastCorruptBackupPath = null;
+            AppSettings.OverrideSupportDirectory = previous;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
+    public void Load_ValidFile_NoBackup()
+    {
+        var previous = AppSettings.OverrideSupportDirectory;
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-valid-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            AppSettings.LastCorruptBackupPath = null;
+            new AppSettings { TranslationModel = "claude" }.Save();
+
+            var settings = AppSettings.Load();
+
+            Assert.Equal("claude", settings.TranslationModel);
+            Assert.Null(AppSettings.LastCorruptBackupPath);
+            Assert.Empty(Directory.GetFiles(dir, "settings.corrupt-*.json"));
+        }
+        finally
+        {
+            AppSettings.LastCorruptBackupPath = null;
+            AppSettings.OverrideSupportDirectory = previous;
+            try { Directory.Delete(dir, true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
     public void Defaults()
     {
         var settings = new AppSettings();

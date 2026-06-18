@@ -51,7 +51,7 @@
 
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
-| SETTINGS-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 登录/依赖跳转忽略设置保存失败 |
+| SETTINGS-001 | P1 | Both | In progress (Win done) | windows: SettingsWindow.xaml.cs | 行为修复，UI 路径 | Not validated on real hardware | Windows 登录跳转保存失败时保持窗口打开/不设 pending；macOS requestLogin/requestDependencySetup 待同样处理 |
 | MAC-DEP-001 | P1 | macOS | Not started | — | — | Not validated on real hardware | 卸载误删用户自装 Homebrew 包 |
 | PROC-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 暂停乐观更新，失败仍释放并发槽 |
 | PROC-MAC-002 | P1 | macOS | Not started | — | — | Not validated on real hardware | 取消可能留下孤儿 ffmpeg 子进程 |
@@ -59,9 +59,9 @@
 | UPDATE-WIN-002 | P1 | Windows | Done (code) | UpdateChecker.cs, Settings.cs, UpdateService.cs | UpdateCheckerTests.SemVer_PrereleasePrecedence / StableChannel_*, SettingsTests.ReceiveBetaUpdates | Not validated on real hardware | SemVer 完整预发布优先级 + 通道过滤；默认 ReceiveBetaUpdates=true（当前发布全是 prerelease，待首个正式版后改默认） |
 | LOGIN-WIN-001 | P1 | Windows | Done (code) | SettingsViewModel.cs, App.xaml.cs, Strings.*.xaml | CookieIsolationTests 间接覆盖；ClearAllLogins 逻辑 | Not validated on real hardware | 清除登录区分 cookie/ WebView 成功，部分失败显示「部分清除」并写待删标记下次启动清理 |
 | DATA-WIN-001 | P1 | Windows | Done (code) | docs/WINDOWS.md, installer/installer.nsi | makensis 编译通过 | Not validated on real hardware | 卸载器询问删除 %APPDATA%\Moongate + %LOCALAPPDATA%\Moongate；文档修正 |
-| DATA-SETTINGS-002 | P1 | Both | Not started | — | — | Not validated on real hardware | 设置损坏静默回默认，无备份/提示 |
-| PATH-WIN-001 | P1 | Windows | Not started | — | — | Not validated on real hardware | 文件夹名净化未处理保留设备名 |
-| DEP-WIN-003 | P1 | Windows | Not started | — | — | Not validated on real hardware | 依赖“已安装”仅检查文件存在 |
+| DATA-SETTINGS-002 | P1 | Both | Done (code) | windows/MoongateCore/Settings.cs, MainViewModel.cs, Strings.*.xaml; Sources/MoongateCore/Settings.swift | SettingsTests.Load_CorruptFile_*, TranslationSettingsTests.testLoadingCorruptSettings* | Not validated on real hardware | 损坏 settings.json 改名 settings.corrupt-<ts>.json + 一次性提示 + 回默认（不静默覆盖） |
+| PATH-WIN-001 | P1 | Windows | Done (code) | windows/MoongateCore/Paths.cs | PathsTests reserved-name 系列(13) | Not validated on real hardware | 规避 CON/PRN/AUX/NUL/COM1-9/LPT1-9（含带扩展名 CON.video）+ 结尾点号空格 |
+| DEP-WIN-003 | P1 | Windows | Not started | — | — | Not validated on real hardware | 依赖“已安装”仅检查文件存在（Phase 3） |
 | REL-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 正式包缺平台级签名链 |
 | REL-WIN-002 | P1 | Windows | Not started | — | — | Not validated on real hardware | GUI/安装器无真机运行验证 |
 
@@ -69,7 +69,7 @@
 
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
-| PARITY-001 | P2 | Windows | Not started | — | — | Not validated on real hardware | 多链接提取比 macOS 脆弱 |
+| PARITY-001 | P2 | Windows | Done (code) | windows/MoongateCore/UrlTokenizer.cs, MoongateApp/MainViewModel.cs | UrlTokenizerTests (10) | Not validated on real hardware | 统一到 Core 的 UrlTokenizer（按 http(s):// 锚点切分），覆盖换行/相邻/Tab/标点/括号/重复；与 macOS 同构 |
 | PARITY-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 不记住上次下载选项 |
 | UX-WIN-001 | P2 | Windows | Not started | — | — | Not validated on real hardware | 设置窗口固定尺寸，高 DPI 不友好 |
 | UX-WIN-002 | P2 | Windows | Not started | — | — | Not validated on real hardware | 硬编码浅色主题，高对比弱 |

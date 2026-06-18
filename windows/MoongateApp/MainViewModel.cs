@@ -54,6 +54,12 @@ public sealed class MainViewModel : ObservableObject
     {
         _engine = engine;
         _settings = AppSettings.Load();
+        // 设置文件损坏被备份时（DATA-SETTINGS-002），给一次非阻断提示，而不是静默回默认。
+        if (AppSettings.LastCorruptBackupPath is { } corruptBackup)
+        {
+            AppSettings.LastCorruptBackupPath = null;
+            _enqueueNotice = Loc.F("L.Settings.CorruptResetFmt", corruptBackup);
+        }
         Queue = queue ?? new QueueManager(engine, settings: _settings);
         _dispatcher = Dispatcher.CurrentDispatcher;
         Queue.ItemsChanged += () => _dispatcher.BeginInvoke(ReconcileQueueRows);
@@ -1157,21 +1163,8 @@ public sealed class MainViewModel : ObservableObject
     private static readonly char[] TrailingPunctuation =
         [',', ';', '，', '；', '、', '。', '.', ')', '）', ']', '》', '〉', '>', '」', '』', '"', '\''];
 
-    /// <summary>从粘贴文本里提取全部 http(s) 链接（按空白/换行分隔，容忍尾随标点），保序去重。</summary>
-    internal static List<string> ExtractUrls(string input)
-    {
-        var seen = new HashSet<string>();
-        var urls = new List<string>();
-        foreach (var raw in input.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var token = raw.Trim(TrailingPunctuation);
-            if (!token.StartsWith("http", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!IsValidHttpUrl(token)) continue;
-            if (!seen.Add(token)) continue;
-            urls.Add(token);
-        }
-        return urls;
-    }
+    /// <summary>从粘贴文本里提取全部 http(s) 链接，保序去重（统一走 Core 的 UrlTokenizer，与 macOS 同构）。</summary>
+    internal static List<string> ExtractUrls(string input) => UrlTokenizer.Extract(input);
 }
 
 /// <summary>字幕多选里的一行。勾选状态变化回调主视图模型以联动字幕处理分组。</summary>

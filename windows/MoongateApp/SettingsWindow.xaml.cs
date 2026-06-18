@@ -85,15 +85,19 @@ public partial class SettingsWindow : Window
 
     private void OnLoginBilibiliClick(object sender, RoutedEventArgs e) => RequestLogin("bilibili.com");
 
-    /// <summary>点「登录 ××」：先把草稿保存下来再走登录流程（设置窗即将收起）。</summary>
+    /// <summary>点「登录 ××」：先把草稿保存下来再走登录流程。保存失败则保持设置窗打开、不进入登录。</summary>
     private void RequestLogin(string site)
     {
-        if (_vm.TrySave(out _))
+        if (!_vm.TrySave(out var error))
         {
-            var saved = _vm.BuildSettings();
-            _main.Settings = saved;
-            LocalizationManager.Apply(saved.AppLanguage);
+            // 保存失败（磁盘满/权限/文件被锁）不再静默丢弃用户刚改的模型/Token/语言，
+            // 也不设 pending、不关窗——保持设置窗打开并显示可复制的失败原因。
+            _vm.Notice = Loc.F("L.Settings.SaveFailedFmt", error ?? "");
+            return;
         }
+        var saved = _vm.BuildSettings();
+        _main.Settings = saved;
+        LocalizationManager.Apply(saved.AppLanguage);
         PendingLoginSite = site;
         DialogResult = true;
     }

@@ -165,17 +165,51 @@ public sealed record AppSettings
 
     // MARK: 读写
 
+    /// <summary>
+    /// 上次 Load 把损坏的 settings.json 备份后的路径（供 UI 一次性提示）；正常加载为 null。
+    /// 读取后调用方可置回 null（消费一次）。
+    /// </summary>
+    public static string? LastCorruptBackupPath { get; set; }
+
     public static AppSettings Load()
     {
+        if (!File.Exists(SettingsFilePath)) return new AppSettings();
+        string text;
         try
         {
-            return File.Exists(SettingsFilePath)
-                ? FromJson(File.ReadAllText(SettingsFilePath))
-                : new AppSettings();
+            text = File.ReadAllText(SettingsFilePath);
         }
         catch
         {
+            // 读不到（权限/占用）：不动文件，按默认运行，不误备份。
             return new AppSettings();
+        }
+        try
+        {
+            return FromJson(text);
+        }
+        catch
+        {
+            // 解析失败：不静默回默认并在下次保存时覆盖原文件，而是先把损坏文件改名备份，
+            // 置位一次性提示，再返回默认。这样用户的旧凭证/配置仍有机会人工恢复。
+            BackupCorruptSettings();
+            return new AppSettings();
+        }
+    }
+
+    /// <summary>把损坏的 settings.json 原子改名为 settings.corrupt-&lt;timestamp&gt;.json。</summary>
+    private static void BackupCorruptSettings()
+    {
+        try
+        {
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            var backup = Path.Combine(SupportDirectory, $"settings.corrupt-{stamp}.json");
+            File.Move(SettingsFilePath, backup, overwrite: true);
+            LastCorruptBackupPath = backup;
+        }
+        catch
+        {
+            // 备份失败也不要阻断启动；最坏退回默认。
         }
     }
 
