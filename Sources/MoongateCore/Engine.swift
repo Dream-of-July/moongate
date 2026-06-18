@@ -422,13 +422,14 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
     // MARK: 站点登录 cookies
 
-    /// 站点登录导出的 cookies 文件存在时，所有 yt-dlp 调用都带上 --cookies。
-    /// yt-dlp 的 --cookies 是「读取并在退出时**写回**」语义：并发任务共用主 cookies.txt
+    /// 按下载 URL 的 host 选择对应站点的 cookie jar，存在时所有 yt-dlp 调用都带上 --cookies。
+    /// 按站点隔离：YouTube 下载只用 youtube jar，绝不把 Bilibili 等其它站点的会话带进去。
+    /// yt-dlp 的 --cookies 是「读取并在退出时**写回**」语义：并发任务共用同一文件
     /// 会互相覆写甚至损坏，写回还会把 0600 权限放宽。因此每次启动子进程都发一份
     /// 任务私有临时副本（写回只落在副本上），用后由 cleanup 删除。
-    private static func makeCookieArguments() -> (args: [String], cleanup: @Sendable () -> Void) {
-        let master = AppSettings.cookieFileURL
-        guard FileManager.default.fileExists(atPath: master.path) else { return ([], {}) }
+    private static func makeCookieArguments(for urlString: String) -> (args: [String], cleanup: @Sendable () -> Void) {
+        guard let master = cookieFile(for: urlString),
+              FileManager.default.fileExists(atPath: master.path) else { return ([], {}) }
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("moongate-cookies-\(UUID().uuidString).txt")
         do {
@@ -442,10 +443,21 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return (["--cookies", temp.path], { try? FileManager.default.removeItem(at: temp) })
     }
 
+    /// 按 URL host 解析对应站点的 cookie 文件；非受支持站点返回 nil。
+    private static func cookieFile(for urlString: String) -> URL? {
+        guard let host = URL(string: urlString)?.host, let site = CookieSites.forHost(host) else { return nil }
+        return AppSettings.siteCookieFileURL(site.key)
+    }
+
+    /// 该 URL 对应站点是否已有导出的登录 cookie 文件。
+    private static func hasCookies(for urlString: String) -> Bool {
+        guard let file = cookieFile(for: urlString) else { return false }
+        return FileManager.default.fileExists(atPath: file.path)
+    }
+
     /// 识别"需要登录"类错误。命中返回 loginRequired（或已登录时的过期文案），否则返回 nil 走常规文案。
     private static func detectLoginRequired(stderr: String, url urlString: String) -> MoongateError? {
-        let hasCookies = FileManager.default.fileExists(atPath: AppSettings.cookieFileURL.path)
-        return detectLoginRequired(stderr: stderr, url: urlString, hasCookies: hasCookies)
+        return detectLoginRequired(stderr: stderr, url: urlString, hasCookies: hasCookies(for: urlString))
     }
 
     private static func detectLoginRequired(stderr: String, url urlString: String, hasCookies: Bool) -> MoongateError? {
@@ -642,7 +654,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     private func runYtDlpJSON(for url: String) async throws -> YtDlpJSONResult {
         let ytdlp = try ytDlpPath()
         let ffmpegDir = try ffmpegDirectory()
-        let cookie = Self.makeCookieArguments()
+        let cookie = Self.makeCookieArguments(for: url)
         defer { cookie.cleanup() }
         var lastStderr = ""
         for attempt in 0..<2 {
@@ -706,7 +718,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             .filter { !$0.isEmpty }
         let langArg = langs.isEmpty ? "all" : (langs.joined(separator: ",") + ",all")
 
-        let cookie = Self.makeCookieArguments()
+        let cookie = Self.makeCookieArguments(for: url)
         defer { cookie.cleanup() }
         var args = [
             "--skip-download", "--no-playlist", "--ffmpeg-location", ffmpegDir,
@@ -1095,7 +1107,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             "--retries", "10",
             "--fragment-retries", "10",
         ]
-        let cookie = Self.makeCookieArguments()
+        let cookie = Self.makeCookieArguments(for: request.url)
         defer { cookie.cleanup() }
         args += Self.systemProxyArguments()
         args += cookie.args

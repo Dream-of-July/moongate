@@ -85,14 +85,16 @@ final class MacOSLoginBoundaryTests: XCTestCase {
         XCTAssertFalse(displayBody.contains("components.fragment"))
     }
 
-    func testCookieExportStillWritesAllCookiesWithoutFilteringToReadinessSite() throws {
+    func testCookieExportFiltersToSiteAndWritesPerSiteJar() throws {
         let source = try loginWebViewSource()
         let exportBody = try XCTUnwrap(functionBody(prefix: "private func exportCookies", in: source))
 
         XCTAssertTrue(exportBody.contains("WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in"))
-        XCTAssertTrue(exportBody.contains("NetscapeCookieFile.write(cookies: cookies, to: fileURL)"))
-        XCTAssertFalse(exportBody.contains("containsSiteCookie"))
-        XCTAssertFalse(exportBody.contains("filter"))
+        // SEC-COOKIE-001：按站点过滤后写入该站点专属文件，不再把全部 cookie 写进一个全局文件。
+        XCTAssertTrue(exportBody.contains("CookieSites.forLoginSite(site)"))
+        XCTAssertTrue(exportBody.contains("CookieSites.filterToSite(cookies, cookieSite)"))
+        XCTAssertTrue(exportBody.contains("AppSettings.siteCookieFileURL(cookieSite.key)"))
+        XCTAssertTrue(exportBody.contains("NetscapeCookieFile.write(cookies: filtered, to: fileURL)"))
     }
 
     func testLoginWebViewExposesLoadingStateThroughBinding() throws {

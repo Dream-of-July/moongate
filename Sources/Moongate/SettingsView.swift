@@ -1028,11 +1028,14 @@ struct SettingsView: View {
         }
     }
 
-    /// 登录状态行的数据源：cookies.txt 的修改日期。
+    /// 登录状态行的数据源：任一站点 cookie 文件存在即视为已登录，时间取最新。
     private func refreshLoginStatus() {
-        let path = AppSettings.cookieFileURL.path
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-        cookieDate = attributes?[.modificationDate] as? Date
+        let dates = CookieSites.all.compactMap { site -> Date? in
+            let path = AppSettings.siteCookieFileURL(site.key).path
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            return attributes?[.modificationDate] as? Date
+        }
+        cookieDate = dates.max()
     }
 
     /// 点「登录 ××」：先把草稿保存下来再走登录流程（设置窗即将收起）。
@@ -1051,6 +1054,10 @@ struct SettingsView: View {
 
     private func clearAllLogins() {
         clearFeedback = nil
+        // 清掉所有按站点隔离的 cookie 文件，外加可能残留的旧版全局文件。
+        for site in CookieSites.all {
+            NetscapeCookieFile.clear(at: AppSettings.siteCookieFileURL(site.key))
+        }
         NetscapeCookieFile.clear(at: AppSettings.cookieFileURL)
         WKWebsiteDataStore.default().removeData(
             ofTypes: [WKWebsiteDataTypeCookies, WKWebsiteDataTypeLocalStorage,

@@ -41,7 +41,7 @@
 | Issue ID | Priority | Platform | Status | Files changed | Tests added | Runtime validation | Remaining risk |
 |---|---|---|---|---|---|---|---|
 | WIN-UPD-001 | P0 | Windows | Done (code) | UpdateService.cs, App.xaml.cs, MainWindow.xaml.cs, SettingsWindow.xaml.cs, installer/installer.nsi, Strings.*.xaml | UpdateCheckerTests, 安装器 makensis 编译通过 | Not validated on real hardware | 队列 preflight + /UPDATEPID 等待 + 专用退出态；helper 进程未引入（用 NSIS 等待 PID 替代），需真机验证覆盖安装 |
-| SEC-COOKIE-001 | P0 | Both | In progress (Win done) | windows: CookieSites.cs, CookieFile.cs, Settings.cs, Engine.cs, LoginWindow.xaml.cs, SettingsViewModel.cs, App.xaml.cs, Strings.*.xaml | CookieIsolationTests (16) | Not validated on real hardware | Windows 按站点隔离 jar + 域过滤 + 认证 cookie 判定 + 旧文件迁移完成；macOS 侧待做 |
+| SEC-COOKIE-001 | P0 | Both | Done (code) | win: CookieSites.cs/CookieFile.cs/Engine.cs/LoginWindow.xaml.cs/SettingsViewModel.cs/App.xaml.cs; mac: CookieSites.swift/Settings.swift/Engine.swift/LoginWebView.swift/SettingsView.swift/App.swift | CookieIsolationTests(16, win), CookieSitesTests(6, mac) | Not validated on real hardware | 两端按站点隔离 jar + 域过滤 + 认证 cookie 判定 + 旧文件迁移；WebView 导出/清除需真机验证 |
 | SEC-CRED-001 | P0 | Both | Not started | — | — | Not validated on real hardware | API Token 明文落盘（Phase 2） |
 | WIN-DEP-001 | P0 | Windows | Done (code) | DependencyWindow.xaml(.cs), Dependencies.cs, Strings.*.xaml | DependenciesTests.FormatBytes, i18n 进度测试 | Not validated on real hardware | 加取消按钮/可取消 token/关窗确认/字节+速度进度；断点续传未做 |
 | WIN-DEP-002 | P0 | Windows | Done (code) | SettingsWindow.xaml.cs, Dependencies.cs | DependenciesTests.RedownloadAll_NetworkFailure_KeepsExistingBinaries, PlanAll | Not validated on real hardware | 改为 staging 先下后换；SHA-256/PE 架构/能力校验留待 Phase 3 (DEP-WIN-003) |

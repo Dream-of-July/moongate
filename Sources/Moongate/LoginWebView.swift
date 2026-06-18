@@ -239,12 +239,19 @@ struct LoginSheet: View {
     private func exportCookies() {
         isExporting = true
         errorText = nil
-        let fileURL = AppSettings.cookieFileURL
+        // 按站点隔离：只导出本站点允许域的 cookie，写入该站点专属文件，
+        // 绝不把其它站点（如同时登录过的 Bilibili/Google 其它服务）的会话一并导出。
+        guard let cookieSite = CookieSites.forLoginSite(site) else {
+            finishExport(localizer.t(L.Login.exportFailed, site))
+            return
+        }
+        let fileURL = AppSettings.siteCookieFileURL(cookieSite.key)
         // httpCookieStore 要求主线程使用，回调也在主队列。
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
             var failureText: String?
             do {
-                try NetscapeCookieFile.write(cookies: cookies, to: fileURL)
+                let filtered = CookieSites.filterToSite(cookies, cookieSite)
+                try NetscapeCookieFile.write(cookies: filtered, to: fileURL)
             } catch {
                 failureText = localizer.t(L.Login.exportFailed, error.localizedDescription)
             }

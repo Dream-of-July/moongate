@@ -157,9 +157,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
         supportDirectory.appendingPathComponent("settings.json")
     }
 
-    /// 站点登录后导出的 Netscape 格式 cookies 文件；存在时引擎自动以 --cookies 传给 yt-dlp
+    /// 旧版全局 cookies 文件（仅用于一次性迁移到按站点隔离的 jar；新代码不再写入）。
     public static var cookieFileURL: URL {
         supportDirectory.appendingPathComponent("cookies.txt")
+    }
+
+    /// 按站点隔离的 cookie 目录（cookies/youtube.txt、cookies/bilibili.txt）。
+    public static var cookieDirectory: URL {
+        supportDirectory.appendingPathComponent("cookies", isDirectory: true)
+    }
+
+    /// 某站点的 cookie 文件路径（如 key="youtube" → cookies/youtube.txt）。
+    public static func siteCookieFileURL(_ key: String) -> URL {
+        cookieDirectory.appendingPathComponent(key + ".txt")
     }
 
     // MARK: 读写

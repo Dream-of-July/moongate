@@ -111,6 +111,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: ViewModel?
     weak var localizer: Localizer?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // 凭证/登录隔离的启动维护：把旧的全局 cookies.txt 拆分到按站点隔离的 jar，然后删除旧文件。
+        // 尽力而为，失败不阻塞启动（旧文件仍在，下次再试）。
+        CookieMigration.migrateGlobalToPerSite(
+            legacyGlobal: AppSettings.cookieFileURL,
+            cookieDirectory: AppSettings.cookieDirectory
+        )
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, let localizer, let message = abortConfirmationMessage(for: model, localizer: localizer) else {
             return .terminateNow
