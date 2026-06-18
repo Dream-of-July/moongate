@@ -72,7 +72,7 @@
 | PARITY-001 | P2 | Windows | Done (code) | windows/MoongateCore/UrlTokenizer.cs, MoongateApp/MainViewModel.cs | UrlTokenizerTests (10) | Not validated on real hardware | 统一到 Core 的 UrlTokenizer（按 http(s):// 锚点切分），覆盖换行/相邻/Tab/标点/括号/重复；与 macOS 同构 |
 | PARITY-002 | P2 | Windows | Done (code) | windows/MoongateCore/Settings.cs, MoongateApp/MainViewModel.cs | SettingsTests.LastDownloadOptions_RoundTrip* | Not validated on real hardware | Win 记住上次字幕模式/语言/输出格式/HDR，选档页恢复（与 macOS 同构，按语言代码匹配字幕） |
 | UX-WIN-001 | P2 | Windows | Done (code) | windows/MoongateApp/SettingsWindow.xaml | dotnet build 通过 | Not validated on real hardware | 设置窗改为可缩放（ResizeMode=CanResize）+ MinWidth/MinHeight；正文本已在 ScrollViewer 内，高 DPI/大字体下可缩放滚动而非裁切。「记住窗口尺寸」未做 |
-| UX-WIN-002 | P2 | Windows | Plan only | — | — | Not validated on real hardware | System/Light/Dark/High Contrast 主题需主题资源字典 + 系统色绑定，会大改现有硬编码浅色视觉，需真机视觉/高对比验证，不盲改；可先补 AutomationProperties |
+| UX-WIN-002 | P2 | Windows | 部分（无障碍）| windows/MoongateApp/MainWindow.xaml | dotnet build 通过 | Not validated on real hardware | URL 输入框补 AutomationProperties.Name（其余命令按钮均为文本按钮，Narrator 可读其内容）；System/Light/Dark/High Contrast 主题仍 Plan only（需主题资源字典 + 系统色绑定 + 真机视觉/高对比验证） |
 | UX-QUEUE-001 | P2 | Both | Plan only | — | — | Not validated on real hardware | 自动收起队列在悬停/键盘焦点/屏幕阅读器时不收起，需真机交互验证；建议：交互期间取消 peek 定时器、尊重 Reduce Motion |
 | UX-WIN-003 | P2 | Windows | Done (code) | windows/installer/installer.nsi | makensis 编译通过（3 语言表 + 组件页） | Not validated on real hardware | 安装器加 English/TradChinese（MUI 按系统语言自动选）+ 自定义文案 LangString 化；桌面快捷方式改为组件页可选 |
 | REL-WIN-003 | P2 | Windows | Done (doc) | docs/WINDOWS.md | — | n/a | 文档明确仅 win-x64、ARM 为模拟非原生；列出后续原生 ARM64 路径 |

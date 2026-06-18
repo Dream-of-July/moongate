@@ -32,6 +32,7 @@
                         ToolTip="{DynamicResource L.Main.PasteTooltip}"/>
                 <Grid>
                     <TextBox x:Name="UrlBox" Padding="8,5" VerticalContentAlignment="Center"
+                             AutomationProperties.Name="{DynamicResource L.Main.UrlPlaceholder}"
                              Text="{Binding UrlText, UpdateSourceTrigger=PropertyChanged}">
                         <TextBox.InputBindings>
                             <KeyBinding Key="Return" Command="{Binding ParseCommand}"/>
