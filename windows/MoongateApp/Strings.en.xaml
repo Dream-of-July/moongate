@@ -199,6 +199,8 @@
     <sys:String x:Key="L.Settings.DepHint">Site rules change often; if downloads keep failing, try updating yt-dlp first.</sys:String>
     <sys:String x:Key="L.Settings.Installed">Installed</sys:String>
     <sys:String x:Key="L.Settings.Missing">Missing</sys:String>
+    <sys:String x:Key="L.Settings.DepCorrupt">Corrupt</sys:String>
+    <sys:String x:Key="L.Settings.DepNoCapability">No capability</sys:String>
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp: {0} · ffmpeg: {1} · deno: {2}</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">Failed to save settings: {0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">Clear all sign-ins?</sys:String>

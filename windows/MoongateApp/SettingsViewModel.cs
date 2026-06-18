@@ -693,6 +693,33 @@ public sealed class SettingsViewModel : ObservableObject
         DependencyStatusText = Loc.F("L.Settings.DepStatusFmt", Status(ytDlp), Status(ffmpeg), Status(deno));
     }
 
+    /// <summary>
+    /// 结构化健康检查（DEP-WIN-003）：跑 --version / -filters 把状态细分为
+    /// 正常/缺失/损坏/缺能力，覆盖只看文件存在的快速结果。最佳努力，失败保留快速结果。
+    /// </summary>
+    public async Task RefreshDependencyHealthAsync()
+    {
+        try
+        {
+            var results = await DependencyHealth.CheckAsync(BinaryLocator.BinDirectory).ConfigureAwait(true);
+            string Text(string component) =>
+                StatusText(results.FirstOrDefault(r => r.Component == component)?.Status);
+            DependencyStatusText = Loc.F("L.Settings.DepStatusFmt", Text("yt-dlp"), Text("ffmpeg"), Text("deno"));
+        }
+        catch
+        {
+            // 体检失败（极端环境）保留 RefreshDependencyStatus 的快速结果。
+        }
+    }
+
+    private static string StatusText(DependencyStatus? status) => status switch
+    {
+        DependencyStatus.Ok => Loc.S("L.Settings.Installed"),
+        DependencyStatus.Corrupt => Loc.S("L.Settings.DepCorrupt"),
+        DependencyStatus.RunnableButMissingCapability => Loc.S("L.Settings.DepNoCapability"),
+        _ => Loc.S("L.Settings.Missing"),
+    };
+
     // MARK: - 底栏
 
     private string? _notice;

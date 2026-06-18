@@ -61,7 +61,7 @@
 | DATA-WIN-001 | P1 | Windows | Done (code) | docs/WINDOWS.md, installer/installer.nsi | makensis 编译通过 | Not validated on real hardware | 卸载器询问删除 %APPDATA%\Moongate + %LOCALAPPDATA%\Moongate；文档修正 |
 | DATA-SETTINGS-002 | P1 | Both | Done (code) | windows/MoongateCore/Settings.cs, MainViewModel.cs, Strings.*.xaml; Sources/MoongateCore/Settings.swift | SettingsTests.Load_CorruptFile_*, TranslationSettingsTests.testLoadingCorruptSettings* | Not validated on real hardware | 损坏 settings.json 改名 settings.corrupt-<ts>.json + 一次性提示 + 回默认（不静默覆盖） |
 | PATH-WIN-001 | P1 | Windows | Done (code) | windows/MoongateCore/Paths.cs | PathsTests reserved-name 系列(13) | Not validated on real hardware | 规避 CON/PRN/AUX/NUL/COM1-9/LPT1-9（含带扩展名 CON.video）+ 结尾点号空格 |
-| DEP-WIN-003 | P1 | Windows | Not started | — | — | Not validated on real hardware | 依赖“已安装”仅检查文件存在（Phase 3） |
+| DEP-WIN-003 | P1 | Windows | Done (code) | windows/MoongateCore/DependencyHealth.cs, MoongateApp/SettingsViewModel.cs, SettingsWindow.xaml.cs, Strings.*.xaml | DependencyHealthTests (12) | Not validated on real hardware | 结构化体检：跑 --version / -filters，状态分 正常/缺失/损坏/缺能力（零字节视为缺失），设置页异步细化显示 |
 | REL-001 | P1 | Both | Not started | — | — | Not validated on real hardware | 正式包缺平台级签名链 |
 | REL-WIN-002 | P1 | Windows | Not started | — | — | Not validated on real hardware | GUI/安装器无真机运行验证 |
 

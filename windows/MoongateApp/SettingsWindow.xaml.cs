@@ -40,7 +40,12 @@ public partial class SettingsWindow : Window
             _main.Settings = AppSettings.Load();
         };
         // 打开设置即静默检查更新：有新版本时「更新」区直接显示，失败不打扰。
-        Loaded += (_, _) => Updater.Check(silent: true);
+        Loaded += (_, _) =>
+        {
+            Updater.Check(silent: true);
+            // 结构化依赖体检（可执行性/能力），细化「已安装」之外的损坏/缺能力状态。
+            _ = _vm.RefreshDependencyHealthAsync();
+        };
     }
 
     private void OnTokenChanged(object sender, RoutedEventArgs e)

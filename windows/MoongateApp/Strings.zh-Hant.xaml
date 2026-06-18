@@ -199,6 +199,8 @@
     <sys:String x:Key="L.Settings.DepHint">站點規則變化頻繁，下載經常失敗時可先試試更新 yt-dlp。</sys:String>
     <sys:String x:Key="L.Settings.Installed">已安裝</sys:String>
     <sys:String x:Key="L.Settings.Missing">缺失</sys:String>
+    <sys:String x:Key="L.Settings.DepCorrupt">損壞</sys:String>
+    <sys:String x:Key="L.Settings.DepNoCapability">缺能力</sys:String>
     <sys:String x:Key="L.Settings.DepStatusFmt">yt-dlp：{0} · ffmpeg：{1} · deno：{2}</sys:String>
     <sys:String x:Key="L.Settings.SaveFailedFmt">設定儲存失敗：{0}</sys:String>
     <sys:String x:Key="L.Settings.ClearLoginsConfirm">確定要清除所有登入嗎？</sys:String>
