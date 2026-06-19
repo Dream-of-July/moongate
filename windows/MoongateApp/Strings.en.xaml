@@ -149,7 +149,7 @@
     <sys:String x:Key="L.Settings.BaseUrl">Service URL</sys:String>
     <sys:String x:Key="L.Settings.Credential">API credential</sys:String>
     <sys:String x:Key="L.Settings.CredHelpAnthropic">For corporate gateways, use your ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN values; DeepSeek mappings also use this protocol.</sys:String>
-    <sys:String x:Key="L.Settings.CredHelpOpenAi">Uses the OpenAI Responses API. Service URL is https://api.openai.com; enter your API key without a Bearer prefix.</sys:String>
+    <sys:String x:Key="L.Settings.CredHelpOpenAi">Use https://api.openai.com for OpenAI, or the provider URL for DeepSeek and other OpenAI-compatible services. Do not include a Bearer prefix.</sys:String>
     <sys:String x:Key="L.Settings.FetchModels">Fetch models</sys:String>
     <sys:String x:Key="L.Settings.SelectModel">Choose model</sys:String>
     <sys:String x:Key="L.Settings.ModelName">Model name</sys:String>
@@ -193,10 +193,15 @@
     <sys:String x:Key="L.Settings.LoginStatusNone">No site sign-ins yet</sys:String>
     <sys:String x:Key="L.Settings.CorruptResetFmt">Settings file was corrupted; backed up to {0} and reset to defaults.</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusFmt">Sign-in saved (exported {0})</sys:String>
+    <sys:String x:Key="L.Settings.VideoNetwork">Video network</sys:String>
+    <sys:String x:Key="L.Settings.VideoProxy">Video proxy</sys:String>
+    <sys:String x:Key="L.Settings.VideoProxyHint">Use http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Leave blank for direct access; only affects video analysis and downloads.</sys:String>
+    <sys:String x:Key="L.Settings.IgnoreVideoCertificateErrors">Ignore HTTPS certificate errors for video sites</sys:String>
+    <sys:String x:Key="L.Settings.IgnoreVideoCertificateErrorsHint">Use only when a proxy/VPN replaces certificates and its root certificate cannot be imported. Only affects video analysis and downloads.</sys:String>
     <sys:String x:Key="L.Settings.Dependencies">Components</sys:String>
     <sys:String x:Key="L.Settings.Redownload">Re-download</sys:String>
-    <sys:String x:Key="L.Settings.UpdateYtDlp">Update yt-dlp</sys:String>
-    <sys:String x:Key="L.Settings.DepHint">Site rules change often; if downloads keep failing, try updating yt-dlp first.</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlp">Reinstall yt-dlp</sys:String>
+    <sys:String x:Key="L.Settings.DepHint">If downloads keep failing, re-download the components or update Moongate.</sys:String>
     <sys:String x:Key="L.Settings.Installed">Installed</sys:String>
     <sys:String x:Key="L.Settings.Missing">Missing</sys:String>
     <sys:String x:Key="L.Settings.DepCorrupt">Corrupt</sys:String>
@@ -207,11 +212,12 @@
     <sys:String x:Key="L.Settings.ClearLoginsDetail">You will need to sign in again to download member-only or restricted videos.</sys:String>
     <sys:String x:Key="L.Settings.RedownloadTitle">Re-download components</sys:String>
     <sys:String x:Key="L.Settings.RedownloadCaption">Re-downloading yt-dlp, ffmpeg, and deno. Keep your network connected.</sys:String>
-    <sys:String x:Key="L.Settings.UpdateYtDlpCaption">Downloading the latest yt-dlp. Keep your network connected.</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlpCaption">Downloading the yt-dlp version pinned for this Moongate release. Keep your network connected.</sys:String>
 
     <!-- Update -->
     <sys:String x:Key="L.Update.Section">Update</sys:String>
     <sys:String x:Key="L.Update.CurrentVersion">Current version</sys:String>
+    <sys:String x:Key="L.Update.LastCheckedFmt">Last checked {0}</sys:String>
     <sys:String x:Key="L.Update.Check">Check for updates</sys:String>
     <sys:String x:Key="L.Update.Checking">Checking for updates…</sys:String>
     <sys:String x:Key="L.Update.UpToDate">You're on the latest version</sys:String>

@@ -9,7 +9,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !ifndef APPVERSION
-  !define APPVERSION "0.7.4"
+  !define APPVERSION "0.7.5"
 !endif
 !ifndef ICON_PATH
   !define ICON_PATH "windows/assets/app-nsis.ico"
@@ -118,10 +118,14 @@ skipRecursiveRemove:
   RMDir "$INSTDIR"
 uninstallRegistry:
   DeleteRegKey HKCU "${UNINSTKEY}"
+  ; 运行中的卸载器自身可能无法被 RMDir /r 立刻移除；显式安排删除，
+  ; 避免静默卸载后安装目录只剩 Uninstall.exe。
+  Delete /REBOOTOK "$INSTDIR\Uninstall.exe"
+  RMDir /REBOOTOK "$INSTDIR"
   ; 询问是否删除用户数据。默认保留（便于重装免重下依赖、免重新登录）。
   ; 关键：设置 / 凭证 / Cookie / WebView2 登录态在 %APPDATA%\Moongate，
   ; 依赖缓存在 %LOCALAPPDATA%\Moongate——只删其一不会清干净登录与凭证。
-  MessageBox MB_YESNO|MB_ICONQUESTION "$(DataPrompt)" IDNO keepUserData
+  MessageBox MB_YESNO|MB_ICONQUESTION "$(DataPrompt)" /SD IDNO IDNO keepUserData
   RMDir /r "$APPDATA\Moongate"
   RMDir /r "$LOCALAPPDATA\Moongate"
 keepUserData:

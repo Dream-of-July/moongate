@@ -445,4 +445,13 @@ public class EncoderSelectionTests
             false, null, null, null, null, true, AllHw);
         Assert.Single(chain);
     }
+
+    [Fact]
+    public void Mp4AudioChain_PrefersAacBeforeCopy_ForWindowsPlayerCompatibility()
+    {
+        var chain = FFmpegBurner.Mp4CompatibleAudioEncodingChain();
+
+        Assert.Equal("aac", chain[0][1]);
+        Assert.Equal("copy", chain[1][1]);
+    }
 }

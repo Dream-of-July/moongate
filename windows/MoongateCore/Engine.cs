@@ -349,6 +349,21 @@ public class YtDlpEngine : IDownloadEngine
         return path is not null && File.Exists(path);
     }
 
+    internal static List<string> MakeProxyArguments(AppSettings settings)
+    {
+        var proxy = AppSettings.NormalizeVideoProxyUrl(settings.VideoProxyUrl);
+        return proxy.Length == 0 ? [] : ["--proxy", proxy];
+    }
+
+    internal static List<string> MakeNetworkArguments(AppSettings settings)
+    {
+        var args = MakeProxyArguments(settings);
+        if (settings.IgnoreVideoCertificateErrors) args.Add("--no-check-certificates");
+        return args;
+    }
+
+    private static List<string> MakeNetworkArguments() => MakeNetworkArguments(AppSettings.Load());
+
     /// <summary>登录检测正则：编译一次复用，避免每次错误处理都 new Regex。与 macOS detectLoginRequired 同构。</summary>
     private static readonly Regex LoginRequiredRegex = new(
         "login required|need to log ?in|requires? (?:a )?login|account cookies|cookies.*(?:required|--cookies)|members?[- ]only|premium|sign ?in|authenticat|登录|登陆|大会员|会员|付费|请先登录|需要登录",
@@ -567,6 +582,7 @@ public class YtDlpEngine : IDownloadEngine
         var ytdlp = YtDlpPath();
         var ffmpegDir = FfmpegDirectory();
         var (cookieArgs, cleanup) = MakeCookieArguments(url);
+        var networkArgs = MakeNetworkArguments();
         try
         {
             var lastStderr = "";
@@ -574,6 +590,7 @@ public class YtDlpEngine : IDownloadEngine
             {
                 var args = new List<string> { "-J", "--no-playlist", "--ffmpeg-location", ffmpegDir };
                 args.AddRange(cookieArgs);
+                args.AddRange(networkArgs);
                 args.Add(url);
                 // 90s 而非 60s：中国大陆经代理/VPN 访问时握手+TLS+deno 冷启动延迟更高。
                 var output = await RunProcessHookAsync(ytdlp, args, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
@@ -818,6 +835,7 @@ public class YtDlpEngine : IDownloadEngine
             var langArg = langs.Count == 0 ? "all" : string.Join(",", langs) + ",all";
 
             var (cookieArgs, cleanup) = MakeCookieArguments(url);
+            var networkArgs = MakeNetworkArguments();
             try
             {
                 var args = new List<string>
@@ -828,6 +846,7 @@ public class YtDlpEngine : IDownloadEngine
                     "-o", Path.Combine(tempDir, "%(id)s.%(ext)s"),
                 };
                 args.AddRange(cookieArgs);
+                args.AddRange(networkArgs);
                 args.Add(url);
 
                 var (status, _, _, _) = await RunProcessHookAsync(
@@ -1208,9 +1227,11 @@ public class YtDlpEngine : IDownloadEngine
             "--fragment-retries", "10",
         };
         var (cookieArgs, cleanup) = MakeCookieArguments(request.Url);
+        var networkArgs = MakeNetworkArguments();
         try
         {
             args.AddRange(cookieArgs);
+            args.AddRange(networkArgs);
             if (request.FormatId == "audio")
             {
                 args.AddRange(["-f", "ba/b", "-x", "--audio-format", "m4a"]);
@@ -1291,9 +1312,9 @@ public class YtDlpEngine : IDownloadEngine
                     }
                     throw;
                 }
-                // 可恢复的格式缺失：未取消、还有重试机会时，自动再跑一次。
+                // 可恢复的 yt-dlp 下载失败：未取消、还有重试机会时，自动再跑一次。
                 if (attempt == 0 && status != 0 && control?.IsCancelled != true
-                    && stderrTail.Contains("Requested format is not available"))
+                    && IsRecoverableDownloadRetry(stderrTail, request.Url))
                 {
                     continue;
                 }
@@ -1507,7 +1528,7 @@ public class YtDlpEngine : IDownloadEngine
             return new DownloadProgress
             {
                 Phase = DownloadProgress.ProgressPhase.Downloading,
-                Percent = percent is { } p ? Math.Min(Math.Max(p, 0), 100) : null,
+                Percent = NormalizeProgressPercent(percent),
                 SpeedText = speed,
                 EtaText = eta,
             };
@@ -1517,6 +1538,12 @@ public class YtDlpEngine : IDownloadEngine
             return new DownloadProgress { Phase = DownloadProgress.ProgressPhase.Processing };
         }
         return null;
+    }
+
+    private static double? NormalizeProgressPercent(double? value)
+    {
+        if (value is not { } percent || double.IsNaN(percent) || double.IsInfinity(percent)) return null;
+        return Math.Clamp(percent, 0, 100);
     }
 
     private static string? NormalizeField(string value) =>
@@ -1535,6 +1562,12 @@ public class YtDlpEngine : IDownloadEngine
                 "資源拒絕存取（403），可能有防盜連或地區限制。可先在瀏覽器確認影片能正常播放，或換一個候選來源。",
                 "Access denied (403): possibly hotlink protection or a region lock. Confirm the video plays in a browser, or pick another source.") + "\n" + rawLine;
         }
+        if (IsCertificateTrustError(stderrTail))
+        {
+            return L10n.T("HTTPS 证书校验失败。请先检查 Windows 系统时间、系统根证书，以及代理/VPN 是否安装了需要信任的根证书，然后重试。",
+                "HTTPS 憑證校驗失敗。請先檢查 Windows 系統時間、系統根憑證，以及代理/VPN 是否安裝了需要信任的根憑證，然後重試。",
+                "HTTPS certificate validation failed. Check the Windows system time, root certificates, and whether your proxy/VPN requires a trusted root certificate, then retry.") + "\n" + rawLine;
+        }
         if (IsLikelyNetworkError(stderrTail))
         {
             return L10n.T("网络连接不稳定或被中断。若在中国大陆访问 YouTube 等站点，请确认代理/VPN 已开启且工作正常，再点「重试」。",
@@ -1545,6 +1578,18 @@ public class YtDlpEngine : IDownloadEngine
     }
 
     /// <summary>识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。</summary>
+    private static bool IsCertificateTrustError(string stderr)
+    {
+        var lower = stderr.ToLowerInvariant();
+        string[] markers =
+        [
+            "certificate_verify_failed", "certificate verify failed",
+            "unable to get local issuer certificate", "self-signed certificate",
+            "sec_e_untrusted_root", "untrusted root",
+        ];
+        return markers.Any(lower.Contains);
+    }
+
     internal static bool IsLikelyNetworkError(string stderr)
     {
         var lower = stderr.ToLowerInvariant();
@@ -1557,6 +1602,22 @@ public class YtDlpEngine : IDownloadEngine
             "getaddrinfo", "name or service not known", "no route to host",
         ];
         return markers.Any(lower.Contains);
+    }
+
+    internal static bool IsRecoverableDownloadRetry(string stderr, string url)
+    {
+        if (stderr.Contains("Requested format is not available", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        if ((stderr.Contains("HTTP Error 403", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("403 Forbidden", StringComparison.OrdinalIgnoreCase))
+            && Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+            && IsYouTubeHost(parsed.Host))
+        {
+            return true;
+        }
+        return false;
     }
 
     internal static readonly HashSet<string> SubtitleExtensions = ["srt", "vtt", "ass", "ssa", "lrc", "ttml"];
@@ -1661,6 +1722,19 @@ public class YtDlpEngine : IDownloadEngine
             return L10n.T("站点暂时没有返回可用的清晰度（多为临时风控），请稍后重试；若反复出现，可在设置里重新登录。",
                 "站點暫時沒有返回可用的清晰度（多為臨時風控），請稍後重試；若反覆出現，可在設定裡重新登入。",
                 "The site returned no usable formats (usually temporary anti-bot). Retry later; if it persists, sign in again in Settings.");
+        }
+        if (IsCertificateTrustError(stderr))
+        {
+            return L10n.T("解析失败：HTTPS 证书校验失败。请先检查 Windows 系统时间、系统根证书，以及代理/VPN 是否安装了需要信任的根证书，然后重试。",
+                "解析失敗：HTTPS 憑證校驗失敗。請先檢查 Windows 系統時間、系統根憑證，以及代理/VPN 是否安裝了需要信任的根憑證，然後重試。",
+                "Analysis failed: HTTPS certificate validation failed. Check the Windows system time, root certificates, and whether your proxy/VPN requires a trusted root certificate, then retry.");
+        }
+        if (stderr.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("This video is unavailable", StringComparison.OrdinalIgnoreCase))
+        {
+            return L10n.T("YouTube 返回视频不可用。若浏览器里能播放，请确认月之门使用的是同一个账号和同一个代理出口；可在设置里登录 YouTube，或填写视频代理地址后重试。",
+                "YouTube 回傳影片不可用。若瀏覽器裡能播放，請確認月之門使用的是同一個帳號和同一個代理出口；可在設定裡登入 YouTube，或填寫影片代理位址後重試。",
+                "YouTube says the video is unavailable. If it plays in your browser, make sure Moongate uses the same account and proxy route; sign in to YouTube in Settings or set a video proxy, then retry.");
         }
         if (IsLikelyNetworkError(stderr))
         {

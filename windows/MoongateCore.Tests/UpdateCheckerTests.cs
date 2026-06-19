@@ -109,6 +109,19 @@ public class UpdateCheckerTests
     }
 
     [Fact]
+    public void AutomaticUpdateCheck_IsThrottledBetweenManualChecks()
+    {
+        var now = new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero);
+        var interval = TimeSpan.FromHours(6);
+
+        Assert.True(UpdateChecker.ShouldRunAutomaticCheck(null, now, interval));
+        Assert.False(UpdateChecker.ShouldRunAutomaticCheck(now.AddHours(-2), now, interval));
+        Assert.True(UpdateChecker.ShouldRunAutomaticCheck(now.AddHours(-6), now, interval));
+        // Clock skew or a just-recorded check should not trigger a silent retry loop.
+        Assert.False(UpdateChecker.ShouldRunAutomaticCheck(now.AddMinutes(5), now, interval));
+    }
+
+    [Fact]
     public void PicksNewestWindowsUpdateAboveCurrent()
     {
         var json = ReleasesJson(

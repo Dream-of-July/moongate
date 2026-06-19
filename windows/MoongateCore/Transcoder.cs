@@ -72,9 +72,9 @@ public sealed class Transcoder
             case OutputFormat.Mp4H264:
                 if (codec == "h264")
                 {
-                    // 已是 H.264 → 只换 mp4 容器。
+                    // 已是 H.264 → 视频复制；音频转 AAC，避免 Opus 等音轨在 Windows 自带播放器里无声。
                     return new Plan(
-                        ["-y", "-i", inputPath, "-c", "copy", "-movflags", "+faststart", outputPath],
+                        ["-y", "-i", inputPath, "-c:v", "copy", ..FFmpegBurner.AacAudioArgs, "-movflags", "+faststart", outputPath],
                         "mp4", true, false);
                 }
                 // 转 H.264：8-bit SDR，HDR 源会丢 HDR（tonemap）。硬件可用时用 *_nvenc/qsv/amf。
@@ -101,7 +101,7 @@ public sealed class Transcoder
                 if (codec == "h265")
                 {
                     return new Plan(
-                        ["-y", "-i", inputPath, "-c", "copy", "-tag:v", "hvc1", "-movflags", "+faststart", outputPath],
+                        ["-y", "-i", inputPath, "-c:v", "copy", ..FFmpegBurner.AacAudioArgs, "-tag:v", "hvc1", "-movflags", "+faststart", outputPath],
                         "mp4", true, false);
                 }
                 // 转 H.265。硬件 HEVC 可用时优先（HDR 走 main10 + 色彩元数据透传，保 HDR）；

@@ -127,6 +127,13 @@ public sealed record AppSettings
     /// 待首个正式版发布后应把默认改为 false，让稳定通道只收正式版。详见 UpdateChecker 的通道过滤。
     /// </summary>
     public bool ReceiveBetaUpdates { get; init; } = true;
+    /// <summary>
+    /// 视频解析/下载专用代理。为空表示直连；支持 http/https/socks4/socks5，裸 host:port 会按 http:// 归一化。
+    /// 只传给 yt-dlp，不影响 AI API 凭证或普通系统网络设置。
+    /// </summary>
+    public string VideoProxyUrl { get; init; } = "";
+    /// <summary>视频解析/下载是否忽略 HTTPS 证书校验。默认关闭，仅用于代理/VPN 证书链异常的环境。</summary>
+    public bool IgnoreVideoCertificateErrors { get; init; }
 
     // MARK: 上次下载选项（PARITY-002：与 macOS 一致，选档页恢复上次选择）
 
@@ -350,6 +357,10 @@ public sealed record AppSettings
         // 接收测试版更新：缺键默认 true（当前发布全是 prerelease）；仅显式 false 关闭。
         var receiveBetaUpdates = !root.TryGetProperty("receiveBetaUpdates", out var rbu)
             || rbu.ValueKind != JsonValueKind.False;
+        var videoProxyUrl = NormalizeVideoProxyUrl(
+            StringField(root, "videoProxyURL") ?? StringField(root, "videoProxyUrl") ?? "");
+        var ignoreVideoCertificateErrors = root.TryGetProperty("ignoreVideoCertificateErrors", out var ivce)
+            && ivce.ValueKind == JsonValueKind.True;
 
         // 上次下载选项（PARITY-002）。
         var lastSubtitleMode = StringField(root, "lastSubtitleMode");
@@ -399,6 +410,8 @@ public sealed record AppSettings
             OnboardingCompleted = onboardingCompleted,
             SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
             ReceiveBetaUpdates = receiveBetaUpdates,
+            VideoProxyUrl = videoProxyUrl,
+            IgnoreVideoCertificateErrors = ignoreVideoCertificateErrors,
             LastSubtitleMode = lastSubtitleMode,
             LastSubtitleLangs = lastSubtitleLangs,
             LastOutputFormat = lastOutputFormat,
@@ -437,6 +450,8 @@ public sealed record AppSettings
             ["onboardingCompleted"] = OnboardingCompleted,
             ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
             ["receiveBetaUpdates"] = ReceiveBetaUpdates,
+            ["videoProxyURL"] = NormalizeVideoProxyUrl(VideoProxyUrl),
+            ["ignoreVideoCertificateErrors"] = IgnoreVideoCertificateErrors,
             ["lastSubtitleMode"] = LastSubtitleMode,
             ["lastSubtitleLangs"] = LastSubtitleLangs,
             ["lastOutputFormat"] = LastOutputFormat,
@@ -563,4 +578,20 @@ public sealed record AppSettings
         !string.IsNullOrWhiteSpace(settings.TranslationBaseUrl)
         && !string.IsNullOrWhiteSpace(settings.TranslationModel)
         && !string.IsNullOrWhiteSpace(settings.TranslationAuthToken);
+
+    public static string NormalizeVideoProxyUrl(string? value)
+    {
+        var trimmed = (value ?? "").Trim();
+        if (trimmed.Length == 0) return "";
+        if (trimmed.Contains('\r') || trimmed.Contains('\n')) return "";
+
+        var candidate = trimmed.Contains("://", StringComparison.Ordinal)
+            ? trimmed
+            : "http://" + trimmed;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)) return "";
+        var scheme = uri.Scheme.ToLowerInvariant();
+        string[] supported = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"];
+        if (!supported.Contains(scheme) || string.IsNullOrWhiteSpace(uri.Host)) return "";
+        return uri.ToString().TrimEnd('/');
+    }
 }

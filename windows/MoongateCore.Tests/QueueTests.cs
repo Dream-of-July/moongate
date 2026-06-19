@@ -107,6 +107,17 @@ public class QueueManagerTests
         Assert.Equal(S(0.10, false), QueueManager.NextDownloadProgressState(S(0.95, false), 0.10));
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void NextDownloadProgressState_IgnoresNonFiniteIncoming(double incoming)
+    {
+        var current = new QueueManager.DownloadProgressState(0.40, false);
+
+        Assert.Equal(current, QueueManager.NextDownloadProgressState(current, incoming));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 8000)
     {
         var start = Environment.TickCount64;

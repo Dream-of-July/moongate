@@ -2,17 +2,21 @@
 
 本项目版本遵循语义化版本（major.minor.patch）。
 
-## 0.7.4
+## 0.7.5
 
-0.7.4 是 Windows-only 热修版本，用于让虚拟机上的 Windows 测试继续推进。
+0.7.5 是一次 Windows-only 热修版本，重点修复 Windows 版设置窗口在打开时因 WPF 只读绑定触发 `RangeBase.Value`/`Run.Text` 初始化异常的问题，并补齐 Windows on ARM 虚拟机中的基础构建、安装器和启动烟测验证。macOS 最新发布面仍停留在 0.7.3。
 
-### 修复
+### 修复 / 改进
 
-- **修复 Windows 设置页打不开**：移除设置窗口更新区域里会触发 WPF `Run.Text` setter 异常的 inline `Run` 文本绑定，改为普通 `TextBlock` 组合显示。点击「设置」不应再弹出 `Set property 'System.Windows.Documents.Run.Text' threw an exception`。
+- **Windows 设置窗口不再因更新区绑定崩溃**：设置页更新区所有 `Updater.*` 绑定显式使用单向绑定，避免 WPF 尝试写回只读状态属性。
+- **更新区文本不再触发 `Run.Text` 异常**：设置页更新区域移除 inline `Run` 文本绑定，改为普通 `TextBlock` 组合显示；点击「设置」不应再弹出 `Set property 'System.Windows.Documents.Run.Text' threw an exception`。
+- **进度值防护**：下载、解析和队列 UI 进度统一过滤 `NaN`、无穷大和越界值，避免 WPF `RangeBase` 控件收到非法值。
+- **证书错误提示更准确**：当 yt-dlp/系统网络栈因代理根证书或系统根证书不受信任而失败时，错误文案会提示检查 Windows 系统时间、根证书和代理/VPN 证书，而不是泛化成普通网络波动。
+- **Windows 发布链路验证**：在 Windows on ARM 虚拟机上验证 `win-x64` 自包含发布产物、NSIS 安装器构建、临时目录安装和启动烟测；当前仍通过 x64 模拟运行，不声明原生 ARM64。
 
 ### 测试
 
-- 新增 Windows 设置页发布表面回归测试，禁止 `SettingsWindow.xaml` 再引入 `<Run Text=`，并确认更新区域仍保留新版本、下载百分比和发布页入口。
+- Windows `dotnet test windows/Moongate.Win.sln` 覆盖 414 个核心测试与 1 个 WPF 设置窗口初始化烟测。
 
 ## 0.7.3
 
@@ -24,7 +28,7 @@
 
 - **API Token 不再明文落盘**：macOS 用 Keychain、Windows 用 DPAPI 加密存储；旧版 settings.json 里的明文 Token 首次启动事务化迁移（先写安全存储、成功才抹明文，失败不丢）。
 - **Cookie 按站点隔离**：登录 Cookie 改为按站点（YouTube / Bilibili）分文件导出与过滤，下载按 URL host 选用对应 jar，互不串味；旧全局 cookies.txt 自动迁移。
-- **依赖完整性校验**：Windows 依赖下载新增 SHA-256 校验机制（机制就位，待填固定哈希）。
+- **依赖完整性校验**：Windows 受管依赖改为随 App 固定版本下载，并在安装前校验 SHA-256，不再直接追随上游 `latest`。
 - **登录清除更诚实**：Windows「清除全部登录」在 WebView2 数据删不掉时如实提示「部分清除」并下次启动补删。
 
 ### 修复 / 改进

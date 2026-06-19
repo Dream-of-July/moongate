@@ -145,6 +145,19 @@ public sealed class UpdateChecker
     public string ReleasesPageUrl => $"https://github.com/{Owner}/{Repo}/releases";
 
     /// <summary>
+    /// 自动静默检查的节流判断（UPDATE-WIN-004）：设置页可频繁打开，但不应每次都请求 GitHub。
+    /// 手动检查不走此函数，始终允许。
+    /// </summary>
+    public static bool ShouldRunAutomaticCheck(
+        DateTimeOffset? lastCheckedAt,
+        DateTimeOffset now,
+        TimeSpan minimumInterval)
+    {
+        if (lastCheckedAt is null) return true;
+        return now - lastCheckedAt.Value >= minimumInterval;
+    }
+
+    /// <summary>
     /// 查询 GitHub releases，返回比 currentVersion 更新的 Windows 版本；无更新返回 null。
     /// 公开仓库匿名访问即可；超时短、失败抛 MoongateException 由调用方决定是否静默。
     /// httpHandler 供测试注入。

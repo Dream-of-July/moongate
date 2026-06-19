@@ -94,7 +94,7 @@ public sealed class QueueItemViewModel : ObservableObject
         StatusText = ComputeStatusText(item, open);
         IsFailed = kind == ItemStageKind.Failed;
         ShowProgress = open;
-        ProgressValue = item.Progress is { } progress ? Math.Min(Math.Max(progress, 0), 1) : 0;
+        ProgressValue = CoerceProgressValue(item.Progress);
         ProgressIndeterminate = open && item.Progress is null;
 
         ShowPause = open && !item.IsPaused;
@@ -106,6 +106,12 @@ public sealed class QueueItemViewModel : ObservableObject
         ShowReveal = kind is ItemStageKind.Done or ItemStageKind.Cancelled && item.ResultFiles.Count > 0;
         ShowRemove = !open;
         _resultFiles = item.ResultFiles;
+    }
+
+    internal static double CoerceProgressValue(double? progress)
+    {
+        if (progress is not { } value || double.IsNaN(value) || double.IsInfinity(value)) return 0;
+        return Math.Clamp(value, 0, 1);
     }
 
     private static string ComputeStatusText(QueueManager.QueueItem item, bool open)

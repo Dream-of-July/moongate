@@ -57,23 +57,27 @@ public class TranscoderPlanTests
     }
 
     [Fact]
-    public void RemuxAlreadyH264ToMp4_IsCopy()
+    public void RemuxAlreadyH264ToMp4_CopiesVideoAndTranscodesAudioToAac()
     {
         var plan = Transcoder.BuildPlan(
             OutputFormat.Mp4H264, "in.mp4", "out.mp4",
             sourceVCodec: "h264", sourceIsHdr: false, x265Available: true);
         Assert.True(plan.IsRemux);
-        Assert.Contains("copy", plan.FfmpegArgs);
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.Contains("-c:v copy", joined);
+        Assert.Contains("-c:a aac", joined);
     }
 
     [Fact]
-    public void RemuxAlreadyH265ToMp4_IsCopy_TagsHvc1()
+    public void RemuxAlreadyH265ToMp4_CopiesVideoAndTranscodesAudioToAac_TagsHvc1()
     {
         var plan = Transcoder.BuildPlan(
             OutputFormat.Mp4H265, "in.mkv", "out.mp4",
             sourceVCodec: "h265", sourceIsHdr: true, x265Available: true);
         Assert.True(plan.IsRemux);
-        Assert.Contains("copy", plan.FfmpegArgs);
+        var joined = string.Join(" ", plan.FfmpegArgs);
+        Assert.Contains("-c:v copy", joined);
+        Assert.Contains("-c:a aac", joined);
         Assert.Contains("hvc1", plan.FfmpegArgs);
     }
 

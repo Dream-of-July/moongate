@@ -10,6 +10,12 @@ namespace Moongate.App;
 public partial class App : Application
 {
     /// <summary>
+    /// App 级共享更新服务（UPDATE-WIN-004）：设置页反复打开时复用状态与静默检查节流，
+    /// 避免每个 SettingsWindow 都创建新 updater 并请求 GitHub。
+    /// </summary>
+    public static UpdateService WindowsUpdater { get; } = new();
+
+    /// <summary>
     /// 正处于「更新退出」流程：UpdateService 启动安装器后置位，主窗口关窗确认据此放行，
     /// 不再用普通的「有未完成任务」确认拦截这次退出。
     /// </summary>

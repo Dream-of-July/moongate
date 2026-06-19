@@ -261,6 +261,31 @@ public class SettingsTests
     }
 
     [Fact]
+    public void VideoProxy_RoundTripsAndNormalizes()
+    {
+        var settings = AppSettings.FromJson("""{"videoProxyURL": "127.0.0.1:7890", "ignoreVideoCertificateErrors": true}""");
+        Assert.Equal("http://127.0.0.1:7890", settings.VideoProxyUrl);
+        Assert.True(settings.IgnoreVideoCertificateErrors);
+
+        var back = AppSettings.FromJson(new AppSettings
+        {
+            VideoProxyUrl = "socks5://127.0.0.1:1080/",
+            IgnoreVideoCertificateErrors = true,
+        }.ToJson());
+        Assert.Equal("socks5://127.0.0.1:1080", back.VideoProxyUrl);
+        Assert.True(back.IgnoreVideoCertificateErrors);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("file:///tmp/proxy")]
+    [InlineData("http://good:7890\nhttp://bad:7890")]
+    public void VideoProxy_InvalidValuesBecomeEmpty(string raw)
+    {
+        Assert.Equal("", AppSettings.NormalizeVideoProxyUrl(raw));
+    }
+
+    [Fact]
     public void SmartTranslationPrompts_RoundTripsAndDefaultsOff()
     {
         Assert.False(new AppSettings().SmartTranslationPromptsEnabled);

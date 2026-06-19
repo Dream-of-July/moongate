@@ -575,13 +575,26 @@ public static class TranslationApi
 
     // MARK: 协议分发
 
+    private static bool IsOfficialOpenAiBaseUrl(string baseUrl) =>
+        Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var url)
+        && string.Equals(url.Host, "api.openai.com", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDeepSeekBaseUrl(string baseUrl) =>
+        Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var url)
+        && string.Equals(url.Host, "api.deepseek.com", StringComparison.OrdinalIgnoreCase);
+
     internal static Task<ModelReply> SendConfiguredMessageAsync(
         AppSettings settings, string? system, string userContent, int maxTokens,
-        HttpMessageHandler? handler, CancellationToken ct) => settings.TranslationProvider switch
+        HttpMessageHandler? handler, CancellationToken ct)
     {
-        TranslationProvider.Anthropic => SendAnthropicMessageAsync(settings, system, userContent, maxTokens, handler, ct),
-        _ => SendOpenAiResponseAsync(settings, system, userContent, maxTokens, handler, ct),
-    };
+        if (settings.TranslationProvider == TranslationProvider.Anthropic)
+        {
+            return SendAnthropicMessageAsync(settings, system, userContent, maxTokens, handler, ct);
+        }
+        return IsOfficialOpenAiBaseUrl(settings.TranslationBaseUrl)
+            ? SendOpenAiResponseAsync(settings, system, userContent, maxTokens, handler, ct)
+            : SendOpenAiChatCompletionAsync(settings, system, userContent, maxTokens, handler, ct);
+    }
 
     private static (string Model, string Token) RequireModelAndToken(AppSettings settings)
     {
@@ -768,6 +781,154 @@ public static class TranslationApi
                 incompleteReason = reason.GetString();
             }
             return new ModelReply(joined, status == "incomplete" && incompleteReason == "max_output_tokens");
+        }
+    }
+
+    /// <summary>
+    /// 调一次 OpenAI-compatible Chat Completions API，供 DeepSeek、OpenRouter 与常见企业网关使用。
+    /// </summary>
+    internal static async Task<ModelReply> SendOpenAiChatCompletionAsync(
+        AppSettings settings, string? system, string userContent, int maxTokens,
+        HttpMessageHandler? handler, CancellationToken ct)
+    {
+        var (model, token) = RequireModelAndToken(settings);
+        var url = EndpointUrl(settings.TranslationBaseUrl, "/v1/chat/completions");
+
+        var messages = new List<Dictionary<string, string>>();
+        if (!string.IsNullOrWhiteSpace(system))
+        {
+            messages.Add(new Dictionary<string, string> { ["role"] = "system", ["content"] = system });
+        }
+        messages.Add(new Dictionary<string, string> { ["role"] = "user", ["content"] = userContent });
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = model,
+            ["messages"] = messages,
+            ["max_tokens"] = maxTokens,
+            ["stream"] = false,
+        };
+        if (IsDeepSeekBaseUrl(settings.TranslationBaseUrl))
+        {
+            payload["thinking"] = new Dictionary<string, string> { ["type"] = "disabled" };
+        }
+        var body = JsonSerializer.Serialize(payload, PayloadOptions);
+
+        HttpRequestMessage MakeRequest()
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            return request;
+        }
+
+        using var client = MakeClient(handler, TimeSpan.FromSeconds(120));
+        return await SendWithRetryAsync(client, MakeRequest, settings, ParseOpenAiChatCompletionReply, ct).ConfigureAwait(false);
+    }
+
+    private static ModelReply ParseOpenAiChatCompletionReply(string json)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            throw MoongateException.TranslateFailed(L10n.T("服务响应不符合 OpenAI Chat Completions 协议，请检查服务地址。",
+                "服務回應不符合 OpenAI Chat Completions 協定，請檢查服務位址。",
+                "The response does not match the OpenAI Chat Completions protocol. Check the service URL."));
+        }
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+            {
+                throw MoongateException.TranslateFailed(L10n.T("服务响应不符合 OpenAI Chat Completions 协议，请检查服务地址。",
+                    "服務回應不符合 OpenAI Chat Completions 協定，請檢查服務位址。",
+                    "The response does not match the OpenAI Chat Completions protocol. Check the service URL."));
+            }
+
+            var textParts = new List<string>();
+            var reachedLimit = false;
+            var sawReasoningContent = false;
+            var sawToolCalls = false;
+            foreach (var choice in choices.EnumerateArray())
+            {
+                if (choice.TryGetProperty("finish_reason", out var finishReason)
+                    && finishReason.ValueKind == JsonValueKind.String
+                    && finishReason.GetString() == "length")
+                {
+                    reachedLimit = true;
+                }
+                if (!choice.TryGetProperty("message", out var message)
+                    || message.ValueKind != JsonValueKind.Object
+                    || !message.TryGetProperty("content", out var content))
+                {
+                    continue;
+                }
+
+                if (message.TryGetProperty("reasoning_content", out var reasoningContent)
+                    && reasoningContent.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(reasoningContent.GetString()))
+                {
+                    sawReasoningContent = true;
+                }
+                if (message.TryGetProperty("tool_calls", out var toolCalls)
+                    && toolCalls.ValueKind == JsonValueKind.Array
+                    && toolCalls.GetArrayLength() > 0)
+                {
+                    sawToolCalls = true;
+                }
+
+                if (content.ValueKind == JsonValueKind.String)
+                {
+                    textParts.Add(content.GetString() ?? "");
+                }
+                else if (content.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var block in content.EnumerateArray())
+                    {
+                        if (block.ValueKind != JsonValueKind.Object) continue;
+                        var blockType = block.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String
+                            ? type.GetString()
+                            : null;
+                        if (blockType != "text" && blockType != "output_text") continue;
+                        if (block.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                        {
+                            textParts.Add(text.GetString() ?? "");
+                        }
+                    }
+                }
+            }
+            var joined = string.Concat(textParts);
+            if (joined.Length == 0)
+            {
+                if (reachedLimit)
+                {
+                    throw MoongateException.TranslateFailed(L10n.T("OpenAI-compatible 响应已到达输出上限，但没有返回最终文本；请稍后重试或换用更高输出上限的模型。",
+                        "OpenAI-compatible 回應已達輸出上限，但沒有回傳最終文字；請稍後重試或改用更高輸出上限的模型。",
+                        "The OpenAI-compatible response reached the output limit without final text. Try again later or use a model with a higher output limit."));
+                }
+                if (sawToolCalls)
+                {
+                    throw MoongateException.TranslateFailed(L10n.T("OpenAI-compatible 响应返回了工具调用而不是文本；请换用普通文本模型或关闭工具调用。",
+                        "OpenAI-compatible 回應回傳了工具呼叫而非文字；請改用一般文字模型或關閉工具呼叫。",
+                        "The OpenAI-compatible response returned tool calls instead of text. Use a plain text model or disable tool calling."));
+                }
+                if (sawReasoningContent)
+                {
+                    throw MoongateException.TranslateFailed(L10n.T("OpenAI-compatible 响应只返回了思考内容，没有最终文本；请关闭 thinking/推理模式，或换用非推理模型。",
+                        "OpenAI-compatible 回應只回傳了思考內容，沒有最終文字；請關閉 thinking/推理模式，或改用非推理模型。",
+                        "The OpenAI-compatible response only returned reasoning content and no final text. Disable thinking/reasoning mode or use a non-reasoning model."));
+                }
+                throw MoongateException.TranslateFailed(L10n.T("OpenAI-compatible 响应里没有文本内容，请检查模型或服务地址。",
+                    "OpenAI-compatible 回應中沒有文字內容，請檢查模型或服務位址。",
+                    "The OpenAI-compatible response contains no text. Check the model or service URL."));
+            }
+            return new ModelReply(joined, reachedLimit);
         }
     }
 

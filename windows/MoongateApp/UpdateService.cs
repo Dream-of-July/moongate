@@ -18,8 +18,11 @@ public sealed class UpdateService : ObservableObject
 {
     public enum Phase { Idle, Checking, UpToDate, Available, Downloading, Installing, Failed }
 
+    private static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromHours(6);
+
     private readonly UpdateChecker _checker = new();
     private CancellationTokenSource? _cts;
+    private DateTimeOffset? _lastCheckedAt;
 
     private Phase _state = Phase.Idle;
     public Phase State
@@ -55,12 +58,38 @@ public sealed class UpdateService : ObservableObject
     public double DownloadFraction
     {
         get => _downloadFraction;
-        private set { if (SetProperty(ref _downloadFraction, value)) RaisePropertyChanged(nameof(DownloadPercentText)); }
+        private set
+        {
+            var coerced = CoerceDownloadFraction(value);
+            if (SetProperty(ref _downloadFraction, coerced)) RaisePropertyChanged(nameof(DownloadPercentText));
+        }
     }
-    public string DownloadPercentText => $"{(int)(_downloadFraction * 100)}%";
+    public string DownloadPercentText => $"{(int)(CoerceDownloadFraction(_downloadFraction) * 100)}%";
+
+    internal static double CoerceDownloadFraction(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value)) return 0;
+        return Math.Clamp(value, 0, 1);
+    }
 
     private string _failureReason = "";
     public string FailureReason { get => _failureReason; private set => SetProperty(ref _failureReason, value); }
+
+    public DateTimeOffset? LastCheckedAt
+    {
+        get => _lastCheckedAt;
+        private set
+        {
+            if (_lastCheckedAt == value) return;
+            _lastCheckedAt = value;
+            RaisePropertyChanged(nameof(LastCheckedAt));
+            RaisePropertyChanged(nameof(LastCheckedText));
+        }
+    }
+
+    public string LastCheckedText => LastCheckedAt is { } at
+        ? Loc.F("L.Update.LastCheckedFmt", at.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))
+        : "";
 
     /// <summary>当前应用版本（来自程序集版本，由 publish 时 -p:Version 注入）。</summary>
     public string CurrentVersion
@@ -80,10 +109,17 @@ public sealed class UpdateService : ObservableObject
     /// </summary>
     public Func<bool>? ConfirmInstallReady { get; set; }
 
+    /// <summary>设置页自动静默检查：复用 App 级服务状态，6 小时内不重复请求 GitHub。</summary>
+    public void CheckAutomaticSilent()
+    {
+        if (!UpdateChecker.ShouldRunAutomaticCheck(LastCheckedAt, DateTimeOffset.Now, AutomaticCheckInterval)) return;
+        Check(silent: true);
+    }
+
     /// <summary>检查更新。silent=true 时失败不改状态（启动静默检查用）。</summary>
     public async void Check(bool silent = false)
     {
-        if (_state is Phase.Downloading or Phase.Installing) return;
+        if (_state is Phase.Checking or Phase.Downloading or Phase.Installing) return;
         _cts?.Cancel();
         var cts = new CancellationTokenSource();
         _cts = cts;
@@ -99,6 +135,7 @@ public sealed class UpdateService : ObservableObject
             if (info is not null)
             {
                 _available = info;
+                LastCheckedAt = DateTimeOffset.Now;
                 RaisePropertyChanged(nameof(AvailableVersionText));
                 RaisePropertyChanged(nameof(AvailableNotes));
                 RaisePropertyChanged(nameof(HasNotes));
@@ -106,12 +143,18 @@ public sealed class UpdateService : ObservableObject
             }
             else if (!silent)
             {
+                LastCheckedAt = DateTimeOffset.Now;
                 State = Phase.UpToDate;
+            }
+            else
+            {
+                LastCheckedAt = DateTimeOffset.Now;
             }
         }
         catch (Exception e)
         {
             if (cts.IsCancellationRequested) return;
+            LastCheckedAt = DateTimeOffset.Now;
             if (!silent)
             {
                 FailureReason = e is MoongateException ? e.Message : e.Message;
@@ -241,7 +284,7 @@ public sealed class UpdateService : ObservableObject
             {
                 await dst.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                 received += read;
-                if (total is { } t && t > 0) progress(Math.Clamp((double)received / t, 0, 1));
+                if (total is { } t && t > 0) progress(CoerceDownloadFraction((double)received / t));
             }
             // 完整性校验：连接中途断开会让循环正常结束却只写了一半，
             // 若不校验就会把截断的安装器当成功直接运行。Content-Length 已知时必须匹配。

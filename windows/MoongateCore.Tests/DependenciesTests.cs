@@ -32,18 +32,33 @@ public class DependencyPlanTests : IDisposable
 
         var ytdlp = plans[0];
         Assert.Equal(DependencyDownload.DownloadKind.Executable, ytdlp.Kind);
-        Assert.Equal("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", ytdlp.Url);
+        Assert.Equal("2026.06.09", ytdlp.Version);
+        Assert.Equal("x64", ytdlp.Architecture);
+        Assert.Equal("https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe", ytdlp.Url);
+        Assert.Equal("3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27", ytdlp.Sha256);
 
         var ffmpeg = plans[1];
         Assert.Equal(DependencyDownload.DownloadKind.Zip, ffmpeg.Kind);
-        Assert.Contains("BtbN/FFmpeg-Builds", ffmpeg.Url);
+        Assert.Equal("8.1.1", ffmpeg.Version);
+        Assert.Equal("x64", ffmpeg.Architecture);
+        Assert.Equal("https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip", ffmpeg.Url);
+        Assert.Equal("49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552", ffmpeg.Sha256);
         Assert.Equal(2, ffmpeg.ZipEntries.Count);
         Assert.Equal("ffmpeg.exe", ffmpeg.ZipEntries["bin/ffmpeg.exe"]);
         Assert.Equal("ffprobe.exe", ffmpeg.ZipEntries["bin/ffprobe.exe"]);
 
         var deno = plans[2];
         Assert.Equal(DependencyDownload.DownloadKind.Zip, deno.Kind);
-        Assert.Contains("denoland/deno", deno.Url);
+        Assert.Equal("2.8.3", deno.Version);
+        Assert.Equal("x64", deno.Architecture);
+        Assert.Equal("https://github.com/denoland/deno/releases/download/v2.8.3/deno-x86_64-pc-windows-msvc.zip", deno.Url);
+        Assert.Equal("7fdd1f42e6b0855421ecf27bb406e2492ade1087c85e30ebf0deab6280ea743c", deno.Sha256);
+        Assert.All(plans, plan =>
+        {
+            Assert.DoesNotContain("/latest/", plan.Url, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("master-latest", plan.Url, StringComparison.OrdinalIgnoreCase);
+            Assert.Matches("^[0-9a-f]{64}$", plan.Sha256);
+        });
     }
 
     [Fact]
@@ -117,9 +132,9 @@ public class ZipExtractionTests : IDisposable
     public void ExtractsBySuffix_IntoBinDirectory()
     {
         using var zip = BuildZip(
-            ("ffmpeg-master-latest-win64-gpl/README.txt", "readme"),
-            ("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", "FFMPEG_BINARY"),
-            ("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", "FFPROBE_BINARY"));
+            ("ffmpeg-8.1.1-full_build/README.txt", "readme"),
+            ("ffmpeg-8.1.1-full_build/bin/ffmpeg.exe", "FFMPEG_BINARY"),
+            ("ffmpeg-8.1.1-full_build/bin/ffprobe.exe", "FFPROBE_BINARY"));
 
         DependencyManager.ExtractZipEntries(zip, new Dictionary<string, string>
         {

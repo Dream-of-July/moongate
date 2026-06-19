@@ -20,27 +20,30 @@ public class ReleaseSurfaceTests
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepoRoot(), .. parts]));
 
     [Fact]
-    public void ReleaseVersionSurfacesUse074ForWindowsAnd073ForMac()
+    public void ReleaseVersionSurfacesUseSplitMac073Windows075()
     {
-        Assert.Contains("VERSION=\"0.7.4\"", Read("build-windows.sh"));
+        Assert.Contains("VERSION=\"0.7.5\"", Read("build-windows.sh"));
         Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("make-dmg.sh"));
         Assert.Contains("APP_VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("build.sh"));
         Assert.Contains("APP_BUILD_NUMBER=\"${MOONGATE_BUILD_NUMBER:-703}\"", Read("build.sh"));
         Assert.Contains("<string>$APP_VERSION</string>", Read("build.sh"));
         Assert.Contains("<string>$APP_BUILD_NUMBER</string>", Read("build.sh"));
         Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("make-pkg.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("make-sparkle-zip.sh"));
+        Assert.Contains("VERSION=\"${MOONGATE_VERSION:-0.7.3}\"", Read("make-appcast.sh"));
         Assert.Contains("productbuild", Read("make-pkg.sh"));
         Assert.Contains("PKG_SIGN_IDENTITY", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"$STAGING/Applications\"", Read("make-pkg.sh"));
         Assert.Contains("INSTALL_DIR=\"${INSTALL_DIR:-/Applications}\"", Read("build.sh"));
+        Assert.Contains("Moongate-macOS-v0.7.3.zip", Read("README.md"));
 
         var workflow = Read(".github", "workflows", "windows-release.yml");
-        Assert.Contains("default: v0.7.4", workflow);
-        Assert.Contains("default: 0.7.4", workflow);
+        Assert.Contains("default: v0.7.5", workflow);
+        Assert.Contains("default: 0.7.5", workflow);
         Assert.Contains("$expectedTag = \"v${{ inputs.version }}\"", workflow);
         Assert.Contains("Release tag/version mismatch", workflow);
 
-        Assert.Contains("!define APPVERSION \"0.7.4\"", Read("windows", "installer", "installer.nsi"));
+        Assert.Contains("!define APPVERSION \"0.7.5\"", Read("windows", "installer", "installer.nsi"));
     }
 
     [Fact]
@@ -94,6 +97,22 @@ public class ReleaseSurfaceTests
         Assert.Contains("IfFileExists \"$INSTDIR\\${INSTALL_MARKER}\"", installer);
         Assert.Contains("StrCmp \"$INSTDIR\" \"$LOCALAPPDATA\\Programs\\${APPNAME}\"", installer);
         Assert.Contains("skipRecursiveRemove", installer);
+        Assert.Contains("Delete /REBOOTOK \"$INSTDIR\\Uninstall.exe\"", installer);
+        Assert.Contains("RMDir /REBOOTOK \"$INSTDIR\"", installer);
+    }
+
+    [Fact]
+    public void WindowsSilentUninstallKeepsUserDataByDefault()
+    {
+        var installer = Read("windows", "installer", "installer.nsi");
+
+        Assert.Contains("MessageBox MB_YESNO|MB_ICONQUESTION \"$(DataPrompt)\" /SD IDNO IDNO keepUserData", installer);
+        Assert.True(
+            installer.IndexOf("/SD IDNO IDNO keepUserData", StringComparison.Ordinal)
+            < installer.IndexOf("RMDir /r \"$APPDATA\\Moongate\"", StringComparison.Ordinal));
+        Assert.True(
+            installer.IndexOf("/SD IDNO IDNO keepUserData", StringComparison.Ordinal)
+            < installer.IndexOf("RMDir /r \"$LOCALAPPDATA\\Moongate\"", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -114,6 +133,21 @@ public class ReleaseSurfaceTests
     }
 
     [Fact]
+    public void WindowsSettingsUsesSharedThrottledUpdater()
+    {
+        var app = Read("windows", "MoongateApp", "App.xaml.cs");
+        var settings = Read("windows", "MoongateApp", "SettingsWindow.xaml.cs");
+        var updateService = Read("windows", "MoongateApp", "UpdateService.cs");
+
+        Assert.Contains("public static UpdateService WindowsUpdater { get; } = new();", app);
+        Assert.Contains("Updater = App.WindowsUpdater;", settings);
+        Assert.DoesNotContain("public UpdateService Updater { get; } = new();", settings);
+        Assert.Contains("Updater.CheckAutomaticSilent();", settings);
+        Assert.Contains("ShouldRunAutomaticCheck", updateService);
+        Assert.Contains("TimeSpan.FromHours(6)", updateService);
+    }
+
+    [Fact]
     public void WindowsReleaseArtifactsUseVersionedNamesAndChecksums()
     {
         var localScript = Read("build-windows.sh");
@@ -125,8 +159,8 @@ public class ReleaseSurfaceTests
         Assert.Contains("Moongate-Windows-Setup-v${{ inputs.version }}.exe", workflow);
         Assert.Contains("$outFile.sha256", workflow);
         Assert.Contains("$OUT.sha256", localScript);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.4.exe", docs);
-        Assert.Contains("Moongate-Windows-Setup-v0.7.4.exe", readme);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.5.exe", docs);
+        Assert.Contains("Moongate-Windows-Setup-v0.7.5.exe", readme);
     }
 
     [Fact]
@@ -144,7 +178,11 @@ public class ReleaseSurfaceTests
     {
         var docs = Read("docs", "WINDOWS.md");
 
-        Assert.Contains("383", docs);
+        Assert.Contains("414", docs);
+        Assert.DoesNotContain("413", docs);
+        Assert.DoesNotContain("412", docs);
+        Assert.DoesNotContain("409", docs);
+        Assert.DoesNotContain("392", docs);
         Assert.DoesNotContain("271", docs);
         Assert.DoesNotContain("247", docs);
         Assert.DoesNotContain("241", docs);

@@ -53,6 +53,8 @@ public sealed class SettingsViewModel : ObservableObject
         _burnAlwaysH264 = current.BurnAlwaysH264;
         _maxDownloads = current.MaxConcurrentDownloads;
         _maxBurns = current.MaxConcurrentBurns;
+        _videoProxyUrl = current.VideoProxyUrl;
+        _ignoreVideoCertificateErrors = current.IgnoreVideoCertificateErrors;
         _notice = initialNotice;
 
         AIEndpoint = new APIEndpointActions(
@@ -576,6 +578,18 @@ public sealed class SettingsViewModel : ObservableObject
 
     private void SyncConcurrencyLive() => _queue.SyncConcurrency(BuildSettings());
 
+    // MARK: - 视频网络
+
+    private string _videoProxyUrl;
+    public string VideoProxyUrl { get => _videoProxyUrl; set => SetProperty(ref _videoProxyUrl, value); }
+
+    private bool _ignoreVideoCertificateErrors;
+    public bool IgnoreVideoCertificateErrors
+    {
+        get => _ignoreVideoCertificateErrors;
+        set => SetProperty(ref _ignoreVideoCertificateErrors, value);
+    }
+
     // MARK: - 站点登录
 
     private string _loginStatusText = "";
@@ -754,6 +768,8 @@ public sealed class SettingsViewModel : ObservableObject
         AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "zh-Hant", 3 => "en", _ => "auto" },
         TranslationTargetLanguage = TargetLanguageIndex switch { 1 => "zh-Hant", 2 => "en", _ => "zh-Hans" },
         OnboardingCompleted = _onboardingCompleted,
+        VideoProxyUrl = AppSettings.NormalizeVideoProxyUrl(VideoProxyUrl),
+        IgnoreVideoCertificateErrors = IgnoreVideoCertificateErrors,
     };
 
     public bool TrySave(out string? error)

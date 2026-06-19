@@ -825,6 +825,7 @@ public sealed class QueueManager
     /// </summary>
     internal static DownloadProgressState NextDownloadProgressState(DownloadProgressState current, double? incoming)
     {
+        incoming = NormalizeProgressFraction(incoming);
         if (incoming is not { } next) return current;                                    // 无百分比 → 不变
         if (current.Progress is { } old && Math.Abs(next - old) < 0.005) return current; // 过滤 <0.5pt 抖动
         return new DownloadProgressState(next, false);                                    // 如实显示当前百分比
@@ -833,6 +834,12 @@ public sealed class QueueManager
     /// <summary>
     /// 下载进度上报：转 0...1。某条流满后进入「处理中」（不确定），避免卡 100% 或进度倒退。
     /// </summary>
+    internal static double? NormalizeProgressFraction(double? value)
+    {
+        if (value is not { } fraction || double.IsNaN(fraction) || double.IsInfinity(fraction)) return null;
+        return Math.Clamp(fraction, 0, 1);
+    }
+
     private void ApplyDownloadProgress(Guid id, int generation, DownloadProgress p)
     {
         Update(id, generation, item =>
@@ -842,7 +849,7 @@ public sealed class QueueManager
             switch (p.Phase)
             {
                 case DownloadProgress.ProgressPhase.Downloading:
-                    double? newValue = p.Percent is { } percent ? Math.Min(Math.Max(percent / 100, 0), 1) : null;
+                    double? newValue = p.Percent is { } percent ? NormalizeProgressFraction(percent / 100) : null;
                     var cur = new DownloadProgressState(
                         item.Progress,
                         item.IsPostDownloadProcessing

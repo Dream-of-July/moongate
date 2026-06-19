@@ -56,6 +56,19 @@ public class TranslationApiTests
             stop_reason = stopReason,
         });
 
+    private static string ChatCompletionReply(string text, string finishReason = "stop") =>
+        JsonSerializer.Serialize(new
+        {
+            choices = new[]
+            {
+                new
+                {
+                    message = new { role = "assistant", content = text },
+                    finish_reason = finishReason,
+                },
+            },
+        });
+
     [Fact]
     public async Task Anthropic_Gateway_SendsBothAuthHeaders()
     {
@@ -170,6 +183,143 @@ public class TranslationApiTests
         var reply = await TranslationApi.SendOpenAiResponseAsync(
             GatewaySettings(TranslationProvider.Openai), null, "x", 16, handler, CancellationToken.None);
         Assert.True(reply.ReachedOutputLimit);
+    }
+
+    [Fact]
+    public async Task SendConfigured_OpenAiOfficial_UsesResponsesEndpoint()
+    {
+        var responseBody = JsonSerializer.Serialize(new
+        {
+            output = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    content = new object[] { new { type = "output_text", text = "ok" } },
+                },
+            },
+            status = "completed",
+        });
+        var handler = new FakeHttpHandler { Responder = _ => FakeHttpHandler.Json(200, responseBody) };
+        var settings = GatewaySettings(TranslationProvider.Openai) with { TranslationBaseUrl = "https://api.openai.com" };
+
+        var reply = await TranslationApi.SendConfiguredMessageAsync(
+            settings, "inst", "hello", 64, handler, CancellationToken.None);
+
+        Assert.Equal("ok", reply.Text);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://api.openai.com/v1/responses", request.Uri.ToString());
+        using var doc = JsonDocument.Parse(request.Body);
+        Assert.Equal("hello", doc.RootElement.GetProperty("input").GetString());
+        Assert.Equal(64, doc.RootElement.GetProperty("max_output_tokens").GetInt32());
+    }
+
+    [Fact]
+    public async Task SendConfigured_OpenAiCompatibleGateway_UsesChatCompletionsEndpoint()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, ChatCompletionReply("正常")),
+        };
+        var settings = GatewaySettings(TranslationProvider.Openai) with { TranslationBaseUrl = "https://api.deepseek.com" };
+
+        var reply = await TranslationApi.SendConfiguredMessageAsync(
+            settings, "inst", "hello", 64, handler, CancellationToken.None);
+
+        Assert.Equal("正常", reply.Text);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://api.deepseek.com/v1/chat/completions", request.Uri.ToString());
+        Assert.Equal("Bearer secret-token", request.Headers["Authorization"]);
+        using var doc = JsonDocument.Parse(request.Body);
+        Assert.Equal("test-model", doc.RootElement.GetProperty("model").GetString());
+        Assert.Equal(64, doc.RootElement.GetProperty("max_tokens").GetInt32());
+        Assert.False(doc.RootElement.GetProperty("stream").GetBoolean());
+        var messages = doc.RootElement.GetProperty("messages");
+        Assert.Equal("system", messages[0].GetProperty("role").GetString());
+        Assert.Equal("inst", messages[0].GetProperty("content").GetString());
+        Assert.Equal("user", messages[1].GetProperty("role").GetString());
+        Assert.Equal("hello", messages[1].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task SendConfigured_DeepSeek_DisablesThinkingForDeterministicTextTasks()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, ChatCompletionReply("正常")),
+        };
+        var settings = GatewaySettings(TranslationProvider.Openai) with { TranslationBaseUrl = "https://api.deepseek.com" };
+
+        await TranslationApi.SendConfiguredMessageAsync(
+            settings, "inst", "hello", 64, handler, CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        using var doc = JsonDocument.Parse(request.Body);
+        var thinking = doc.RootElement.GetProperty("thinking");
+        Assert.Equal("disabled", thinking.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task SendConfigured_NonDeepSeekCompatibleGateway_DoesNotSendDeepSeekThinkingParameter()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, ChatCompletionReply("正常")),
+        };
+        var settings = GatewaySettings(TranslationProvider.Openai);
+
+        await TranslationApi.SendConfiguredMessageAsync(
+            settings, "inst", "hello", 64, handler, CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        using var doc = JsonDocument.Parse(request.Body);
+        Assert.False(doc.RootElement.TryGetProperty("thinking", out _));
+    }
+
+    [Fact]
+    public async Task OpenAiChatCompletion_LengthFinishReason_FlagsOutputLimit()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, ChatCompletionReply("partial", "length")),
+        };
+
+        var reply = await TranslationApi.SendOpenAiChatCompletionAsync(
+            GatewaySettings(TranslationProvider.Openai), null, "hello", 16, handler, CancellationToken.None);
+
+        Assert.Equal("partial", reply.Text);
+        Assert.True(reply.ReachedOutputLimit);
+    }
+
+    [Fact]
+    public async Task OpenAiChatCompletion_ReasoningOnlyResponse_GivesActionableMessage()
+    {
+        var responseBody = JsonSerializer.Serialize(new
+        {
+            choices = new[]
+            {
+                new
+                {
+                    message = new
+                    {
+                        role = "assistant",
+                        content = "",
+                        reasoning_content = "thinking without final text",
+                    },
+                    finish_reason = "stop",
+                },
+            },
+        });
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, responseBody),
+        };
+
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            TranslationApi.SendOpenAiChatCompletionAsync(
+                GatewaySettings(TranslationProvider.Openai), null, "hello", 16, handler, CancellationToken.None));
+
+        Assert.Contains("只返回了思考内容", ex.Detail);
     }
 
     [Fact]

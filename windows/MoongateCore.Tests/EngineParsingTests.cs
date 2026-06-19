@@ -70,6 +70,18 @@ public class ProgressLineTests
         Assert.Equal(100, progress!.Percent);
     }
 
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("-Infinity")]
+    public void MgpLine_NonFinitePercent_BecomesNull(string token)
+    {
+        var progress = YtDlpEngine.ParseProgressLine($"MGP|{token}%|x|y");
+
+        Assert.NotNull(progress);
+        Assert.Null(progress.Percent);
+    }
+
     [Fact]
     public void PostprocessPrefixes_MapToProcessing()
     {
@@ -313,6 +325,64 @@ public class StderrSummaryTests
     }
 
     [Fact]
+    public void FriendlyDownloadReason_CertificateTrustError_GivesCertificateHint()
+    {
+        var reason = YtDlpEngine.FriendlyDownloadReason(
+            "ERROR: [youtube] Unable to download API page: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate");
+
+        Assert.Contains("证书", reason);
+        Assert.Contains("系统时间", reason);
+        Assert.Contains("根证书", reason);
+    }
+
+    [Fact]
+    public void FriendlyAnalyzeMessage_CertificateTrustError_GivesCertificateHint()
+    {
+        var message = YtDlpEngine.FriendlyAnalyzeMessage(
+            "ERROR: [youtube] Unable to download API page: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate");
+
+        Assert.Contains("证书", message);
+        Assert.Contains("系统时间", message);
+        Assert.Contains("根证书", message);
+    }
+
+    [Fact]
+    public void FriendlyAnalyzeMessage_YoutubeUnavailable_GivesProxyAndAccountHint()
+    {
+        var message = YtDlpEngine.FriendlyAnalyzeMessage("ERROR: [youtube] 7lUYtW6VpVE: Video unavailable");
+
+        Assert.Contains("YouTube", message);
+        Assert.Contains("同一个账号", message);
+        Assert.Contains("代理", message);
+    }
+
+    [Fact]
+    public void MakeProxyArguments_UsesNormalizedVideoProxy()
+    {
+        var args = YtDlpEngine.MakeProxyArguments(new AppSettings { VideoProxyUrl = "127.0.0.1:7890" });
+
+        Assert.Equal(new[] { "--proxy", "http://127.0.0.1:7890" }, args);
+    }
+
+    [Fact]
+    public void MakeProxyArguments_EmptyWhenNoVideoProxy()
+    {
+        Assert.Empty(YtDlpEngine.MakeProxyArguments(new AppSettings()));
+    }
+
+    [Fact]
+    public void MakeNetworkArguments_IncludesProxyAndCertificateBypass()
+    {
+        var args = YtDlpEngine.MakeNetworkArguments(new AppSettings
+        {
+            VideoProxyUrl = "127.0.0.1:7890",
+            IgnoreVideoCertificateErrors = true,
+        });
+
+        Assert.Equal(new[] { "--proxy", "http://127.0.0.1:7890", "--no-check-certificates" }, args);
+    }
+
+    [Fact]
     public void IsBilibiliHost_RecognizesVariants()
     {
         Assert.True(YtDlpEngine.IsBilibiliHost("bilibili.com"));
@@ -331,6 +401,60 @@ public class StderrSummaryTests
     public void NativeExtractorHost_IncludesShortVideoSites(string host)
     {
         Assert.True(YtDlpEngine.IsNativeExtractorHost(host));
+    }
+}
+
+public class YtDlpNetworkSettingsTests
+{
+    private sealed class CapturingJsonEngine : YtDlpEngine
+    {
+        public IReadOnlyList<string> LastArguments { get; private set; } = [];
+
+        protected override Task<(int Status, string Stdout, string Stderr, bool TimedOut)> RunProcessHookAsync(
+            string executable, IReadOnlyList<string> arguments, TimeSpan? timeout, CancellationToken ct)
+        {
+            LastArguments = arguments.ToArray();
+            const string json = """{"id":"abc123","title":"Proxy Test","extractor_key":"Youtube"}""";
+            return Task.FromResult((0, json, "", false));
+        }
+    }
+
+    [Fact]
+    public async Task ResolveCandidates_LoadsVideoNetworkSettingsForYtDlp()
+    {
+        var previousSupport = AppSettings.OverrideSupportDirectory;
+        var previousYtDlp = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var previousFfmpeg = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        var dir = Path.Combine(Path.GetTempPath(), $"moongate-network-settings-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var probe = typeof(YtDlpNetworkSettingsTests).Assembly.Location;
+        try
+        {
+            AppSettings.OverrideSupportDirectory = dir;
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+            File.WriteAllText(AppSettings.SettingsFilePath, new AppSettings
+            {
+                VideoProxyUrl = "127.0.0.1:7890",
+                IgnoreVideoCertificateErrors = true,
+            }.ToJson());
+
+            var engine = new CapturingJsonEngine();
+            var candidates = await engine.ResolveCandidatesAsync("https://www.youtube.com/watch?v=abc123");
+
+            Assert.Single(candidates);
+            Assert.Equal("Proxy Test", candidates[0].Title);
+            Assert.Contains("--proxy", engine.LastArguments);
+            Assert.Contains("http://127.0.0.1:7890", engine.LastArguments);
+            Assert.Contains("--no-check-certificates", engine.LastArguments);
+        }
+        finally
+        {
+            AppSettings.OverrideSupportDirectory = previousSupport;
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", previousYtDlp);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", previousFfmpeg);
+            try { Directory.Delete(dir, recursive: true); } catch { /* ignore */ }
+        }
     }
 }
 
@@ -439,13 +563,19 @@ public class EngineI18nTests
 /// </summary>
 public class DownloadRetryTests
 {
-    /// <summary>脚本化下载进程钩子：第 1 次失败（格式缺失），第 2 次写出产物并成功。</summary>
+    /// <summary>脚本化下载进程钩子：第 1 次失败，第 2 次写出产物并成功。</summary>
     private sealed class ScriptedDownloadEngine : YtDlpEngine
     {
         public int Attempts { get; private set; }
         private readonly string _destDir;
         private readonly string _videoId;
-        public ScriptedDownloadEngine(string destDir, string videoId) { _destDir = destDir; _videoId = videoId; }
+        private readonly string _firstStderr;
+        public ScriptedDownloadEngine(string destDir, string videoId, string firstStderr = "ERROR: Requested format is not available")
+        {
+            _destDir = destDir;
+            _videoId = videoId;
+            _firstStderr = firstStderr;
+        }
 
         protected override Task<(int Status, string StderrTail)> RunDownloadProcessHookAsync(
             string executable, IReadOnlyList<string> arguments,
@@ -455,7 +585,7 @@ public class DownloadRetryTests
             Attempts++;
             if (Attempts == 1)
             {
-                return Task.FromResult((1, "ERROR: Requested format is not available"));
+                return Task.FromResult((1, _firstStderr));
             }
             // 第 2 次：产出真实文件并通过 onLine 汇报其路径（--print after_move:filepath 行为）。
             var outFile = Path.Combine(_destDir, $"video [{_videoId}].mp4");
@@ -501,6 +631,41 @@ public class DownloadRetryTests
     }
 
     [Fact]
+    public async Task FirstAttemptYoutube403_AutoRetriesAndSucceeds()
+    {
+        var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-yt403-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var probe = typeof(DownloadRetryTests).Assembly.Location;
+        var prevYt = Environment.GetEnvironmentVariable("MOONGATE_YTDLP_PATH");
+        var prevFf = Environment.GetEnvironmentVariable("MOONGATE_FFMPEG_PATH");
+        Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", probe);
+        Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", probe);
+        try
+        {
+            var engine = new ScriptedDownloadEngine(
+                destDir, "abc123", "ERROR: unable to download video data: HTTP Error 403: Forbidden");
+            var request = new DownloadRequest
+            {
+                Url = "https://youtu.be/abc123",
+                VideoId = "abc123",
+                FormatId = "18",
+                DestinationDirectory = destDir,
+            };
+
+            var result = await engine.DownloadAsync(request, control: null, progress: _ => { });
+
+            Assert.Equal(2, engine.Attempts);
+            Assert.Contains(result.Files, f => f.EndsWith(".mp4"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MOONGATE_YTDLP_PATH", prevYt);
+            Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
+            try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
+        }
+    }
+
+    [Fact]
     public async Task FirstAttemptOtherError_DoesNotRetry()
     {
         var destDir = Path.Combine(Path.GetTempPath(), $"mg-dl-noretry-{Guid.NewGuid():N}");
@@ -530,6 +695,14 @@ public class DownloadRetryTests
             Environment.SetEnvironmentVariable("MOONGATE_FFMPEG_PATH", prevFf);
             try { Directory.Delete(destDir, recursive: true); } catch { /* 忽略 */ }
         }
+    }
+
+    [Fact]
+    public void RecoverableDownloadRetry_DoesNotTreatNonYoutube403AsTransient()
+    {
+        Assert.False(YtDlpEngine.IsRecoverableDownloadRetry(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "https://example.com/video.mp4"));
     }
 
     private sealed class NonRetryableEngine : YtDlpEngine

@@ -95,7 +95,7 @@ public class WindowsCoreI18nTests
         Directory.CreateDirectory(binDir);
         try
         {
-            var manager = new DependencyManager(binDir, new DependencyPayloadHandler());
+            var manager = new DependencyManager(binDir, new DependencyPayloadHandler(), ProgressTestPlans());
             var progress = new List<string>();
 
             await manager.EnsureAsync(new Progress<string>(progress.Add));
@@ -158,11 +158,11 @@ public class WindowsCoreI18nTests
             {
                 payload = Encoding.UTF8.GetBytes("YT_DLP");
             }
-            else if (url.Contains("FFmpeg-Builds", StringComparison.OrdinalIgnoreCase))
+            else if (url.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
             {
                 payload = BuildZip(
-                    ("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", "FFMPEG"),
-                    ("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", "FFPROBE"));
+                    ("ffmpeg-8.1.1-full_build/bin/ffmpeg.exe", "FFMPEG"),
+                    ("ffmpeg-8.1.1-full_build/bin/ffprobe.exe", "FFPROBE"));
             }
             else if (url.Contains("denoland", StringComparison.OrdinalIgnoreCase))
             {
@@ -194,4 +194,44 @@ public class WindowsCoreI18nTests
             return stream.ToArray();
         }
     }
+
+    private static IReadOnlyList<DependencyDownload> ProgressTestPlans() =>
+    [
+        new DependencyDownload
+        {
+            Name = "yt-dlp",
+            Version = "test",
+            Architecture = "x64",
+            Url = "https://example.test/yt-dlp.exe",
+            Sha256 = "",
+            Kind = DependencyDownload.DownloadKind.Executable,
+            ProvidesFiles = ["yt-dlp.exe"],
+        },
+        new DependencyDownload
+        {
+            Name = "ffmpeg",
+            Version = "test",
+            Architecture = "x64",
+            Url = "https://example.test/ffmpeg.zip",
+            Sha256 = "",
+            Kind = DependencyDownload.DownloadKind.Zip,
+            ProvidesFiles = ["ffmpeg.exe", "ffprobe.exe"],
+            ZipEntries = new Dictionary<string, string>
+            {
+                ["bin/ffmpeg.exe"] = "ffmpeg.exe",
+                ["bin/ffprobe.exe"] = "ffprobe.exe",
+            },
+        },
+        new DependencyDownload
+        {
+            Name = "deno",
+            Version = "test",
+            Architecture = "x64",
+            Url = "https://example.test/denoland/deno.zip",
+            Sha256 = "",
+            Kind = DependencyDownload.DownloadKind.Zip,
+            ProvidesFiles = ["deno.exe"],
+            ZipEntries = new Dictionary<string, string> { ["deno.exe"] = "deno.exe" },
+        },
+    ];
 }

@@ -10,6 +10,10 @@ public sealed record DependencyDownload
 
     /// <summary>展示名（如 "yt-dlp"）。</summary>
     public required string Name { get; init; }
+    /// <summary>随 App 固定的上游版本 / release tag（DEP-SUPPLY-001）。</summary>
+    public required string Version { get; init; }
+    /// <summary>目标平台架构；当前 Windows 发布只管理 x64 依赖。</summary>
+    public required string Architecture { get; init; }
     public required string Url { get; init; }
     public required DownloadKind Kind { get; init; }
     /// <summary>提供的目标文件名（bin 目录下）。</summary>
@@ -19,10 +23,9 @@ public sealed record DependencyDownload
         new Dictionary<string, string>();
     /// <summary>
     /// 期望的 SHA-256（小写十六进制）。非空时下载后必须匹配才安装（DEP-SUPPLY-001）。
-    /// 当前为 null（未固定）：需在依赖 manifest 里填入对应固定版本的真实哈希后才生效——
     /// Content-Length 只能发现截断，SHA-256 才能发现被替换的完整恶意文件。
     /// </summary>
-    public string? Sha256 { get; init; }
+    public required string Sha256 { get; init; }
 }
 
 /// <summary>
@@ -32,15 +35,27 @@ public sealed record DependencyDownload
 /// </summary>
 public sealed class DependencyManager
 {
+    private const string YtDlpVersion = "2026.06.09";
     private const string YtDlpUrl =
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+        "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe";
+    private const string YtDlpSha256 =
+        "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
+
+    private const string FfmpegVersion = "8.1.1";
     private const string FfmpegZipUrl =
-        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
+        "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build.zip";
+    private const string FfmpegSha256 =
+        "49b28c5f16addd40239a66949973458769b7056fb7752c30ac0d53389d09a552";
+
+    private const string DenoVersion = "2.8.3";
     private const string DenoZipUrl =
-        "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+        "https://github.com/denoland/deno/releases/download/v2.8.3/deno-x86_64-pc-windows-msvc.zip";
+    private const string DenoSha256 =
+        "7fdd1f42e6b0855421ecf27bb406e2492ade1087c85e30ebf0deab6280ea743c";
 
     private readonly string _binDirectory;
     private readonly HttpClient _client;
+    private readonly IReadOnlyList<DependencyDownload>? _plansOverride;
 
     public DependencyManager(string? binDirectory = null, HttpMessageHandler? handler = null)
     {
@@ -50,20 +65,35 @@ public sealed class DependencyManager
             : new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(10) };
     }
 
+    internal DependencyManager(
+        string? binDirectory,
+        HttpMessageHandler? handler,
+        IReadOnlyList<DependencyDownload> plansOverride)
+        : this(binDirectory, handler)
+    {
+        _plansOverride = plansOverride;
+    }
+
     /// <summary>受管的全部依赖（Windows 文件名）。</summary>
     internal static readonly string[] RequiredFiles = ["yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe", "deno.exe"];
 
     /// <summary>检查 bin 目录，返回缺失依赖的下载计划（缺什么下什么）。</summary>
-    public IReadOnlyList<DependencyDownload> PlanMissing() => PlanMissing(_binDirectory);
+    public IReadOnlyList<DependencyDownload> PlanMissing() =>
+        PlanMissing(_binDirectory, _plansOverride ?? AllPlans());
 
     internal static List<DependencyDownload> PlanMissing(string binDirectory)
+        => PlanMissing(binDirectory, AllPlans());
+
+    private static List<DependencyDownload> PlanMissing(
+        string binDirectory,
+        IReadOnlyList<DependencyDownload> plans)
     {
         bool Missing(string file) => !File.Exists(Path.Combine(binDirectory, file));
-        return AllPlans().Where(plan => plan.ProvidesFiles.Any(Missing)).ToList();
+        return plans.Where(plan => plan.ProvidesFiles.Any(Missing)).ToList();
     }
 
     /// <summary>不论是否已存在，规划全部受管依赖的下载（「重新下载依赖」用）。</summary>
-    public IReadOnlyList<DependencyDownload> PlanAll() => AllPlans();
+    public IReadOnlyList<DependencyDownload> PlanAll() => _plansOverride ?? AllPlans();
 
     /// <summary>受管依赖的完整下载计划（顺序：yt-dlp → ffmpeg → deno）。</summary>
     internal static List<DependencyDownload> AllPlans() =>
@@ -71,14 +101,20 @@ public sealed class DependencyManager
         new DependencyDownload
         {
             Name = "yt-dlp",
+            Version = YtDlpVersion,
+            Architecture = "x64",
             Url = YtDlpUrl,
+            Sha256 = YtDlpSha256,
             Kind = DependencyDownload.DownloadKind.Executable,
             ProvidesFiles = ["yt-dlp.exe"],
         },
         new DependencyDownload
         {
             Name = "ffmpeg",
+            Version = FfmpegVersion,
+            Architecture = "x64",
             Url = FfmpegZipUrl,
+            Sha256 = FfmpegSha256,
             Kind = DependencyDownload.DownloadKind.Zip,
             ProvidesFiles = ["ffmpeg.exe", "ffprobe.exe"],
             ZipEntries = new Dictionary<string, string>
@@ -90,7 +126,10 @@ public sealed class DependencyManager
         new DependencyDownload
         {
             Name = "deno",
+            Version = DenoVersion,
+            Architecture = "x64",
             Url = DenoZipUrl,
+            Sha256 = DenoSha256,
             Kind = DependencyDownload.DownloadKind.Zip,
             ProvidesFiles = ["deno.exe"],
             ZipEntries = new Dictionary<string, string> { ["deno.exe"] = "deno.exe" },
@@ -100,7 +139,7 @@ public sealed class DependencyManager
     /// <summary>确保所有依赖就位：缺失的逐个下载安装。progress 上报人话进度文案。</summary>
     public async Task EnsureAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        var plans = PlanMissing(_binDirectory);
+        var plans = PlanMissing();
         if (plans.Count == 0) return;
         Directory.CreateDirectory(_binDirectory);
         foreach (var plan in plans)
@@ -118,7 +157,7 @@ public sealed class DependencyManager
     public async Task RedownloadAllAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_binDirectory);
-        foreach (var plan in AllPlans())
+        foreach (var plan in PlanAll())
         {
             ct.ThrowIfCancellationRequested();
             await DownloadAndInstallAsync(plan, progress, ct).ConfigureAwait(false);
@@ -126,18 +165,22 @@ public sealed class DependencyManager
         progress?.Report(L10n.T("依赖组件已更新", "依賴元件已更新", "All components are up to date"));
     }
 
-    /// <summary>单独更新 yt-dlp（站点规则频繁变化，提供手动更新入口）。</summary>
+    /// <summary>重新安装随当前 App 固定的 yt-dlp（不追上游 latest；更新版本随 App 发版）。</summary>
     public async Task UpdateYtDlpAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_binDirectory);
-        await DownloadAndInstallAsync(new DependencyDownload
+        var plan = PlanAll().FirstOrDefault(p => p.Name == "yt-dlp") ?? new DependencyDownload
         {
             Name = "yt-dlp",
+            Version = YtDlpVersion,
+            Architecture = "x64",
             Url = YtDlpUrl,
+            Sha256 = YtDlpSha256,
             Kind = DependencyDownload.DownloadKind.Executable,
             ProvidesFiles = ["yt-dlp.exe"],
-        }, progress, ct).ConfigureAwait(false);
-        progress?.Report(L10n.T("yt-dlp 已更新", "yt-dlp 已更新", "yt-dlp updated"));
+        };
+        await DownloadAndInstallAsync(plan, progress, ct).ConfigureAwait(false);
+        progress?.Report(L10n.T("yt-dlp 已重新安装", "yt-dlp 已重新安裝", "yt-dlp reinstalled"));
     }
 
     private async Task DownloadAndInstallAsync(

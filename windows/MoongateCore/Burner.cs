@@ -12,6 +12,17 @@ public sealed class FFmpegBurner : ISubtitleBurner
     /// <summary>Windows 平台中文字体名（官方 ffmpeg full 构建自带 libass，按系统字体名渲染）。</summary>
     public const string WindowsFontName = "Microsoft YaHei";
 
+    internal static string[] CopyAudioArgs => ["-c:a", "copy"];
+
+    internal static string[] AacAudioArgs => ["-c:a", "aac", "-b:a", "192k"];
+
+    /// <summary>
+    /// MP4 面向 Windows 自带播放器时优先 AAC。Opus 虽可被 ffmpeg mux 进 MP4，
+    /// 但 Windows 媒体播放器会提示不支持 Opus 音频。
+    /// </summary>
+    internal static IReadOnlyList<IReadOnlyList<string>> Mp4CompatibleAudioEncodingChain() =>
+        [AacAudioArgs, CopyAudioArgs];
+
     /// <summary>平台中文字体：Windows 微软雅黑；非 Windows（开发机）退回苹方。</summary>
     internal static string ChineseFontName => OperatingSystem.IsWindows() ? WindowsFontName : "PingFang SC";
 
@@ -361,8 +372,6 @@ public sealed class FFmpegBurner : ISubtitleBurner
         try
         {
             // 3. 编码器选择：按 后端 / 源编码 / HDR / 是否强制 H.264 决定用硬件还是软件、何种编码。
-            string[] copyAudio = ["-c:a", "copy"];
-            string[] aacAudio = ["-c:a", "aac", "-b:a", "192k"];
             var x265Available = EncoderAvailable("libx265", ffmpeg);
             bool Available(string enc) => EncoderAvailable(enc, ffmpeg);
             var sourceIsHevc = (probe.CodecName ?? "").ToLowerInvariant() is "hevc" or "h265";
@@ -425,7 +434,8 @@ public sealed class FFmpegBurner : ISubtitleBurner
                     || lower.Contains("no such file");
             }
 
-            // 依次尝试候选编码；每个候选先 copy 音轨，失败再用 aac。硬件失败 → 进入下一个候选（软件同编码）。
+            // 依次尝试候选编码；MP4 优先 AAC 音轨，避免 Opus 复制进 MP4 后 Windows 自带播放器无声。
+            // AAC 编码失败时再 copy 兜底；硬件失败 → 进入下一个候选（软件同编码）。
             var status = -1;
             var stderrTail = "";
             foreach (var selection in candidates)
@@ -436,14 +446,14 @@ public sealed class FFmpegBurner : ISubtitleBurner
                     [.. audio, .. selection.ColorArgs, "-movflags", "+faststart", "-nostats", "-progress", "pipe:1", "out.mp4"];
 
                 var advanceToNextCandidate = false;
-                foreach (var audio in new[] { copyAudio, aacAudio })
+                foreach (var audio in Mp4CompatibleAudioEncodingChain())
                 {
                     try { File.Delete(Path.Combine(tempDir, "out.mp4")); } catch { /* 忽略 */ }
                     (status, stderrTail) = await Run([.. head, .. selection.EncoderArgs, .. Tail(audio)]).ConfigureAwait(false);
                     if (status == 0) break;
                     if (control?.IsCancelled == true) throw MoongateException.Cancelled();
                     if (IsUnfixable(stderrTail)) { advanceToNextCandidate = false; break; }
-                    // copy 音轨失败常因音频不进 mp4 容器：aac 再试（同候选）。
+                    // AAC 编码器不可用时再尝试 copy 兜底（同候选）。
                     advanceToNextCandidate = true;
                 }
                 if (status == 0 || IsUnfixable(stderrTail)) break;

@@ -113,10 +113,10 @@ swift run --scratch-path ~/Library/Caches/vdl-build moongate-cli ping-llm --prov
 ## Windows
 
 Windows 有独立的原生实现（`windows/`：C# 核心库 + WPF 图形界面 + NSIS 安装器），
-在 macOS 上执行 `./build-windows.sh` 即可产出 `Moongate-Windows-Setup-v0.7.4.exe`
+在 macOS 上执行 `./build-windows.sh` 即可产出 `Moongate-Windows-Setup-v0.7.5.exe`
 （同时生成 `.sha256` 校验文件；
 双击安装、免管理员权限、首次启动自动下载 yt-dlp/ffmpeg/deno）。
-详见 [docs/WINDOWS.md](docs/WINDOWS.md)。**GUI 尚未在真实 Windows 上运行验证。**
+详见 [docs/WINDOWS.md](docs/WINDOWS.md)。当前 0.7.5 已在 Parallels Windows on ARM 虚拟机完成基础验证；普通 Windows x64 仍建议发布后补一轮回归。
 
 ## 移动端状态
 

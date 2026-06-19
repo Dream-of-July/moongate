@@ -7,13 +7,13 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 WIN_DIR="$PROJ_DIR/windows"
 PUBLISH_DIR="$HOME/Library/Caches/moongate-build/win-publish"
-VERSION="0.7.4"
+VERSION="0.7.5"
 OUT="${1:-$HOME/Downloads/Moongate-Windows-Setup-v$VERSION.exe}"
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 echo "==> dotnet test（核心库单测，mac 上可跑）"
-dotnet test "$WIN_DIR" --nologo -v quiet
+dotnet test "$WIN_DIR/MoongateCore.Tests/MoongateCore.Tests.csproj" --nologo -v quiet
 
 echo "==> dotnet publish win-x64（自包含）"
 rm -rf "$PUBLISH_DIR"

@@ -4,24 +4,23 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 
 - **MoongateCore**（C#，.NET 10）— 从 Swift 版 `MoongateCore` + `QueueManager` 逐行为基准移植的核心库：
   yt-dlp 封装、字幕解析/清洗/翻译、ffmpeg 烧录、队列与并发槽位、暂停/取消、设置与 cookies。
-  附 383 个单元测试，在 macOS 上即可全量运行。
+  附 414 个单元测试，在 macOS/Windows 上均可全量运行。
 - **MoongateApp**（WPF）— 与 macOS 版同结构、同文案的图形界面：粘贴解析（含多链接批量入队）、
   画质/字幕选择、中文字幕翻译+烧录、队列（每任务独立暂停/取消/重试）、设置（协议选择、
   拉取模型、并发数、烧录上限）、WebView2 站点登录、首次启动自动下载依赖。
 - **installer/installer.nsi**（NSIS）— 安装器：双击安装、无需管理员权限（装入
   `%LOCALAPPDATA%\Programs\月之门`）、开始菜单/桌面快捷方式、控制面板可卸载。
 
-> ⚠️ **状态：GUI 与安装器未在真实 Windows 机器上运行验证。**
-> 全部代码在 macOS 上交叉编译通过、核心逻辑有单测覆盖，但 WPF 界面、进程树挂起
-> （NtSuspendProcess）、依赖自动下载、WebView2 登录属于运行时行为，首次真机使用
-> 可能需要一轮修正。发现问题带截图/报错回来即可。
+> ⚠️ **状态：已在 Windows on ARM 虚拟机完成基础验证；普通 Windows x64 仍需跑一轮回归。**
+> 当前已覆盖 WPF 设置窗口初始化、win-x64 自包含发布、NSIS 安装器临时目录安装与启动烟测。
+> 站点解析受本机代理/根证书状态影响；若 HTTPS 证书链不受信任，App 会给出系统时间、根证书和代理/VPN 的针对性提示。
 
 ## 在 macOS 上构建安装器
 
 依赖（一次性）：`brew install dotnet makensis`
 
 ```bash
-./build-windows.sh            # 输出 ~/Downloads/Moongate-Windows-Setup-v0.7.4.exe 和 .sha256
+./build-windows.sh            # 输出 ~/Downloads/Moongate-Windows-Setup-v0.7.5.exe 和 .sha256
 ```
 
 脚本流程：核心库单测（必须全绿）→ `dotnet publish` win-x64 自包含（用户机器无需装
@@ -29,9 +28,9 @@ Windows 版是一个独立的原生实现，位于 `windows/`：
 
 ## Windows 用户侧体验
 
-1. 双击 `Moongate-Windows-Setup-v0.7.4.exe` → 安装到默认用户目录（无 UAC 弹窗）。
-2. 首次启动自动从官方源下载 yt-dlp / ffmpeg（BtbN full 构建，含 libass）/ deno
-   到 `%LOCALAPPDATA%\Moongate\bin`（需联网；设置里可重新下载、单独更新 yt-dlp）。
+1. 双击 `Moongate-Windows-Setup-v0.7.5.exe` → 安装到默认用户目录（无 UAC 弹窗）。
+2. 首次启动自动从固定版本官方源下载 yt-dlp / ffmpeg（GyanD full 构建，含 libass）/ deno
+   到 `%LOCALAPPDATA%\Moongate\bin`，并校验 SHA-256（需联网；设置里可重新下载、重新安装 yt-dlp）。
 3. 之后与 macOS 版一致：粘贴链接 → 选画质字幕 → 下载/翻译/烧录，多文件任务自动建文件夹。
 4. 站点登录走 WebView2（Win 11 自带运行时；缺失时 App 会引导安装）。
 5. 卸载：设置 → 应用 → 月之门，或运行安装目录下的 `Uninstall.exe`。卸载时会询问是否

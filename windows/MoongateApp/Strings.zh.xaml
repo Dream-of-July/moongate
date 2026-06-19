@@ -149,7 +149,7 @@
     <sys:String x:Key="L.Settings.BaseUrl">服务地址</sys:String>
     <sys:String x:Key="L.Settings.Credential">API 凭证</sys:String>
     <sys:String x:Key="L.Settings.CredHelpAnthropic">公司网关按 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 填写；DeepSeek 映射也选这个协议。</sys:String>
-    <sys:String x:Key="L.Settings.CredHelpOpenAi">OpenAI 使用 Responses API。服务地址填 https://api.openai.com；凭证填 OpenAI API key，不要带 Bearer 前缀。</sys:String>
+    <sys:String x:Key="L.Settings.CredHelpOpenAi">OpenAI 官方服务填 https://api.openai.com；DeepSeek 等 OpenAI-compatible 服务填对应服务地址。凭证不要带 Bearer 前缀。</sys:String>
     <sys:String x:Key="L.Settings.FetchModels">拉取模型</sys:String>
     <sys:String x:Key="L.Settings.SelectModel">选择模型</sys:String>
     <sys:String x:Key="L.Settings.ModelName">模型名</sys:String>
@@ -193,10 +193,15 @@
     <sys:String x:Key="L.Settings.LoginStatusNone">尚未登录任何站点</sys:String>
     <sys:String x:Key="L.Settings.CorruptResetFmt">设置文件已损坏，已备份到 {0} 并恢复默认设置。</sys:String>
     <sys:String x:Key="L.Settings.LoginStatusFmt">已保存登录信息（{0} 导出）</sys:String>
+    <sys:String x:Key="L.Settings.VideoNetwork">视频网络</sys:String>
+    <sys:String x:Key="L.Settings.VideoProxy">视频代理</sys:String>
+    <sys:String x:Key="L.Settings.VideoProxyHint">可填 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。留空则直连；只影响视频解析与下载。</sys:String>
+    <sys:String x:Key="L.Settings.IgnoreVideoCertificateErrors">忽略视频站点 HTTPS 证书错误</sys:String>
+    <sys:String x:Key="L.Settings.IgnoreVideoCertificateErrorsHint">仅在代理/VPN 替换证书且无法导入根证书时开启；只影响视频解析与下载。</sys:String>
     <sys:String x:Key="L.Settings.Dependencies">依赖组件</sys:String>
     <sys:String x:Key="L.Settings.Redownload">重新下载</sys:String>
-    <sys:String x:Key="L.Settings.UpdateYtDlp">更新 yt-dlp</sys:String>
-    <sys:String x:Key="L.Settings.DepHint">站点规则频繁变化，下载经常失败时可先试试更新 yt-dlp。</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlp">重新安装 yt-dlp</sys:String>
+    <sys:String x:Key="L.Settings.DepHint">如果下载经常失败，可重新下载依赖组件，或更新月之门。</sys:String>
     <sys:String x:Key="L.Settings.Installed">已安装</sys:String>
     <sys:String x:Key="L.Settings.Missing">缺失</sys:String>
     <sys:String x:Key="L.Settings.DepCorrupt">损坏</sys:String>
@@ -207,11 +212,12 @@
     <sys:String x:Key="L.Settings.ClearLoginsDetail">清除后需要重新登录才能下载会员/受限视频。</sys:String>
     <sys:String x:Key="L.Settings.RedownloadTitle">重新下载依赖组件</sys:String>
     <sys:String x:Key="L.Settings.RedownloadCaption">正在重新下载 yt-dlp、ffmpeg、deno 组件，请保持网络连接。</sys:String>
-    <sys:String x:Key="L.Settings.UpdateYtDlpCaption">正在下载最新版 yt-dlp，请保持网络连接。</sys:String>
+    <sys:String x:Key="L.Settings.UpdateYtDlpCaption">正在下载本版月之门固定的 yt-dlp，请保持网络连接。</sys:String>
 
     <!-- 更新 -->
     <sys:String x:Key="L.Update.Section">更新</sys:String>
     <sys:String x:Key="L.Update.CurrentVersion">当前版本</sys:String>
+    <sys:String x:Key="L.Update.LastCheckedFmt">上次检查：{0}</sys:String>
     <sys:String x:Key="L.Update.Check">检查更新</sys:String>
     <sys:String x:Key="L.Update.Checking">正在检查更新…</sys:String>
     <sys:String x:Key="L.Update.UpToDate">已是最新版本</sys:String>

@@ -45,7 +45,7 @@
 | SEC-CRED-001 | P0 | Both | Done (code) | win: CredentialStore.cs/Settings.cs/DpapiCredentialStore.cs/App.xaml.cs; mac: CredentialStore.swift/Settings.swift/App.swift | SettingsTests.Credentials_*(4)、TranslationSettingsTests.testCredentials*(3) | Not validated on real hardware | 两端 Token 移出 settings.json：Windows DPAPI、macOS Keychain；可注入抽象 + 事务化迁移（store 先写、成功才抹明文，失败不丢）；卸载/清数据删安全存储。**待真机验证**：DPAPI 跨重启/换用户、Keychain 首次授权 |
 | WIN-DEP-001 | P0 | Windows | Done (code) | DependencyWindow.xaml(.cs), Dependencies.cs, Strings.*.xaml | DependenciesTests.FormatBytes, i18n 进度测试 | Not validated on real hardware | 加取消按钮/可取消 token/关窗确认/字节+速度进度；断点续传未做 |
 | WIN-DEP-002 | P0 | Windows | Done (code) | SettingsWindow.xaml.cs, Dependencies.cs | DependenciesTests.RedownloadAll_NetworkFailure_KeepsExistingBinaries, PlanAll | Not validated on real hardware | 改为 staging 先下后换；SHA-256/PE 架构/能力校验留待 Phase 3 (DEP-WIN-003) |
-| DEP-SUPPLY-001 | P0 | Windows | In progress (机制完成) | windows/MoongateCore/Dependencies.cs | DependenciesTests.VerifyDownloadIntegrity*/FileSha256Hex* | Not validated on real hardware | SHA-256 校验机制 + DependencyDownload.Sha256 字段已就位（设置后下载即校验、不符拒装）；**待**：填入固定版本的真实哈希 manifest（需抓取真实发布二进制算 hash），并改 latest URL 为固定版本 |
+| DEP-SUPPLY-001 | P0 | Windows | Done (code) | windows/MoongateCore/Dependencies.cs, docs/WINDOWS.md | DependenciesTests.EmptyDirectory_PlansAllThreeDownloads, VerifyDownloadIntegrity*/FileSha256Hex* | Not validated on real hardware | yt-dlp 2026.06.09、FFmpeg 8.1.1（GyanD full build）、Deno 2.8.3 均固定 URL + SHA-256 + x64 manifest；随 App 发版手动 bump；未做发布者签名校验（见 REL-001/Phase 7） |
 
 ### P1 · 高优先级
 
@@ -78,11 +78,8 @@
 | REL-WIN-003 | P2 | Windows | Done (doc) | docs/WINDOWS.md | — | n/a | 文档明确仅 win-x64、ARM 为模拟非原生；列出后续原生 ARM64 路径 |
 | DOC-001 | P2 | macOS | Done (doc) | README.md | — | n/a | 改为「运行时媒体依赖来自 Homebrew；App 通过 SwiftPM 使用 Sparkle 2」，不再自相矛盾 |
 | UX-WIN-004 | P2 | Windows | Done (code) | windows/MoongateApp/LoginWindow.xaml.cs, Strings.*.xaml | dotnet build/test 通过 | Not validated on real hardware | WebView2 缺失时弹确认框带「安装 WebView2 运行时」按钮，点了直接打开官方下载页（安装后自动重试未做，用户重开登录即可） |
-| REL-WIN-003 | P2 | Windows | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
 | UPDATE-WIN-003 | P2 | Windows | Done (code) | UpdateService.cs, App.xaml.cs | 经现有更新测试覆盖编译 | Not validated on real hardware | 取消/失败即时清理临时目录 + 启动清理 moongate-update-* 残留 |
-| UPDATE-WIN-004 | P2 | Windows | Not started | — | — | Not validated on real hardware | 每次开设置新建更新器并静默请求 GitHub |
-| UX-QUEUE-001 | P2 | Both | Plan only | 见上 | — | — | 已记录于上方 |
-| DOC-001 | P2 | macOS | Done (doc) | 见上 | — | n/a | 已合并到上方 UX-WIN-003 批次 |
+| UPDATE-WIN-004 | P2 | Windows | Done (code) | App.xaml.cs, UpdateService.cs, SettingsWindow.xaml(.cs), Strings.*.xaml | UpdateCheckerTests.AutomaticUpdateCheck_IsThrottledBetweenManualChecks, ReleaseSurfaceTests.WindowsSettingsUsesSharedThrottledUpdater | Not validated on real hardware | 设置页复用 App 级 updater；自动静默检查 6 小时内不重复请求 GitHub；手动检查仍可立即触发；显示上次检查时间 |
 
 ---
 
@@ -92,11 +89,11 @@
 |---|---|---|
 | Phase 0 | 建立可验证基线 + 本跟踪文档 | **Done**（基线全绿，见上） |
 | Phase 1 | Windows 更新与依赖阻断项（WIN-UPD-001、WIN-DEP-001/002、UPDATE-WIN-003/002） | **Done (code)** — dotnet test 321 通过（+10），NSIS 编译通过；覆盖安装/取消下载需真机验证 |
-| Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | Not started |
-| Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | **进行中** — MAC-DEP-001 / DEP-WIN-003 / 自定义 Homebrew prefix done；DEP-SUPPLY-001 机制完成（待固定哈希） |
+| Phase 2 | 凭证与登录隔离（SEC-CRED-001、SEC-COOKIE-001、LOGIN-WIN-001、DATA-WIN-001） | **Done (code)** — Token 安全存储、按站点 Cookie、登录清理与卸载数据清理已落地；WebView/Keychain/DPAPI 仍需真机验证 |
+| Phase 3 | 依赖可信度与 macOS Homebrew 边界（DEP-SUPPLY-001、MAC-DEP-001、DEP-WIN-003） | **Done (code)** — MAC-DEP-001 / DEP-WIN-003 / 自定义 Homebrew prefix / 固定依赖 manifest + SHA-256 均已落地；依赖真实下载与运行仍需 Windows 真机验证 |
 | Phase 4 | 队列、暂停、取消可靠性（PROC-001、PROC-MAC-002） | **Plan only** — 并发敏感 + 失败模式仅真机可复现，已写详细实现计划，待真机验证下落地 |
 | Phase 5 | 设置可靠性与跨平台一致性（SETTINGS-001、DATA-SETTINGS-002、PATH-WIN-001、PARITY-001/002、UPDATE-MAC-001） | **Done (code)** — 全部完成（真机/UI 验证待定） |
-| Phase 6 | UI/UX 与无障碍 | **部分** — UX-WIN-003/004/REL-WIN-003/DOC-001/UX-WIN-001 done；UX-WIN-002（主题）、UX-QUEUE-001 为 Plan only（需真机视觉/交互/屏幕阅读器验证） |
+| Phase 6 | UI/UX 与无障碍 | **部分** — UX-WIN-003/004/REL-WIN-003/DOC-001/UX-WIN-001/UPDATE-WIN-004 done；UX-WIN-002（主题）、UX-QUEUE-001 为 Plan only（需真机视觉/交互/屏幕阅读器验证） |
 | Phase 7 | 正式发布链路（签名、notarization、stable/beta channel、真机矩阵） | **Blocked** — 需 Apple Developer ID 与 Authenticode 证书等外部资源，本环境无法产出已签名包 |
 
 ---
@@ -122,17 +119,11 @@
 5. 单测（假存储）：迁移成功、store 写失败时旧 token 不丢、多 provider 独立、日志/异常不含 token。
 6. **真机验证**：Windows DPAPI 跨重启可读、换用户不可读；macOS Keychain 首次授权、清除凭证。
 
-### 其余可继续的纯逻辑项（低风险，可单测）
-- PARITY-002：Windows `AppSettings` 增 last* 字段 + MainViewModel 选档页 restore/persist（settings 往返可单测）。
-- DEP-WIN-003：结构化依赖健康检查（--version / -filters 解析可单测；实际 exec 需依赖在位）。
-- DEP-SUPPLY-001：固定版本 manifest + 下载后 SHA-256 校验（manifest 解析 + 校验逻辑可单测）。
-- MAC-DEP-001：删除或严格限制「卸载 Homebrew 依赖」，记录实际 provider（检测映射可单测）。
+### 剩余高风险逻辑项（需真机验证后落地）
 - PROC-001 / PROC-MAC-002：暂停返回成功/失败、失败不释放槽位、进程组取消（状态机可单测；真机压力测试需真机）。
   - **为何 Plan only**：暂停事务化要把进程树 suspend 的成功/失败**同步回传**给 `QueueManager.Pause` 后再决定是否释放并发槽，而当前 suspend 走的是串行异步信号链（避免在 UI 线程枚举进程树卡顿）。改成「确认挂起后才放槽」需要把 `Pause` 改为可等待并处理失败回滚，属并发敏感重构；且关键失败模式（`NtSuspendProcess` 返回非 0 / `OpenProcess` 失败）**只在 Windows 真机可复现**，macOS 上 suspend 是 no-op 无法验证。建议：① `ProcessTree.Suspend*` 返回 bool（检查 NTSTATUS==0）；② `TaskControlToken.Pause` 暴露 `Task<bool>`；③ `QueueManager.Pause` await 结果，失败则恢复 `IsPaused` 且不移交 `_resumePool`/不释放槽；④ macOS 取消改用独立 process group（`setpgid` + 对 group 发信号）或发 SIGINT 前快照整树 PID+start time，取消后校验无残留；⑤ 50 次 pause/resume/cancel 压力测试在真机跑。
-- SETTINGS-001(mac)：`requestLogin/requestDependencySetup` 检查保存结果，失败不跳转。
 
 ### 真正的外部门槛（本环境不可完成）
 - Phase 7 全部：macOS Developer ID + hardened runtime + notarization + staple；Windows Authenticode 签名；
   更新器验证发布者。均需**付费证书 / Apple 账号**，只能产出脚本与文档，无法生成真正已签名的发布包。
 - REL-WIN-002 / 真机测试矩阵：需真实 Windows / macOS 机器跑安装、更新、卸载、DPI、WebView2、杀软等。
-

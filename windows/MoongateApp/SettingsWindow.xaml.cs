@@ -15,7 +15,7 @@ public partial class SettingsWindow : Window
     private readonly SettingsViewModel _vm;
 
     /// <summary>远程更新服务（设置窗内「更新」区绑定）。</summary>
-    public UpdateService Updater { get; } = new();
+    public UpdateService Updater { get; }
 
     /// <summary>点了「登录 ××」关窗后由主窗口接力弹出登录窗（值为站点 host）。</summary>
     public string? PendingLoginSite { get; private set; }
@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
     {
         _main = main;
         _vm = new SettingsViewModel(main.Settings, main.Queue, main.ConsumePendingSettingsNotice());
+        Updater = App.WindowsUpdater;
         DataContext = _vm;
         InitializeComponent();
         // PasswordBox 不支持数据绑定，初值与变更都走代码同步。
@@ -35,14 +36,15 @@ public partial class SettingsWindow : Window
         Closed += (_, _) =>
         {
             _vm.CancelOperations();
-            Updater.Cancel();
+            if (Updater.IsDownloading) Updater.Cancel();
+            Updater.ConfirmInstallReady = null;
             // 未保存的并发数改动回滚为磁盘值；已保存时等价于当前值，无副作用。
             _main.Settings = AppSettings.Load();
         };
         // 打开设置即静默检查更新：有新版本时「更新」区直接显示，失败不打扰。
         Loaded += (_, _) =>
         {
-            Updater.Check(silent: true);
+            Updater.CheckAutomaticSilent();
             // 结构化依赖体检（可执行性/能力），细化「已安装」之外的损坏/缺能力状态。
             _ = _vm.RefreshDependencyHealthAsync();
         };

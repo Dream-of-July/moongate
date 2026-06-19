@@ -150,6 +150,51 @@ public class WindowsSettingsSurfaceTests
     }
 
     [Fact]
+    public void WindowsSettingsExposeVideoProxyControl()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var viewModel = Read("windows", "MoongateApp", "SettingsViewModel.cs");
+        var settings = Read("windows", "MoongateCore", "Settings.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+
+        Assert.Contains("L.Settings.VideoNetwork", xaml);
+        Assert.Contains("Text=\"{Binding VideoProxyUrl, UpdateSourceTrigger=PropertyChanged}\"", xaml);
+        Assert.Contains("IsChecked=\"{Binding IgnoreVideoCertificateErrors}\"", xaml);
+        Assert.Contains("_videoProxyUrl = current.VideoProxyUrl", viewModel);
+        Assert.Contains("_ignoreVideoCertificateErrors = current.IgnoreVideoCertificateErrors", viewModel);
+        Assert.Contains("VideoProxyUrl = AppSettings.NormalizeVideoProxyUrl(VideoProxyUrl)", viewModel);
+        Assert.Contains("IgnoreVideoCertificateErrors = IgnoreVideoCertificateErrors", viewModel);
+        Assert.Contains("[\"videoProxyURL\"]", settings);
+        Assert.Contains("[\"ignoreVideoCertificateErrors\"]", settings);
+        foreach (var resource in new[] { zh, en, zhHant })
+        {
+            Assert.Contains("x:Key=\"L.Settings.VideoProxy\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.VideoProxyHint\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.IgnoreVideoCertificateErrors\"", resource);
+            Assert.Contains("x:Key=\"L.Settings.IgnoreVideoCertificateErrorsHint\"", resource);
+        }
+    }
+
+    [Fact]
+    public void WindowsSettingsUpdateProgressBindingIsReadOnlySafe()
+    {
+        var xaml = Read("windows", "MoongateApp", "SettingsWindow.xaml");
+        var updateService = Read("windows", "MoongateApp", "UpdateService.cs");
+
+        Assert.Contains("Value=\"{Binding Updater.DownloadFraction, ElementName=Root, Mode=OneWay}\"", xaml);
+        Assert.DoesNotContain("Value=\"{Binding Updater.DownloadFraction, ElementName=Root}\"", xaml);
+        var updaterBindingLines = xaml
+            .Split(Environment.NewLine)
+            .Where(line => line.Contains("{Binding Updater.", StringComparison.Ordinal));
+        Assert.All(updaterBindingLines, line => Assert.Contains("Mode=OneWay", line));
+        Assert.Contains("CoerceDownloadFraction(value)", updateService);
+        Assert.Contains("double.IsNaN(value)", updateService);
+        Assert.Contains("double.IsInfinity(value)", updateService);
+    }
+
+    [Fact]
     public void WindowsQueueSurfaceShowsTranscodingPercentAndCompatibilityCopy()
     {
         var viewModel = Read("windows", "MoongateApp", "QueueItemViewModel.cs");
