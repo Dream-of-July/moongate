@@ -87,6 +87,7 @@ public partial class App : Application
         // 部分机器（异常显卡驱动 / 远程桌面 / 虚拟机）WPF 硬件渲染初始化失败时只画窗口背景，
         // 表现为白屏。检测到无硬件加速（渲染层级 0）或用户用环境变量强制时，回退软件渲染。
         ApplyRenderModeFallback();
+        ThemeManager.ApplySystemTheme();
 
         try
         {
@@ -97,6 +98,7 @@ public partial class App : Application
             var main = new MainWindow();
             MainWindow = main;
             main.Show();
+            ThemeManager.ApplyWindowTheme(main);
             StartupDiagnostics.Mark("MainWindow shown");
         }
         catch (Exception error)

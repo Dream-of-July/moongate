@@ -6,24 +6,10 @@
     <Application.Resources>
         <ResourceDictionary>
         <ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary Source="Themes/Theme.Light.xaml"/>
             <!-- 默认中文文案；LocalizationManager.Apply 启动时按设置换装（DynamicResource 即时生效） -->
             <ResourceDictionary Source="Strings.zh.xaml"/>
         </ResourceDictionary.MergedDictionaries>
-
-        <!-- 颜色（干净浅色样式） -->
-        <SolidColorBrush x:Key="WindowBrush" Color="#F5F5F7"/>
-        <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="CardBorderBrush" Color="#E3E3E8"/>
-        <SolidColorBrush x:Key="RowDividerBrush" Color="#EFEFF2"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#0A6CDF"/>
-        <SolidColorBrush x:Key="AccentHoverBrush" Color="#0C5FBF"/>
-        <SolidColorBrush x:Key="AccentPressedBrush" Color="#0A4FA0"/>
-        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#1D1D1F"/>
-        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#6E6E73"/>
-        <SolidColorBrush x:Key="TertiaryTextBrush" Color="#A9A9AE"/>
-        <SolidColorBrush x:Key="ErrorBrush" Color="#C03430"/>
-        <SolidColorBrush x:Key="SuccessBrush" Color="#1B7F3B"/>
-        <SolidColorBrush x:Key="WarnBrush" Color="#B45309"/>
 
         <!-- 转换器 -->
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -32,8 +18,8 @@
 
         <!-- 主按钮 -->
         <Style x:Key="PrimaryButton" TargetType="Button">
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryButtonForegroundBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
             <Setter Property="Padding" Value="14,6"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
@@ -49,10 +35,10 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{StaticResource AccentHoverBrush}"/>
+                    <Setter Property="Background" Value="{DynamicResource AccentHoverBrush}"/>
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
-                    <Setter Property="Background" Value="{StaticResource AccentPressedBrush}"/>
+                    <Setter Property="Background" Value="{DynamicResource AccentPressedBrush}"/>
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="0.45"/>
@@ -62,9 +48,9 @@
 
         <!-- 次按钮 -->
         <Style x:Key="SecondaryButton" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
-            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
-            <Setter Property="BorderBrush" Value="#D1D1D6"/>
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="14,5"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -83,10 +69,10 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#F2F2F6"/>
+                    <Setter Property="Background" Value="{DynamicResource ControlHoverBrush}"/>
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
-                    <Setter Property="Background" Value="#E8E8EE"/>
+                    <Setter Property="Background" Value="{DynamicResource ControlPressedBrush}"/>
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="0.45"/>
@@ -102,7 +88,7 @@
 
         <!-- 文字链接按钮 -->
         <Style x:Key="LinkButton" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Padding" Value="2,0"/>
             <Setter Property="Template">
@@ -116,7 +102,7 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Foreground" Value="{StaticResource AccentPressedBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource AccentPressedBrush}"/>
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="0.45"/>
@@ -143,15 +129,15 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#F2F2F7"/>
+                    <Setter Property="Background" Value="{DynamicResource RowHoverBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <!-- 卡片容器 -->
         <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource CardBorderBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="10"/>
         </Style>
@@ -160,14 +146,36 @@
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13.5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
         </Style>
 
         <!-- 辅助说明文字 -->
         <Style x:Key="Caption" TargetType="TextBlock">
             <Setter Property="FontSize" Value="11.5"/>
-            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource InputBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}"/>
+        </Style>
+
+        <Style TargetType="PasswordBox">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource InputBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}"/>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource InputBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
         </Style>
 
         <!-- 队列摘要栏（整条可点：展开/收起队列） -->
@@ -188,7 +196,7 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#F7F7FA"/>
+                    <Setter Property="Background" Value="{DynamicResource QueueBarHoverBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>

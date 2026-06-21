@@ -24,7 +24,7 @@ let usageText = """
   --provider/--engine/--base/--model/--token 缺省读 App 设置；--token 仅供本机调试，输出时只显示前 6 位。
   --engine 支持 \(TranslationEngine.supportedCLIValues.joined(separator: " / "))。
   公司 Claude 网关通常用 --provider anthropic --base "$ANTHROPIC_BASE_URL" --token "$ANTHROPIC_AUTH_TOKEN"。
-  burn 默认按设置里的最大高度缩放（缺省 1080p）；--max-height N 覆盖、--keep-resolution 保持源分辨率。
+  burn 默认保持源分辨率；--max-height N 可显式限制高度，--keep-resolution 强制保持源分辨率。
 """
 
 func splitLangs(_ value: String) -> [String] {
@@ -212,7 +212,7 @@ do {
             for subtitle in info.subtitles {
                 let flag = subtitle.isAuto ? "--auto-subs" : "--subs"
                 let mark = subtitle.isAuto ? "（自动生成）" : ""
-                print("  - \(subtitle.label)\(mark)   \(flag) \(subtitle.id)")
+                print("  - \(subtitle.label)\(mark)   \(flag) \(subtitle.languageCode)")
             }
         }
 

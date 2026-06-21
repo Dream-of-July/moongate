@@ -27,6 +27,7 @@ public partial class SettingsWindow : Window
         Updater = App.WindowsUpdater;
         DataContext = _vm;
         InitializeComponent();
+        ThemeManager.ApplyWindowTheme(this);
         // PasswordBox 不支持数据绑定，初值与变更都走代码同步。
         AITokenBox.Password = _vm.AIAuthToken;
         TokenBox.Password = _vm.AuthToken;

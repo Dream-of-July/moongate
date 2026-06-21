@@ -7,10 +7,13 @@ import MoongateCore
 /// 队列中的一行：缩略图 + 标题 + 阶段文案 + 进度条 + 右侧按钮组。
 struct QueueItemView: View {
     let item: QueueManager.QueueItem
+    let canRetryWithLocalASR: Bool
+    let isLocalASRRetryReady: Bool
     let onPause: () -> Void
     let onResume: () -> Void
     let onCancel: () -> Void
     let onRetry: () -> Void
+    let onRetryWithLocalASR: () -> Void
     let onRemove: () -> Void
     let onReveal: () -> Void
     @EnvironmentObject private var localizer: Localizer
@@ -68,6 +71,7 @@ struct QueueItemView: View {
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
         case .downloading:
+            if let localASRText = localASRProgressText { return statusWithDetails(localASRText, includeSpeed: false) }
             if item.isPostDownloadProcessing { return statusWithDetails(postDownloadProcessingText, includeSpeed: false) }
             if let p = item.progress { return statusWithDetails(localizer.t(L.Queue.downloadingPercent, Int(p * 100))) }
             return statusWithDetails(localizer.t(L.Queue.downloading))
@@ -83,6 +87,22 @@ struct QueueItemView: View {
             return item.statusText ?? localizer.t(L.Queue.cancelled)
         case .failed(let reason):
             return localizer.t(L.Queue.failedWithReason, reason)
+        }
+    }
+
+    private var localASRProgressText: String? {
+        switch item.progressPhase {
+        case .audioExtract:
+            if let p = item.progress { return localizer.t(L.Queue.audioExtractingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.audioExtracting)
+        case .speechRecognition:
+            if let p = item.progress { return localizer.t(L.Queue.speechRecognizingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.speechRecognizing)
+        case .subtitleSegment:
+            if let p = item.progress { return localizer.t(L.Queue.subtitleSegmentingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.subtitleSegmenting)
+        default:
+            return nil
         }
     }
 
@@ -185,6 +205,16 @@ struct QueueItemView: View {
         case .queued:
             return localizer.t(L.Queue.queueProgress)
         case .downloading:
+            switch item.progressPhase {
+            case .audioExtract:
+                return localizer.t(L.Queue.audioExtractProgress)
+            case .speechRecognition:
+                return localizer.t(L.Queue.speechRecognitionProgress)
+            case .subtitleSegment:
+                return localizer.t(L.Queue.subtitleSegmentProgress)
+            default:
+                break
+            }
             if item.postDownloadProcessingKind == .transcoding { return localizer.t(L.Queue.transcodeProgress) }
             return item.isPostDownloadProcessing ? localizer.t(L.Queue.processingProgress) : localizer.t(L.Queue.downloadProgress)
         case .translating:
@@ -210,6 +240,16 @@ struct QueueItemView: View {
         case .queued:
             return item.statusText ?? localizer.t(L.Queue.queued)
         case .downloading:
+            switch item.progressPhase {
+            case .audioExtract:
+                return localizer.t(L.Queue.progressIndeterminateAudioExtract)
+            case .speechRecognition:
+                return localizer.t(L.Queue.progressIndeterminateSpeechRecognition)
+            case .subtitleSegment:
+                return localizer.t(L.Queue.progressIndeterminateSubtitleSegment)
+            default:
+                break
+            }
             if item.postDownloadProcessingKind == .transcoding { return localizer.t(L.Queue.progressIndeterminateTranscoding) }
             return item.isPostDownloadProcessing ? localizer.t(L.Queue.progressDownloadProcessing) : localizer.t(L.Queue.progressIndeterminateDownloading)
         case .translating:
@@ -244,6 +284,14 @@ struct QueueItemView: View {
                 if item.partialFailure {
                     // 部分成功（视频已下载、字幕处理失败）：只重跑字幕处理，不重新下载
                     iconButton("arrow.clockwise", help: localizer.t(L.Queue.retrySubtitle), hint: localizer.t(L.Queue.retrySubtitleHint), action: onRetry)
+                }
+                if canRetryWithLocalASR {
+                    iconButton(
+                        "waveform",
+                        help: localizer.t(L.Queue.retryWithLocalASR),
+                        hint: localizer.t(isLocalASRRetryReady ? L.Queue.retryWithLocalASRHint : L.Queue.retryWithLocalASRConfigureHint),
+                        action: onRetryWithLocalASR
+                    )
                 }
                 if !item.resultFiles.isEmpty {
                     iconButton("folder", help: localizer.t(L.Queue.revealInFinder), hint: localizer.t(L.Queue.revealInFinderHint), action: onReveal)

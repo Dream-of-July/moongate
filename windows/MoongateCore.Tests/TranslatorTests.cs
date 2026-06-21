@@ -353,6 +353,43 @@ public class TranslationApiTests
     }
 
     [Fact]
+    public async Task ListModels_RetriesGatewayWithoutLimitWhenRequestShapeRejected()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = request => request.Uri.Query.Contains("limit=1000", StringComparison.Ordinal)
+                ? FakeHttpHandler.Json(400, """{"error":"unexpected query"}""")
+                : FakeHttpHandler.Json(200, """{"data":[{"id":"claude-gateway"},{"id":"claude-gateway"}]}"""),
+        };
+
+        var models = await TranslationApi.ListModelsAsync(GatewaySettings(), handler);
+
+        Assert.Equal(["claude-gateway"], models);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal("https://gateway.example.com/v1/models?limit=1000", handler.Requests[0].Uri.ToString());
+        Assert.Equal("https://gateway.example.com/v1/models", handler.Requests[1].Uri.ToString());
+        Assert.Equal("secret-token", handler.Requests[0].Headers["x-api-key"]);
+        Assert.Equal("Bearer secret-token", handler.Requests[0].Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task ListModels_OfficialAnthropic_DoesNotRetryWithoutLimit()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(400, """{"error":"bad request"}"""),
+        };
+        var settings = GatewaySettings() with { TranslationBaseUrl = "https://api.anthropic.com" };
+
+        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
+            TranslationApi.ListModelsAsync(settings, handler));
+
+        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://api.anthropic.com/v1/models?limit=1000", request.Uri.ToString());
+    }
+
+    [Fact]
     public async Task ListModels_OfficialAnthropic_OmitsAuthorization()
     {
         var handler = new FakeHttpHandler
@@ -363,6 +400,24 @@ public class TranslationApiTests
         await TranslationApi.ListModelsAsync(settings, handler);
         var request = Assert.Single(handler.Requests);
         Assert.False(request.Headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task ListModels_OpenAiCompatible_UsesBearerOnly()
+    {
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, """{"data":[{"id":"gpt-x"}]}"""),
+        };
+
+        var models = await TranslationApi.ListModelsAsync(
+            GatewaySettings(TranslationProvider.Openai), handler);
+
+        Assert.Equal(["gpt-x"], models);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("Bearer secret-token", request.Headers["Authorization"]);
+        Assert.False(request.Headers.ContainsKey("x-api-key"));
+        Assert.False(request.Headers.ContainsKey("anthropic-version"));
     }
 
     [Fact]
@@ -600,7 +655,8 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("翻译前上下文", translateSystem);
         Assert.Contains("Ayase", translateSystem);
         Assert.Contains("Plusonica", translateSystem);
-        Assert.Contains("不要把上下文里没有对应原文的信息添加到某一行译文", translateSystem);
+        Assert.Contains("不要把上下文里没有对应原文的信息添加到译文", translateSystem);
+        Assert.Contains("允许在相邻同句的行之间", translateSystem);
         Assert.Contains("歌词", translateSystem);
         Assert.Contains("画面感", translateSystem);
         Assert.Contains("呼吸感", translateSystem);
@@ -665,6 +721,10 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Contains("自然语序", prompt);
         Assert.Contains("相邻行", prompt);
         Assert.Contains("悬空成分", prompt);
+        Assert.Contains("99.", prompt);
+        Assert.Contains("8%", prompt);
+        Assert.Contains("Sun's", prompt);
+        Assert.Contains("太阳的", prompt);
         Assert.Contains("圆括号", prompt);
         Assert.Contains("音效", prompt);
     }
@@ -686,6 +746,8 @@ public class ConfiguredTranslatorTests : IDisposable
         var prompt = ConfiguredTranslator.SystemPrompt("简体中文", sourceLanguageCode: "en");
 
         Assert.Contains("正在把英语字幕翻译成简体中文", prompt);
+        Assert.Contains("99.", prompt);
+        Assert.Contains("Sun's", prompt);
         Assert.DoesNotContain("日文→中文重排示例", prompt);
         Assert.DoesNotContain("左隣、あなたの", prompt);
     }

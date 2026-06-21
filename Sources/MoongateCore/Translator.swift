@@ -96,42 +96,62 @@ func parseVTT(_ raw: String) -> [SubtitleCue] {
         .replacingOccurrences(of: "\r", with: "\n")
         .components(separatedBy: "\n")
 
-    struct Anchor {
-        let lineIndex: Int
-        let start: Double
-        let end: Double
+    var blocks: [[String]] = []
+    var currentBlock: [String] = []
+    func flushBlock() {
+        guard !currentBlock.isEmpty else { return }
+        blocks.append(currentBlock)
+        currentBlock = []
     }
-
-    var anchors: [Anchor] = []
-    for (index, line) in lines.enumerated() {
-        guard let timing = parseVTTTimeLine(line) else { continue }
-        anchors.append(Anchor(lineIndex: index, start: timing.start, end: timing.end))
+    for line in lines {
+        if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            flushBlock()
+        } else {
+            currentBlock.append(line)
+        }
     }
+    flushBlock()
 
     var cues: [SubtitleCue] = []
     var previousVisible = ""
-    for (anchorIndex, anchor) in anchors.enumerated() {
-        let textStart = anchor.lineIndex + 1
-        let textEnd = anchorIndex + 1 < anchors.count ? anchors[anchorIndex + 1].lineIndex : lines.count
-        guard textStart < textEnd else { continue }
-        let bodyLines = Array(lines[textStart..<textEnd])
+    for block in blocks {
+        guard !shouldSkipVTTBlock(block),
+              let timingIndex = block.firstIndex(where: { parseVTTTimeLine($0) != nil }),
+              let timing = parseVTTTimeLine(block[timingIndex]) else {
+            continue
+        }
+        let bodyStart = timingIndex + 1
+        guard bodyStart < block.endIndex else { continue }
+        let bodyLines = Array(block[bodyStart..<block.endIndex])
         guard let parsed = parseVTTCueBody(
             bodyLines,
-            cueStart: anchor.start,
-            cueEnd: max(anchor.end, anchor.start),
+            cueStart: timing.start,
+            cueEnd: max(timing.end, timing.start),
             previousVisible: previousVisible
         ) else { continue }
 
         cues.append(SubtitleCue(
             index: cues.count + 1,
-            start: secondsToSRTTime(anchor.start),
-            end: secondsToSRTTime(max(anchor.end, anchor.start)),
+            start: secondsToSRTTime(timing.start),
+            end: secondsToSRTTime(max(timing.end, timing.start)),
             text: parsed.text,
             sourceFragments: parsed.fragments
         ))
         previousVisible = parsed.text
     }
     return cues
+}
+
+private func shouldSkipVTTBlock(_ block: [String]) -> Bool {
+    guard let first = block.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !first.isEmpty else {
+        return true
+    }
+    if first == "WEBVTT" || first.hasPrefix("WEBVTT ") { return true }
+    if first == "STYLE" || first.hasPrefix("STYLE ") { return true }
+    if first == "REGION" || first.hasPrefix("REGION ") { return true }
+    if first == "NOTE" || first.hasPrefix("NOTE ") { return true }
+    return false
 }
 
 private func parseVTTTimeLine(_ line: String) -> (start: Double, end: Double)? {
@@ -826,9 +846,18 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
     func splitSentencePieces(_ text: String) -> [String] {
         var pieces: [String] = []
         var current = ""
-        for char in text {
+        let chars = Array(text)
+        for index in chars.indices {
+            let char = chars[index]
             current.append(char)
             guard sentenceEnders.contains(char) else { continue }
+            if char == ".",
+               index > chars.startIndex,
+               index < chars.index(before: chars.endIndex),
+               chars[chars.index(before: index)].isNumber,
+               chars[chars.index(after: index)].isNumber {
+                continue
+            }
             let piece = collapseSubtitleWhitespace(current)
             if !piece.isEmpty { pieces.append(piece) }
             current = ""
@@ -1198,6 +1227,28 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
         guard items.count >= 2 else { return items }
         var output: [Timed] = []
         var index = 0
+        func containsDecimalDigit(_ text: String) -> Bool {
+            text.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+        }
+        func isDecimalDigit(_ character: Character?) -> Bool {
+            guard let character else { return false }
+            return String(character).unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+        }
+        func firstTokenLooksLikeContinuationTail(_ text: String, tokens: [String]) -> Bool {
+            guard !tokens.isEmpty else { return false }
+            if tokens.contains(where: containsDecimalDigit) { return true }
+            guard let first = firstMeaningfulCharacter(text) else { return false }
+            let scalars = String(first).unicodeScalars
+            return scalars.contains { CharacterSet.lowercaseLetters.contains($0) }
+        }
+        func containsNumericToken(_ tokens: [String]) -> Bool {
+            tokens.contains(where: containsDecimalDigit)
+        }
+        func endsWithNumericDecimalPrefix(_ text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.last == ".", let beforeDot = trimmed.dropLast().last else { return false }
+            return isDecimalDigit(beforeDot)
+        }
         while index < items.count {
             if index + 1 < items.count {
                 let current = items[index]
@@ -1206,15 +1257,30 @@ func cleanCues(_ input: [SubtitleCue]) -> [SubtitleCue] {
                 let nextTokens = wordTokens(next.text)
                 let combinedDuration = next.end - current.start
                 let handoffGap = next.start - current.end
-                if currentTokens.count >= 2,
-                   currentTokens.count <= 3,
+                let weakPair: Bool
+                if let last = currentTokens.last, let first = nextTokens.first {
+                    weakPair = SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first)
+                } else {
+                    weakPair = false
+                }
+                let shortContinuationPrefix = currentTokens.count >= 2
+                    && currentTokens.count <= 3
+                    && !endsSentence(current.text)
+                    && weakPair
+                let orphanTail = !endsSentence(current.text)
+                    && currentTokens.count >= 2
+                    && nextTokens.count <= 2
+                    && firstTokenLooksLikeContinuationTail(next.text, tokens: nextTokens)
+                let modelContinuationPrefix = !endsSentence(current.text)
+                    && currentTokens.count >= 1
+                    && currentTokens.count <= 3
+                    && containsNumericToken(nextTokens)
+                let numericContinuation = endsWithNumericDecimalPrefix(current.text)
+                    && isDecimalDigit(nextTokens.first?.first)
+                if (shortContinuationPrefix || orphanTail || modelContinuationPrefix || numericContinuation),
                    handoffGap >= -0.001,
                    handoffGap <= 0.12,
-                   combinedDuration <= normalReadableCueSeconds,
-                   !endsSentence(current.text),
-                   let last = currentTokens.last,
-                   let first = nextTokens.first,
-                   SubtitleTimingPlanner.isWeakBoundary(leftToken: last, rightToken: first) {
+                   combinedDuration <= normalReadableCueSeconds {
                     output.append(Timed(
                         start: current.start,
                         end: max(current.end, next.end),
@@ -2364,47 +2430,39 @@ public func listTranslationModels(settings: AppSettings) async throws -> [String
             zhHant: "尚未設定 API 憑證，請先填寫憑證再拉取模型。"
         ))
     }
-    var url = try endpointURL(baseURL: settings.translationBaseURL, endpointPath: "/v1/models")
-    // Anthropic 协议的 /v1/models 默认每页只回 20 条，不带 limit 会漏模型；
-    // OpenAI 与多数网关会忽略未知查询参数，统一加上无副作用。
-    if var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-       components.queryItems?.isEmpty != false {
-        components.queryItems = [URLQueryItem(name: "limit", value: "1000")]
-        url = components.url ?? url
-    }
-    let host = (url.host ?? "").lowercased()
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.timeoutInterval = 20
-    // 鉴权头按协议区分，避免把 Anthropic 私有头泄漏给 OpenAI / 严格网关导致 4xx 拒绝：
-    // - OpenAI 兼容：只发 Authorization: Bearer；
-    // - 其它（Anthropic 官方 / 网关）：发 x-api-key + anthropic-version，并补 Bearer 以兼容网关。
-    if settings.translationEngine == .openAICompatible {
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    } else {
-        request.setValue(token, forHTTPHeaderField: "x-api-key")
-        if host != "api.anthropic.com" {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-    }
-
+    let urls = try modelListCandidateURLs(baseURL: settings.translationBaseURL)
     do {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw MoongateError.translateFailed(TranslatorL10n.modelListInvalid)
+        for (index, url) in urls.enumerated() {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 20
+            configureModelListHeaders(
+                request: &request,
+                token: token,
+                engine: settings.translationEngine,
+                host: (url.host ?? "").lowercased()
+            )
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw MoongateError.translateFailed(TranslatorL10n.modelListInvalid)
+            }
+            guard http.statusCode == 200 else {
+                if index + 1 < urls.count,
+                   shouldRetryModelListWithoutLimit(statusCode: http.statusCode) {
+                    continue
+                }
+                throw MoongateError.translateFailed(requestFailureMessage(
+                    statusCode: http.statusCode, data: data, settings: settings
+                ))
+            }
+            let ids = parseModelIDs(from: data)
+            guard !ids.isEmpty else {
+                throw MoongateError.translateFailed(TranslatorL10n.modelListEmpty)
+            }
+            return ids
         }
-        guard http.statusCode == 200 else {
-            throw MoongateError.translateFailed(requestFailureMessage(
-                statusCode: http.statusCode, data: data, settings: settings
-            ))
-        }
-        let ids = parseModelIDs(from: data)
-        guard !ids.isEmpty else {
-            throw MoongateError.translateFailed(TranslatorL10n.modelListEmpty)
-        }
-        return ids
+        throw MoongateError.translateFailed(TranslatorL10n.connectionFailed)
     } catch let error as MoongateError {
         throw error
     } catch let error as URLError {
@@ -2413,6 +2471,45 @@ public func listTranslationModels(settings: AppSettings) async throws -> [String
     } catch {
         throw MoongateError.translateFailed(error.localizedDescription)
     }
+}
+
+private func modelListCandidateURLs(baseURL: String) throws -> [URL] {
+    let bareURL = try endpointURL(baseURL: baseURL, endpointPath: "/v1/models")
+    guard var components = URLComponents(url: bareURL, resolvingAgainstBaseURL: false),
+          components.queryItems?.isEmpty != false else {
+        return [bareURL]
+    }
+    components.queryItems = [URLQueryItem(name: "limit", value: "1000")]
+    let limitedURL = components.url ?? bareURL
+    let host = (limitedURL.host ?? "").lowercased()
+    if host == "api.anthropic.com" {
+        return [limitedURL]
+    }
+    return [limitedURL, bareURL]
+}
+
+private func configureModelListHeaders(
+    request: inout URLRequest,
+    token: String,
+    engine: TranslationEngine,
+    host: String
+) {
+    // 鉴权头按协议区分，避免把 Anthropic 私有头泄漏给 OpenAI / 严格网关导致 4xx 拒绝：
+    // - OpenAI 兼容：只发 Authorization: Bearer；
+    // - 其它（Anthropic 官方 / 网关）：发 x-api-key + anthropic-version，并补 Bearer 以兼容网关。
+    if engine == .openAICompatible {
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    } else {
+        request.setValue(token, forHTTPHeaderField: "x-api-key")
+        if host != "api.anthropic.com" {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    }
+}
+
+private func shouldRetryModelListWithoutLimit(statusCode: Int) -> Bool {
+    [400, 404, 405, 422].contains(statusCode)
 }
 
 /// 解析 /v1/models 响应。兼容 OpenAI 风格 {"data":[{"id":...}]} 与 Anthropic 风格
@@ -2564,7 +2661,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         要求：
         1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。
         2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。
-        3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
+        3) 数字、百分比、单位、版本号和型号要按完整表达理解。若相邻行把小数或单位拆开，如「99.」+「8%」、「0.」+「1%」、「Sun's」+「energy」，译文要合成自然中文，不要翻成「99点」/「8%」两段，也不要让某行停在「太阳的」。
+        4) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。
         """
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
         if TranslationLanguage.normalizedScript(sourceLanguageCode ?? "") == "ja" {
@@ -2588,7 +2686,7 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         case .general:
             prompt += "\n根据摘要保持术语与语气一致，但仍以逐条字幕的准确翻译为准。"
         case .songLyrics:
-            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 3 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
+            prompt += "\n这段字幕更接近歌曲、歌词或带旋律的演唱内容。请当作要发表的中文歌词译本来打磨，而不是逐句直译：优先意境、情绪与可吟唱的自然度，用词可更凝练、更有画面感和文学性，不必逐字贴着原句；相邻几行常属同一句，可在它们之间自由合并、重排，让整段读起来像通顺的中文歌词，并保留原文的重复、副歌和短句呼吸感。仅本段为歌曲，放宽前面第 4 条“不增不减”的限制：可在忠于每句情绪重心与意象的前提下做合理引申和润色；但不得编造原文完全没有的情节或事实（如具体人名、地点、动作）。"
         case .interviewConversation:
             prompt += "\n这段内容更像访谈或对话。翻译时优先保留说话人的口吻、犹豫、转折和真实交流感；句子可以自然顺一点，但不要把口语磨成书面报告。"
         case .tutorialHowTo:

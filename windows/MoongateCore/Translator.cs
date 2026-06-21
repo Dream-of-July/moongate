@@ -139,35 +139,63 @@ public static partial class SrtTools
         if (text.StartsWith('\uFEFF')) text = text[1..];
         var lines = text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
-        var anchors = new List<(int LineIndex, double Start, double End)>();
-        for (var i = 0; i < lines.Length; i++)
+        var blocks = new List<List<string>>();
+        var currentBlock = new List<string>();
+        void FlushBlock()
         {
-            var timing = ParseVttTimeLine(lines[i]);
-            if (timing is null) continue;
-            anchors.Add((i, timing.Value.Start, timing.Value.End));
+            if (currentBlock.Count == 0) return;
+            blocks.Add(currentBlock);
+            currentBlock = [];
         }
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                FlushBlock();
+            }
+            else
+            {
+                currentBlock.Add(line);
+            }
+        }
+        FlushBlock();
 
         var cues = new List<SubtitleCue>();
         var previousVisible = "";
-        for (var anchorIndex = 0; anchorIndex < anchors.Count; anchorIndex++)
+        foreach (var block in blocks)
         {
-            var anchor = anchors[anchorIndex];
-            var textStart = anchor.LineIndex + 1;
-            var textEnd = anchorIndex + 1 < anchors.Count ? anchors[anchorIndex + 1].LineIndex : lines.Length;
-            if (textStart >= textEnd) continue;
-            var bodyLines = lines[textStart..textEnd];
-            var parsed = ParseVttCueBody(bodyLines, anchor.Start, Math.Max(anchor.End, anchor.Start), previousVisible);
+            if (ShouldSkipVttBlock(block)) continue;
+            var timingIndex = block.FindIndex(line => ParseVttTimeLine(line) is not null);
+            if (timingIndex < 0 || ParseVttTimeLine(block[timingIndex]) is not { } timing) continue;
+            var bodyStart = timingIndex + 1;
+            if (bodyStart >= block.Count) continue;
+            var bodyLines = block.Skip(bodyStart).ToList();
+            var parsed = ParseVttCueBody(bodyLines, timing.Start, Math.Max(timing.End, timing.Start), previousVisible);
             if (parsed is null) continue;
 
             cues.Add(new SubtitleCue(
                 cues.Count + 1,
-                SecondsToSrtTime(anchor.Start),
-                SecondsToSrtTime(Math.Max(anchor.End, anchor.Start)),
+                SecondsToSrtTime(timing.Start),
+                SecondsToSrtTime(Math.Max(timing.End, timing.Start)),
                 parsed.Value.Text,
                 parsed.Value.Fragments));
             previousVisible = parsed.Value.Text;
         }
         return cues;
+    }
+
+    private static bool ShouldSkipVttBlock(IReadOnlyList<string> block)
+    {
+        var first = block.FirstOrDefault()?.Trim();
+        if (string.IsNullOrEmpty(first)) return true;
+        return first == "WEBVTT"
+            || first.StartsWith("WEBVTT ", StringComparison.Ordinal)
+            || first == "STYLE"
+            || first.StartsWith("STYLE ", StringComparison.Ordinal)
+            || first == "REGION"
+            || first.StartsWith("REGION ", StringComparison.Ordinal)
+            || first == "NOTE"
+            || first.StartsWith("NOTE ", StringComparison.Ordinal);
     }
 
     private static (double Start, double End)? ParseVttTimeLine(string line)
@@ -1021,6 +1049,22 @@ public static partial class SrtTools
         if (items.Count < 2) return items;
         var output = new List<TimedCue>();
         var index = 0;
+        static bool FirstTokenLooksLikeContinuationTail(string text, IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count == 0) return false;
+            if (tokens.Any(token => token.Any(char.IsDigit))) return true;
+            var first = FirstMeaningfulCharacter(text);
+            return first is not null && char.IsLower(first.Value);
+        }
+        static bool EndsWithNumericDecimalPrefix(string text)
+        {
+            var trimmed = text.Trim();
+            return trimmed.Length >= 2
+                && trimmed[^1] == '.'
+                && char.IsDigit(trimmed[^2]);
+        }
+        static bool ContainsNumericToken(IReadOnlyList<string> tokens) =>
+            tokens.Any(token => token.Any(char.IsDigit));
         while (index < items.Count)
         {
             if (index + 1 < items.Count)
@@ -1031,13 +1075,25 @@ public static partial class SrtTools
                 var nextTokens = WordTokens(next.Text);
                 var combinedDuration = next.End - current.Start;
                 var handoffGap = next.Start - current.End;
-                if (currentTokens.Count is >= 2 and <= 3
-                    && handoffGap >= -0.001
-                    && handoffGap <= 0.12
-                    && combinedDuration <= NormalReadableCueSeconds
+                var shortContinuationPrefix = currentTokens.Count is >= 2 and <= 3
                     && !EndsSentence(current.Text)
                     && nextTokens.Count > 0
-                    && SubtitleTimingPlanner.IsWeakBoundary(currentTokens[^1], nextTokens[0]))
+                    && SubtitleTimingPlanner.IsWeakBoundary(currentTokens[^1], nextTokens[0]);
+                var orphanTail = !EndsSentence(current.Text)
+                    && currentTokens.Count >= 2
+                    && nextTokens.Count <= 2
+                    && FirstTokenLooksLikeContinuationTail(next.Text, nextTokens);
+                var modelContinuationPrefix = !EndsSentence(current.Text)
+                    && currentTokens.Count is >= 1 and <= 3
+                    && ContainsNumericToken(nextTokens);
+                var numericContinuation = EndsWithNumericDecimalPrefix(current.Text)
+                    && nextTokens.Count > 0
+                    && nextTokens[0].Length > 0
+                    && char.IsDigit(nextTokens[0][0]);
+                if ((shortContinuationPrefix || orphanTail || modelContinuationPrefix || numericContinuation)
+                    && handoffGap >= -0.001
+                    && handoffGap <= 0.12
+                    && combinedDuration <= NormalReadableCueSeconds)
                 {
                     output.Add(new TimedCue(
                         current.Start,
@@ -1355,10 +1411,19 @@ public static partial class SrtTools
     {
         var pieces = new List<string>();
         var current = new StringBuilder();
-        foreach (var ch in text)
+        for (var i = 0; i < text.Length; i++)
         {
+            var ch = text[i];
             current.Append(ch);
             if (!SentenceEnders.Contains(ch)) continue;
+            if (ch == '.'
+                && i > 0
+                && i + 1 < text.Length
+                && char.IsDigit(text[i - 1])
+                && char.IsDigit(text[i + 1]))
+            {
+                continue;
+            }
             var piece = NormalizeWhitespace(current.ToString());
             if (piece.Length > 0) pieces.Add(piece);
             current.Clear();
@@ -2346,57 +2411,89 @@ public static class TranslationApi
                 "尚未設定 API 憑證，請先填寫憑證再拉取模型。",
                 "No API credential configured. Enter it before fetching models."));
         }
-        var url = EndpointUrl(settings.TranslationBaseUrl, "/v1/models");
-        // Anthropic 协议的 /v1/models 默认每页只回 20 条，不带 limit 会漏模型；
-        // OpenAI 与多数网关会忽略未知查询参数，统一加上无副作用。
-        if (string.IsNullOrEmpty(url.Query))
+        using var client = MakeClient(handler, TimeSpan.FromSeconds(20));
+        var urls = ModelListCandidateUrls(settings.TranslationBaseUrl);
+        for (var i = 0; i < urls.Count; i++)
         {
-            url = new UriBuilder(url) { Query = "limit=1000" }.Uri;
-        }
-        var isOfficialAnthropic = string.Equals(url.Host, "api.anthropic.com", StringComparison.OrdinalIgnoreCase);
+            using var request = new HttpRequestMessage(HttpMethod.Get, urls[i]);
+            ConfigureModelListHeaders(request, token, settings.TranslationProvider, urls[i].Host);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        // 同时带两种鉴权头以兼容网关；官方 Anthropic 只认 x-api-key + version。
+            string body;
+            int statusCode;
+            try
+            {
+                using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+                statusCode = (int)response.StatusCode;
+                body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
+            {
+                throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
+                    "無法連線到翻譯服務，請檢查服務地址與網路。",
+                    "Could not reach the translation service. Check the service URL and your network."));
+            }
+
+            if (statusCode != 200)
+            {
+                if (i + 1 < urls.Count && ShouldRetryModelListWithoutLimit(statusCode))
+                {
+                    continue;
+                }
+                throw MoongateException.TranslateFailed(RequestFailureMessage(statusCode, body, settings));
+            }
+            var ids = ParseModelIds(body);
+            if (ids.Count == 0)
+            {
+                throw MoongateException.TranslateFailed(L10n.T("服务返回的模型列表为空，请手动填写模型名。",
+                    "服務返回的模型清單為空，請手動填寫模型名稱。",
+                    "The service returned an empty model list. Enter a model name manually."));
+            }
+            return ids;
+        }
+
+        throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
+            "無法連線到翻譯服務，請檢查服務地址與網路。",
+            "Could not reach the translation service. Check the service URL and your network."));
+    }
+
+    private static IReadOnlyList<Uri> ModelListCandidateUrls(string baseUrl)
+    {
+        var bareUrl = EndpointUrl(baseUrl, "/v1/models");
+        if (!string.IsNullOrEmpty(bareUrl.Query))
+        {
+            return [bareUrl];
+        }
+        var limitedUrl = new UriBuilder(bareUrl) { Query = "limit=1000" }.Uri;
+        if (string.Equals(limitedUrl.Host, "api.anthropic.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return [limitedUrl];
+        }
+        return [limitedUrl, bareUrl];
+    }
+
+    private static void ConfigureModelListHeaders(
+        HttpRequestMessage request, string token, TranslationProvider provider, string host)
+    {
+        if (provider == TranslationProvider.Openai)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            return;
+        }
+        var isOfficialAnthropic = string.Equals(host, "api.anthropic.com", StringComparison.OrdinalIgnoreCase);
         request.Headers.Add("x-api-key", token);
         if (!isOfficialAnthropic)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
         request.Headers.Add("anthropic-version", "2023-06-01");
-
-        using var client = MakeClient(handler, TimeSpan.FromSeconds(20));
-        string body;
-        int statusCode;
-        try
-        {
-            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
-            statusCode = (int)response.StatusCode;
-            body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
-        {
-            throw MoongateException.TranslateFailed(L10n.T("无法连接到翻译服务，请检查服务地址和网络。",
-                "無法連線到翻譯服務，請檢查服務地址與網路。",
-                "Could not reach the translation service. Check the service URL and your network."));
-        }
-
-        if (statusCode != 200)
-        {
-            throw MoongateException.TranslateFailed(RequestFailureMessage(statusCode, body, settings));
-        }
-        var ids = ParseModelIds(body);
-        if (ids.Count == 0)
-        {
-            throw MoongateException.TranslateFailed(L10n.T("服务返回的模型列表为空，请手动填写模型名。",
-                "服務返回的模型清單為空，請手動填寫模型名稱。",
-                "The service returned an empty model list. Enter a model name manually."));
-        }
-        return ids;
     }
+
+    private static bool ShouldRetryModelListWithoutLimit(int statusCode) =>
+        statusCode is 400 or 404 or 405 or 422;
 
     /// <summary>
     /// 解析 /v1/models 响应。兼容 OpenAI 风格 {"data":[{"id":...}]} 与 Anthropic 风格
@@ -2528,7 +2625,8 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             "要求：\n" +
             "1) 按目标语言的自然语序表达，不要保留原文语序——尤其日语等谓语后置、修饰语/领属前置的语言，要把句尾谓语、被动施事、领属修饰语挪到目标语言的自然位置。\n" +
             "2) 一句话被拆到多行时，先在心里组成完整自然的译句，再按原行数在目标语言的自然停顿处切回各行；不要让某行停在「你的」「被你」这类悬空成分，也不要让某行变成没有主语或中心词的残句。当一句的谓语/动词落在靠后的行时，前面的行只翻译修饰语或状语，不要提前把动词译出来、造成相邻行重复同一个动作。\n" +
-            "3) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。圆括号、方括号里的音效/旁注（如「(笑声)」「[音乐]」）若已残留在原文中，按原样保留对应译文，不要展开描写。";
+            "3) 数字、百分比、单位、版本号和型号要按完整表达理解。若相邻行把小数或单位拆开，如「99.」+「8%」、「0.」+「1%」、「Sun's」+「energy」，译文要合成自然中文，不要翻成「99点」/「8%」两段，也不要让某行停在「太阳的」。\n" +
+            "4) 口语自然、简洁，保留专有名词；只翻译原文已有的信息，不增不减。圆括号、方括号里的音效/旁注（如「(笑声)」「[音乐]」）若已残留在原文中，按原样保留对应译文，不要展开描写。";
         // 日语源语言额外给重排范例：抽象规则对弱模型不够稳，用具体「日文→自然中文」示例压制"逐行硬贴原文语序"的倒退。
         if (TranslationLanguage.NormalizedScript(sourceLanguageCode ?? "") == "ja")
         {
@@ -2546,7 +2644,7 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         {
             prompt += "\n专名参考：\n" + string.Join("\n", advice.Terms.Select(term => "- " + term));
         }
-        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到某一行译文，仍按输入编号逐字逐句贴近原文翻译。";
+        prompt += "\n这些上下文只用于理解人物、专名、场景和主题；不要把上下文里没有对应原文的信息添加到译文。仍按编号逐行输出、行数不变，但允许在相邻同句的行之间按上面的自然语序要求重新分配文字。";
         prompt += advice.Preset switch
         {
             TranslationPromptPreset.SongLyrics =>
