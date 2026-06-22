@@ -2772,10 +2772,20 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         var cues = SrtTools.CleanCues(parsed);
         // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
         // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
-        if (_settings.SmartTranslationPromptsEnabled
+        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句，分段全靠 LLM 重断句——
+        // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
+        // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
+        var isLocalAsrSource = Path.GetFileName(srtFile).ToLowerInvariant().Contains(".local-asr.");
+        if ((_settings.SmartTranslationPromptsEnabled || isLocalAsrSource)
             && (sourceLooksLikeAutoCaption || LooksLikeAutoCaption(cues)))
         {
-            cues = await ResegmentForReadabilityAsync(cues, ct).ConfigureAwait(false);
+            var reseg = await ResegmentForReadabilityAsync(cues, ct).ConfigureAwait(false);
+            if (isLocalAsrSource && reseg.Count != cues.Count)
+            {
+                try { await File.WriteAllTextAsync(srtFile, SrtTools.SerializeSrt(reseg), ct).ConfigureAwait(false); }
+                catch { /* 写回源字幕失败不影响翻译流程 */ }
+            }
+            cues = reseg;
         }
         // 源语言从文件名推断（如 "video.ja.srt" → "ja"），用于给提示词点名源语言并触发日语重排示例。
         var sourceLanguageCode = TranslationLanguage.SourceLanguageIdentifierFromSubtitleFile(srtFile);
@@ -3172,16 +3182,62 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
             .Where(t => NormalizeAlignToken(t).Length > 0)
             .ToList();
 
+    /// <summary>单个字符是否属于 CJK（汉字/假名/谚文）——这类语言词间无空格。高代理位按 CJK 扩展 B+ 处理。</summary>
+    private static bool IsCjkScalar(char c) =>
+        (c >= '぀' && c <= 'ヿ') ||   // 平假名 + 片假名
+        (c >= '㐀' && c <= '䶿') ||   // CJK 扩展 A
+        (c >= '一' && c <= '鿿') ||   // CJK 基本汉字
+        (c >= '가' && c <= '힣') ||   // 谚文音节
+        (c >= '豈' && c <= '﫿') ||   // CJK 兼容汉字
+        char.IsHighSurrogate(c);              // CJK 扩展 B+（代理对）
+
+    /// <summary>
+    /// 判定字幕是否以 CJK（中日韩，词间无空格）为主，决定重分段按「字符」还是按「词」对齐。
+    /// 无空格语言里整条字幕只算一个 token，按词对齐必然失败而整体回退；改为逐字符对齐才生效。
+    /// </summary>
+    internal static bool IsCjkHeavy(IReadOnlyList<SubtitleCue> cues)
+    {
+        int cjk = 0, total = 0;
+        foreach (var cue in cues)
+        {
+            foreach (var ch in Flattened(cue.Text))
+            {
+                if (char.IsWhiteSpace(ch)) continue;
+                total++;
+                if (IsCjkScalar(ch)) cjk++;
+            }
+        }
+        return total > 0 && (double)cjk / total >= 0.5;
+    }
+
+    /// <summary>
+    /// 对齐单元：CJK 逐字符（丢弃空白与纯标点），其它语言按空白切词。
+    /// CJK 模式下「token」= 单个字符，下游 build/merge/split/插值机制全部按字符粒度复用。
+    /// （BMP 之外的 CJK 扩展 B+ 会被拆成两个代理码元，原文与模型输出对称处理，不影响对齐。）
+    /// </summary>
+    private static List<string> AlignmentUnits(string text, bool cjk)
+    {
+        if (!cjk) return AlignTokens(text);
+        var units = new List<string>();
+        foreach (var ch in text)
+        {
+            if (char.IsWhiteSpace(ch)) continue;
+            var s = ch.ToString();
+            if (NormalizeAlignToken(s).Length > 0) units.Add(s);
+        }
+        return units;
+    }
+
     /// <summary>展平后的单个 token：归一化文本 + 所属原 cue 索引 + 在该 cue 内的位置（用于本地时间插值）。</summary>
     private readonly record struct FlatToken(string Norm, int CueIndex, int PosInCue, int CueTokenCount);
 
-    /// <summary>把一段（连续若干原 cue）展平为带定位信息的 token 序列。</summary>
-    private static List<FlatToken> FlattenCueTokens(IReadOnlyList<SubtitleCue> cues, int start, int count)
+    /// <summary>把一段（连续若干原 cue）展平为带定位信息的 token 序列。CJK 模式下 token = 单个字符。</summary>
+    private static List<FlatToken> FlattenCueTokens(IReadOnlyList<SubtitleCue> cues, int start, int count, bool cjk)
     {
         var flat = new List<FlatToken>();
         for (var c = start; c < start + count; c++)
         {
-            var tokens = AlignTokens(Flattened(cues[c].Text));
+            var tokens = AlignmentUnits(Flattened(cues[c].Text), cjk);
             for (var i = 0; i < tokens.Count; i++)
             {
                 flat.Add(new FlatToken(NormalizeAlignToken(tokens[i]), c, i, tokens.Count));
@@ -3305,12 +3361,15 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         }
 
         // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。
-        var flat = FlattenCueTokens(cues, 0, cues.Count);
+        //    CJK（中日韩，词间无空格）按字符对齐；其它语言按空白切词——否则无空格语言整条
+        //    只算一个 token，模型重新断句后必然对不上而整体回退（此前日文重分段不生效的根因）。
+        var cjk = IsCjkHeavy(cues);
+        var flat = FlattenCueTokens(cues, 0, cues.Count, cjk);
         var sentenceTokenCounts = new List<int>();
         var alignedNorms = new List<string>();
         foreach (var sentence in sentences)
         {
-            var toks = AlignTokens(sentence);
+            var toks = AlignmentUnits(sentence, cjk);
             sentenceTokenCounts.Add(toks.Count);
             alignedNorms.AddRange(toks.Select(NormalizeAlignToken));
         }

@@ -2775,9 +2775,17 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         var cues = cleanCues(parsed)
         // 智能提示词开启且字幕像逐字无标点的 ASR 自动字幕时，先重分段成完整句子再翻译，
         // 显著改善翻译质量与可读性。重分段失败（对齐不上）会原样返回，不影响后续。
-        if settings.smartTranslationPromptsEnabled,
+        // 本地 Whisper 源字幕（.local-asr.*）天然是逐字无标点碎句，分段全靠 LLM 重断句——
+        // 无论 smart 开关都对它重分段，并把句子级结果写回源 .srt（让导出的源字幕也成句）；
+        // 平台自动字幕（YouTube 等）维持原行为，仅在 smart 开启时才重分段，避免影响既有路径与成本。
+        let isLocalASRSource = srtFile.lastPathComponent.lowercased().contains(".local-asr.")
+        if (settings.smartTranslationPromptsEnabled || isLocalASRSource),
            sourceLooksLikeAutoCaption || Self.looksLikeAutoCaption(cues) {
-            cues = try await resegmentForReadability(cues, context: context)
+            let reseg = try await resegmentForReadability(cues, context: context)
+            if isLocalASRSource, reseg.count != cues.count {
+                try? serializeSRT(reseg).write(to: srtFile, atomically: true, encoding: .utf8)
+            }
+            cues = reseg
         }
         let advice = try await makeTranslationPromptAdvice(cues: cues, context: context)
 
@@ -3167,6 +3175,41 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             .filter { !normalizeAlignToken($0).isEmpty }
     }
 
+    /// 单个字符是否属于 CJK（汉字/假名/谚文）——这类语言词间无空格。
+    static func isCJKScalar(_ ch: Character) -> Bool {
+        ch.unicodeScalars.contains { s in
+            (0x3040...0x30FF).contains(s.value) ||   // 平假名 + 片假名
+            (0x3400...0x4DBF).contains(s.value) ||   // CJK 扩展 A
+            (0x4E00...0x9FFF).contains(s.value) ||   // CJK 基本汉字
+            (0xAC00...0xD7A3).contains(s.value) ||   // 谚文音节
+            (0xF900...0xFAFF).contains(s.value) ||   // CJK 兼容汉字
+            (0x20000...0x2FA1F).contains(s.value)    // CJK 扩展 B+
+        }
+    }
+
+    /// 判定字幕是否以 CJK（中日韩，词间无空格）为主，决定重分段按「字符」还是按「词」对齐。
+    /// 无空格语言里整条字幕只算一个 token，按词对齐必然失败而整体回退；改为逐字符对齐才生效。
+    static func isCJKHeavy(_ cues: [SubtitleCue]) -> Bool {
+        var cjk = 0, total = 0
+        for cue in cues {
+            for ch in flattened(cue.text) where !ch.isWhitespace {
+                total += 1
+                if isCJKScalar(ch) { cjk += 1 }
+            }
+        }
+        guard total > 0 else { return false }
+        return Double(cjk) / Double(total) >= 0.5
+    }
+
+    /// 对齐单元：CJK 逐字符（丢弃空白与纯标点），其它语言按空白切词。
+    /// CJK 模式下「token」= 单个字符，下游 build/merge/split/插值机制全部按字符粒度复用。
+    private static func alignmentUnits(_ text: String, cjk: Bool) -> [String] {
+        guard cjk else { return alignTokens(text) }
+        return text.compactMap { ch in
+            ch.isWhitespace ? nil : (normalizeAlignToken(String(ch)).isEmpty ? nil : String(ch))
+        }
+    }
+
     /// ASR 判定：像逐字无标点的自动字幕才重分段，尽量避免误伤正常字幕/歌词。
     /// 需同时满足：(1) cue 数足够多；(2) 带句末标点的 cue 比例很低；
     /// (3) 平均时长偏短（碎句特征）；(4) 整体几乎没有换行（ASR 每条单行碎词）。
@@ -3216,10 +3259,11 @@ extension ConfiguredTranslator {
     }
 
     /// 把一段（连续若干原 cue）展平为带定位信息的 token 序列。
-    fileprivate static func flattenCueTokens(_ cues: [SubtitleCue], start: Int, count: Int) -> [FlatToken] {
+    /// CJK 模式下 token = 单个字符，posInCue/cueTokenCount 据此变为字符粒度，时间插值更细。
+    fileprivate static func flattenCueTokens(_ cues: [SubtitleCue], start: Int, count: Int, cjk: Bool) -> [FlatToken] {
         var flat: [FlatToken] = []
         for c in start..<(start + count) {
-            let tokens = alignTokens(flattened(cues[c].text))
+            let tokens = alignmentUnits(flattened(cues[c].text), cjk: cjk)
             for (i, tok) in tokens.enumerated() {
                 flat.append(FlatToken(norm: normalizeAlignToken(tok), cueIndex: c,
                                       posInCue: i, cueTokenCount: tokens.count))
@@ -3291,21 +3335,54 @@ extension ConfiguredTranslator {
     func resegmentForReadability(_ cues: [SubtitleCue], context: TranslationContext) async throws -> [SubtitleCue] {
         guard !cues.isEmpty else { return [] }
 
-        // 1) 在 cue 边界分块请求断句，拼出全部句子。
+        // 1) 在 cue 边界分块请求断句，拼出全部句子。最多 3 块在途并行（此前为串行，是
+        //    Whisper/ASR 字幕翻译慢的主因——整段额外断句 LLM 往返一个接一个），结果按块序回拼。
+        var chunkRanges: [(index: Int, start: Int, count: Int)] = []
+        do {
+            var start = 0
+            var index = 0
+            while start < cues.count {
+                let count = min(Self.resegmentChunkCues, cues.count - start)
+                chunkRanges.append((index, start, count))
+                start += count
+                index += 1
+            }
+        }
+        var chunkSentences: [Int: [String]] = [:]
+        let maxInFlight = 3
+        try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
+            var nextChunk = 0
+            func scheduleNext() async throws {
+                guard nextChunk < chunkRanges.count else { return }
+                if Task.isCancelled { throw MoongateError.cancelled }
+                let chunk = chunkRanges[nextChunk]
+                nextChunk += 1
+                group.addTask {
+                    (chunk.index, try await self.segmentChunk(cues, start: chunk.start, count: chunk.count, context: context))
+                }
+            }
+            for _ in 0..<min(maxInFlight, chunkRanges.count) {
+                try await scheduleNext()
+            }
+            while let (index, parts) = try await group.next() {
+                chunkSentences[index] = parts
+                try await scheduleNext()
+            }
+        }
         var sentences: [String] = []
-        var start = 0
-        while start < cues.count {
-            let count = min(Self.resegmentChunkCues, cues.count - start)
-            sentences += try await segmentChunk(cues, start: start, count: count, context: context)
-            start += count
+        for index in 0..<chunkRanges.count {
+            sentences += chunkSentences[index] ?? []
         }
 
         // 2) 展平原始 token，并把所有句子的 token 顺序拼接，逐 token 严格对齐。
-        let flat = Self.flattenCueTokens(cues, start: 0, count: cues.count)
+        //    CJK（中日韩，词间无空格）按字符对齐；其它语言按空白切词——否则无空格语言整条
+        //    只算一个 token，模型重新断句后必然对不上而整体回退（这是此前日文重分段不生效的根因）。
+        let cjk = Self.isCJKHeavy(cues)
+        let flat = Self.flattenCueTokens(cues, start: 0, count: cues.count, cjk: cjk)
         var sentenceTokenCounts: [Int] = []
         var alignedNorms: [String] = []
         for sentence in sentences {
-            let toks = Self.alignTokens(sentence)
+            let toks = Self.alignmentUnits(sentence, cjk: cjk)
             sentenceTokenCounts.append(toks.count)
             alignedNorms += toks.map(Self.normalizeAlignToken)
         }

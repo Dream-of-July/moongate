@@ -1005,6 +1005,78 @@ public class ConfiguredTranslatorTests : IDisposable
             i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
     }
 
+    // 8 条逐字、无标点的日文碎句（典型 Whisper 输出，含用户报的「顔 / 洗って」割裂例）。
+    private static List<SubtitleCue> JapaneseAsrCues()
+    {
+        string[] words = ["おはよう", "起きられて", "えらい", "顔", "洗って", "えらい", "テレビ見るのも", "えらい"];
+        return words.Select((t, i) => new SubtitleCue(
+            i + 1, SrtTools.SecondsToSrtTime(i), SrtTools.SecondsToSrtTime(i + 1), t)).ToList();
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_Cjk_AlignsByCharacterAndRebuildsSentences()
+    {
+        // 日文无词间空格：按词对齐必然失败而回退（旧行为）。逐字符对齐后，模型断成完整句且
+        // 字符序列不变 → 对齐通过 → 合并出句子级字幕，时间按字符插值保留。
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply(
+                "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(JapaneseAsrCues(), CancellationToken.None);
+
+        Assert.Equal(4, output.Count);
+        Assert.Equal("00:00:00,000", output[0].Start);
+        Assert.Equal("顔洗ってえらい。", output[2].Text);   // 「顔」与「洗って」并入同一句，不再割裂
+        Assert.Equal("00:00:08,000", output[^1].End);
+    }
+
+    [Fact]
+    public async Task ResegmentForReadability_Cjk_FallsBackWhenCharactersChanged()
+    {
+        // 模型擅自改字（多了「猫」）→ 字符序列对不上 → 原样返回。
+        var input = JapaneseAsrCues();
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("1|おはよう猫。\n2|起きられてえらい。")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(input, CancellationToken.None);
+
+        Assert.Equal(input.Select(c => c.Text), output.Select(c => c.Text));
+    }
+
+    [Fact]
+    public async Task Translate_LocalAsrSource_ResegmentsWithoutSmartAndWritesBack()
+    {
+        // 本地 Whisper 源字幕（.local-asr.ja.srt）即使 smart 关闭也应重分段，并把句子级结果写回源文件。
+        var srt = WriteSrt("clip.local-asr.ja.srt", JapaneseAsrCues());
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                if (RequestSystem(captured.Body).Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|おはよう。\n2|起きられてえらい。\n3|顔洗ってえらい。\n4|テレビ見るのもえらい。"));
+                }
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler); // SmartTranslationPromptsEnabled = false
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var rewrittenSource = SrtTools.ParseSrt(File.ReadAllText(srt));
+        Assert.Equal(4, rewrittenSource.Count);                       // 源 .local-asr.ja.srt 被写回为整句
+        Assert.Equal("顔洗ってえらい。", rewrittenSource[2].Text);
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(4, result.Count);
+    }
+
     private static List<SubtitleCue> MultilineAsrCues() =>
         Enumerable.Range(0, 20)
             .Select(i => new SubtitleCue(
