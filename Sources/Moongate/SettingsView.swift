@@ -214,11 +214,14 @@ struct SettingsView: View {
         .accessibilityValue(pane == .updates && updater.updateAvailable ? localizer.t(L.Update.updateAvailableStatus) : "")
     }
 
-    // 有更新可用的提示：布尔状态用无数字红点，而非数字角标（永远是 "1" 语义不对），与 Windows 更新页角标一致。
+    // 有更新可用：App Store 式红色数字角标（七月明确要求“数字 1 / 类似通知”）。
+    // 布尔“有更新”以 1 表示“一项待处理更新”，与 Windows 更新页角标保持一致。
     private var settingsUpdateBadge: some View {
-        Circle()
-            .fill(.red)
-            .frame(width: 8, height: 8)
+        Text("1")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 16, height: 16)
+            .background(Circle().fill(.red))
             .accessibilityHidden(true)
     }
 

@@ -695,6 +695,240 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void WhisperCppProgressParserOnlyMatchesProgressLinesNotTranscriptText()
+    {
+        // 真实 whisper.cpp 进度行应解析出进度（兼容 `=`/`:` 两种版本分隔符）。
+        var p1 = WhisperCppProgressParser.Parse("whisper_print_progress_callback: progress =  50%");
+        Assert.NotNull(p1);
+        Assert.Equal(50, p1!.CompletedUnits);
+        Assert.Equal(100, p1.TotalUnits);
+        var p2 = WhisperCppProgressParser.Parse("whisper.cpp progress: 25%");
+        Assert.NotNull(p2);
+        Assert.Equal(25, p2!.CompletedUnits);
+        var p3 = WhisperCppProgressParser.Parse("progress = 100%");
+        Assert.NotNull(p3);
+        Assert.Equal(100, p3!.CompletedUnits);
+        // 回归 BUG-B：含 % 但无 “progress” 关键字的转写台词文本不应被误判为进度（否则进度条会随台词来回乱跳）。
+        Assert.Null(WhisperCppProgressParser.Parse("[00:00:01.000 --> 00:00:03.000]  sales were up 50% this year"));
+        Assert.Null(WhisperCppProgressParser.Parse("彼は「100%確実だ」と言った"));
+        Assert.Null(WhisperCppProgressParser.Parse("no percent here"));
+    }
+
+    [Fact]
+    public void WhisperTimingConstantsMatchCrossPlatformFixture()
+    {
+        // ARCH-3：与 Swift 端共享同一份 fixture 作为唯一真值。两端各断言本端常量等于它；
+        // 任一端改动 whisper 时序常量都会让该端失败，强制同步另一端与 fixture，把 parity 从巧合变结构。
+        var path = Path.Combine(RepoRoot(), "Tests", "fixtures", "whisper-timing-constants.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var root = doc.RootElement;
+        Assert.Equal(WhisperCueRetimer.OnsetDelaySeconds, root.GetProperty("onsetDelaySeconds").GetDouble());
+        Assert.Equal(WhisperCueRetimer.InterCueGuardSeconds, root.GetProperty("interCueGuardSeconds").GetDouble());
+        Assert.Equal(WhisperCueRetimer.HoldToNextSeconds, root.GetProperty("holdToNextSeconds").GetDouble());
+        Assert.Equal(WhisperCueRetimer.MixedCjkLatinHoldToNextSeconds, root.GetProperty("mixedCjkLatinHoldToNextSeconds").GetDouble());
+        Assert.Equal(LocalAsrSubtitleTimingPlanner.MinimumCueSeconds, root.GetProperty("minimumCueSeconds").GetDouble());
+
+        // 每个 timing profile 的阈值表也必须等于 fixture 的 profiles 段（ARCH-3，逐档逐字段）。
+        var profiles = root.GetProperty("profiles");
+        static double ProfileValue(JsonElement profiles, string profile, string key) =>
+            // residualMaxStandaloneSeconds 在 speech 档省略，表示无约束（double.MaxValue）。
+            profiles.GetProperty(profile).TryGetProperty(key, out var element)
+                ? element.GetDouble()
+                : double.MaxValue;
+        foreach (var (name, profile) in new[]
+        {
+            ("speech", SubtitleTimingProfile.Speech),
+            ("lyrics", SubtitleTimingProfile.Lyrics),
+            ("anime", SubtitleTimingProfile.Anime),
+        })
+        {
+            var t = LocalAsrSubtitleTimingPlanner.Thresholds(profile);
+            Assert.Equal(ProfileValue(profiles, name, "maximumCJKCueSeconds"), t.MaximumCjkCueSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "hardMaximumCJKCueSeconds"), t.HardMaximumCjkCueSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "relaxedCJKCueSeconds"), t.RelaxedCjkCueSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "maximumLatinCueSeconds"), t.MaximumLatinCueSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "largeSpeechGapSeconds"), t.LargeSpeechGapSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "holdToNextSeconds"), t.HoldToNextSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "residualMaxStandaloneSeconds"), t.ResidualMaxStandaloneSeconds);
+            Assert.Equal(ProfileValue(profiles, name, "breathGapBreakSeconds"), t.BreathGapBreakSeconds);
+        }
+        // speech 档必须等于顶层标量常量（零行为退化的结构保证）。
+        var speech = LocalAsrSubtitleTimingPlanner.Thresholds(SubtitleTimingProfile.Speech);
+        Assert.Equal(WhisperCueRetimer.HoldToNextSeconds, speech.HoldToNextSeconds);
+        Assert.Equal(LocalAsrSubtitleTimingPlanner.MaximumCjkCueSeconds, speech.MaximumCjkCueSeconds);
+        Assert.Equal(LocalAsrSubtitleTimingPlanner.HardMaximumCjkCueSeconds, speech.HardMaximumCjkCueSeconds);
+        Assert.Equal(LocalAsrSubtitleTimingPlanner.RelaxedCjkCueSeconds, speech.RelaxedCjkCueSeconds);
+        Assert.Equal(LocalAsrSubtitleTimingPlanner.MaximumLatinCueSeconds, speech.MaximumLatinCueSeconds);
+    }
+
+    // Identical to Swift cjkBoundaryParityCases — the two platforms must agree on these so the
+    // macOS NaturalLanguage tokenizer and the Windows script-run segmenter never silently diverge.
+    public static readonly (string Text, int Offset, bool Expected)[] CjkBoundaryParityCases =
+    [
+        ("カード", 2, true),
+        ("hello", 2, true),
+        ("1234", 2, true),
+        ("動く", 1, true),
+        ("カードを", 3, false),
+        ("ABC始", 3, false),
+        ("食べた今", 3, false),
+    ];
+
+    [Fact]
+    public void CjkWordBoundaryMatchesParityTable()
+    {
+        foreach (var (text, offset, expected) in CjkBoundaryParityCases)
+        {
+            Assert.Equal(expected, CjkWordBoundary.Straddles(text, offset));
+        }
+    }
+
+    private static SubtitleCue SrtCue(int index, double start, double end, string text) =>
+        new(index, SrtTools.SecondsToSrtTime(start), SrtTools.SecondsToSrtTime(end), text, []);
+
+    [Fact]
+    public void BreathGapBreaksLongRunAtSilence()
+    {
+        // One continuous kana run: every internal junction is mid-word, so without a gap the planner
+        // extends past the soft ceiling to the hard ceiling. A breath gap placed right as the soft
+        // ceiling is crossed anchors the first break there instead (stable-ts breath anchor).
+        static string FirstCueText(bool gapAtJunction)
+        {
+            var frags = new List<SubtitleCueSourceFragment>();
+            var t = 0.0;
+            for (var i = 0; i < 20; i++)
+            {
+                if (gapAtJunction && i == 11) t += 0.5;
+                frags.Add(new SubtitleCueSourceFragment(t, t + 0.4, "あ"));
+                t += 0.4;
+            }
+            var cues = LocalAsrSubtitleTimingPlanner.PlanCues(frags, null, SubtitleTimingProfile.Speech);
+            return cues.Count > 0 ? cues[0].Text : "";
+        }
+        var withGap = FirstCueText(true);
+        var noGap = FirstCueText(false);
+        Assert.NotEmpty(withGap);
+        Assert.NotEmpty(noGap);
+        // With the Windows CJK tokenizer (M5), mid-word junctions extend to the hard ceiling without
+        // a gap; a breath gap anchors the first break earlier at the silence.
+        Assert.True(withGap.Length < noGap.Length, "breath gap should anchor the first break earlier than the hard-ceiling break");
+    }
+
+    [Fact]
+    public void TimingProfileDetectorRoutesByFilenameAndShape()
+    {
+        Assert.Equal(SubtitleTimingProfile.Lyrics, SubtitleTimingProfileDetector.Detect("Artist - Title (Official MV).mp4", []));
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("Some Anime EP.12.mkv", []));
+
+        var lyricCues = new List<SubtitleCue>();
+        var t = 0.0;
+        for (var i = 0; i < 24; i++)
+        {
+            lyricCues.Add(SrtCue(i + 1, t, t + 4.0, $"歌詞のフレーズ {i}"));
+            t += 4.0 + 1.4;
+        }
+        Assert.Equal(SubtitleTimingProfile.Lyrics, SubtitleTimingProfileDetector.Detect("live.mp4", lyricCues));
+
+        var speechCues = new List<SubtitleCue>();
+        t = 0.0;
+        for (var i = 0; i < 24; i++)
+        {
+            speechCues.Add(SrtCue(i + 1, t, t + 3.5, $"This is a full explanatory sentence number {i}."));
+            t += 3.6;
+        }
+        Assert.Equal(SubtitleTimingProfile.Speech, SubtitleTimingProfileDetector.Detect("lecture.mp4", speechCues));
+    }
+
+    [Fact]
+    public void AnimeFilenameHeuristicRequiresDigitAdjacentEpisodeMarkers()
+    {
+        // Strong keywords still route to anime.
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("アニメ OP.mp4", []));
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("新番动画 PV.mp4", []));
+
+        // Digit-adjacent episode markers (incl. fullwidth digits) route to anime.
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("Spy Family 第12話.mkv", []));
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("番剧 第３话.mp4", []));
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("Episode 5 Recap.mkv", []));
+        Assert.Equal(SubtitleTimingProfile.Anime, SubtitleTimingProfileDetector.Detect("show EP.12 highlights.mkv", []));
+
+        // Bare 第 / 话 / 話 without an adjacent number must NOT be treated as anime anymore.
+        Assert.Equal(SubtitleTimingProfile.Speech, SubtitleTimingProfileDetector.Detect("第一财经 产品评测.mp4", []));
+        Assert.Equal(SubtitleTimingProfile.Speech, SubtitleTimingProfileDetector.Detect("今天的话题讨论.mp4", []));
+        // "ep" embedded mid-word must not false-positive on a trailing number.
+        Assert.Equal(SubtitleTimingProfile.Speech, SubtitleTimingProfileDetector.Detect("deep dive 3.mp4", []));
+        Assert.Equal(SubtitleTimingProfile.Speech, SubtitleTimingProfileDetector.Detect("keep calm 2024.mp4", []));
+    }
+
+    [Fact]
+    public void LyricsProfileSplitsTighterThanSpeech()
+    {
+        var words = Enumerable.Range(0, 13)
+            .Select(i => new AsrWord { Text = "うた", StartSeconds = i * 0.4, EndSeconds = i * 0.4 + 0.4 })
+            .ToList();
+        var transcript = new AsrTranscript { Id = "l", LanguageCode = "ja", Words = words, SourceModelId = "whisper.cpp:test" };
+        var speech = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Speech);
+        var lyrics = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Lyrics);
+        // Assert on the actual guarantee — the longest cue duration — which is independent of the
+        // CJK tokenizer parity gap that makes raw cue counts diverge across platforms.
+        static double MaxDuration(IReadOnlyList<SubtitleCue> cues) => cues
+            .Select(c => (SrtTools.SrtTimeToSeconds(c.End) ?? 0) - (SrtTools.SrtTimeToSeconds(c.Start) ?? 0))
+            .DefaultIfEmpty(0)
+            .Max();
+        Assert.True(MaxDuration(lyrics) < MaxDuration(speech), "lyrics profile should cap cues shorter than speech");
+    }
+
+    [Fact]
+    public void LyricsProfileCapsResidualStandaloneCue()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "r",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "うた。", StartSeconds = 0.0, EndSeconds = 1.0 },
+                new AsrWord { Text = "ね", StartSeconds = 10.0, EndSeconds = 15.0 },
+                new AsrWord { Text = "そら。", StartSeconds = 30.0, EndSeconds = 31.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var speech = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Speech);
+        var lyrics = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.Lyrics);
+        static double? StandaloneDuration(IReadOnlyList<SubtitleCue> cues)
+        {
+            foreach (var cue in cues.Where(c => c.Text == "ね"))
+            {
+                var start = SrtTools.SrtTimeToSeconds(cue.Start);
+                var end = SrtTools.SrtTimeToSeconds(cue.End);
+                if (start is not null && end is not null) return end.Value - start.Value;
+            }
+            return null;
+        }
+        var speechDur = StandaloneDuration(speech);
+        var lyricsDur = StandaloneDuration(lyrics);
+        Assert.NotNull(speechDur);
+        Assert.NotNull(lyricsDur);
+        Assert.True(lyricsDur!.Value <= 0.8 + 0.001, "residual cue must be capped under lyrics profile");
+        Assert.True(speechDur!.Value > lyricsDur.Value, "speech profile allows a longer standalone hold than lyrics");
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Package.swift"))
+                && Directory.Exists(Path.Combine(dir.FullName, "windows")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate repository root.");
+    }
+
+    [Fact]
     public void WhisperCppCommandPlanUsesJsonFullLanguagePromptAndProgress()
     {
         var runtime = new AsrRuntimeInfo { ExecutablePath = "/opt/moongate/whisper-cli" };
@@ -1061,6 +1295,45 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerSuppressesMixedScriptJapaneseLoopHallucinations()
+    {
+        var words = new List<AsrWord>
+        {
+            new() { Text = "おはよう", StartSeconds = 178.0, EndSeconds = 178.6 },
+        };
+        var loopTokens = new[] { "今日", "も", "花丸", "スタンプ" };
+        for (var repeatIndex = 0; repeatIndex < 10; repeatIndex++)
+        {
+            var baseTime = 181.0 + repeatIndex * 0.04;
+            for (var tokenIndex = 0; tokenIndex < loopTokens.Length; tokenIndex++)
+            {
+                var start = baseTime + tokenIndex * 0.01;
+                words.Add(new AsrWord
+                {
+                    Text = loopTokens[tokenIndex],
+                    StartSeconds = start,
+                    EndSeconds = start + 0.05,
+                });
+            }
+        }
+        words.Add(new AsrWord { Text = "またね", StartSeconds = 205.0, EndSeconds = 205.7 });
+        var transcript = new AsrTranscript
+        {
+            Id = "mixed-script-japanese-loop",
+            LanguageCode = "ja",
+            Words = words,
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var joined = string.Join(' ', AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+        var loopCount = joined.Split("今日も花丸スタンプ", StringSplitOptions.None).Length - 1;
+
+        Assert.Contains("おはよう", joined, StringComparison.Ordinal);
+        Assert.Contains("またね", joined, StringComparison.Ordinal);
+        Assert.True(loopCount <= 1, "mixed kanji/kana/katakana hallucination loop should be fused");
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerAvoidsWeakLatinBoundaries()
     {
         var transcript = new AsrTranscript
@@ -1083,6 +1356,48 @@ public class AsrContractsTests
 
         Assert.Equal(["This is the ship we need."], cues.Select(cue => cue.Text).ToArray());
         Assert.DoesNotContain(cues, cue => cue.Text.EndsWith(" the", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerKeepsSpacesBetweenEnglishPronounPhrases()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "english-pronoun-spacing",
+            LanguageCode = "en",
+            Words =
+            [
+                new AsrWord { Text = "I", StartSeconds = 0.0, EndSeconds = 0.1 },
+                new AsrWord { Text = "have", StartSeconds = 0.1, EndSeconds = 0.35 },
+                new AsrWord { Text = "ideas.", StartSeconds = 0.35, EndSeconds = 0.6 },
+                new AsrWord { Text = "I", StartSeconds = 0.7, EndSeconds = 0.8 },
+                new AsrWord { Text = "find", StartSeconds = 0.8, EndSeconds = 1.05 },
+                new AsrWord { Text = "patterns.", StartSeconds = 1.05, EndSeconds = 1.35 },
+                new AsrWord { Text = "I", StartSeconds = 1.45, EndSeconds = 1.55 },
+                new AsrWord { Text = "think", StartSeconds = 1.55, EndSeconds = 1.8 },
+                new AsrWord { Text = "fast.", StartSeconds = 1.8, EndSeconds = 2.05 },
+                new AsrWord { Text = "Am", StartSeconds = 2.15, EndSeconds = 2.35 },
+                new AsrWord { Text = "I", StartSeconds = 2.35, EndSeconds = 2.45 },
+                new AsrWord { Text = "right?", StartSeconds = 2.45, EndSeconds = 2.8 },
+                new AsrWord { Text = "I", StartSeconds = 2.9, EndSeconds = 3.0 },
+                new AsrWord { Text = "'m", StartSeconds = 3.0, EndSeconds = 3.12 },
+                new AsrWord { Text = "ready.", StartSeconds = 3.12, EndSeconds = 3.4 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("I have", text, StringComparison.Ordinal);
+        Assert.Contains("I find", text, StringComparison.Ordinal);
+        Assert.Contains("I think", text, StringComparison.Ordinal);
+        Assert.Contains("Am I right?", text, StringComparison.Ordinal);
+        Assert.Contains("I'm ready.", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ihave", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ifind", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ithink", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Iright", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("I 'm", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1195,6 +1510,62 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerRejoinsItalianGermanFrenchSubwords()
+    {
+        // M4: università (ità), abandonné (né), gemütlich (lich) sub-word splits must rejoin.
+        var transcript = new AsrTranscript
+        {
+            Id = "itdefr-subwords",
+            LanguageCode = "it",
+            Words =
+            [
+                new AsrWord { Text = "la", StartSeconds = 0.0, EndSeconds = 0.15 },
+                new AsrWord { Text = "univers", StartSeconds = 0.15, EndSeconds = 0.45 },
+                new AsrWord { Text = "ità", StartSeconds = 0.45, EndSeconds = 0.7 },
+                new AsrWord { Text = "è", StartSeconds = 0.7, EndSeconds = 0.8 },
+                new AsrWord { Text = "abandon", StartSeconds = 0.8, EndSeconds = 1.1 },
+                new AsrWord { Text = "né", StartSeconds = 1.1, EndSeconds = 1.3 },
+                new AsrWord { Text = "und", StartSeconds = 1.3, EndSeconds = 1.45 },
+                new AsrWord { Text = "gemüt", StartSeconds = 1.45, EndSeconds = 1.7 },
+                new AsrWord { Text = "lich", StartSeconds = 1.7, EndSeconds = 1.95 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(c => c.Text));
+        Assert.Contains("università", text, StringComparison.Ordinal);
+        Assert.Contains("abandonné", text, StringComparison.Ordinal);
+        Assert.Contains("gemütlich", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("univers ità", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("abandon né", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("gemüt lich", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void KoreanParticleNeverStartsLine()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "ko-particle",
+            LanguageCode = "ko",
+            Words =
+            [
+                new AsrWord { Text = "학교", StartSeconds = 0.0, EndSeconds = 0.5 },
+                new AsrWord { Text = "에서", StartSeconds = 0.52, EndSeconds = 0.8 },
+                new AsrWord { Text = "공부", StartSeconds = 0.82, EndSeconds = 1.2 },
+                new AsrWord { Text = "를", StartSeconds = 1.22, EndSeconds = 1.4 },
+                new AsrWord { Text = "합니다", StartSeconds = 1.42, EndSeconds = 2.0 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+        foreach (var cue in AsrTranscriptMapper.SourceCues(transcript))
+        {
+            var trimmed = cue.Text.Trim();
+            Assert.False(trimmed.StartsWith("에서", StringComparison.Ordinal), $"line must not start with a bare josa: {trimmed}");
+            Assert.False(trimmed.StartsWith("를", StringComparison.Ordinal), $"line must not start with a bare josa: {trimmed}");
+        }
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerAbsorbsJapaneseOrphanFragmentsAcrossSoftCaps()
     {
         var transcript = new AsrTranscript
@@ -1226,6 +1597,30 @@ public class AsrContractsTests
         Assert.Contains(texts, text => text.Contains("顔洗って", StringComparison.Ordinal));
         Assert.DoesNotContain("う", texts);
         Assert.Contains(texts, text => text.Contains("コウペンちゃう", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalAsrTimingPlannerAvoidsLeadingJapaneseContinuationAfterHardCap()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "japanese-continuation-hard-cap",
+            LanguageCode = "ja",
+            Words =
+            [
+                new AsrWord { Text = "好きなものを", StartSeconds = 0.0, EndSeconds = 1.6 },
+                new AsrWord { Text = "好きだと", StartSeconds = 1.6, EndSeconds = 3.0 },
+                new AsrWord { Text = "言うのが怖く", StartSeconds = 3.0, EndSeconds = 5.4 },
+                new AsrWord { Text = "て", StartSeconds = 5.4, EndSeconds = 5.8 },
+                new AsrWord { Text = "仕方ない", StartSeconds = 5.8, EndSeconds = 6.2 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var texts = AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text).ToArray();
+
+        Assert.DoesNotContain(texts, text => text.StartsWith("て", StringComparison.Ordinal));
+        Assert.Contains(texts, text => text.Contains("怖くて仕方ない", StringComparison.Ordinal));
     }
 
     [Fact]

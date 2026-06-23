@@ -165,6 +165,27 @@ public class ReleaseSurfaceTests
     }
 
     [Fact]
+    public void WindowsUpdateInstallsSilentlyAndAutoRestartsAfterOverwrite()
+    {
+        var installer = Read("windows", "installer", "installer.nsi");
+        var updateService = Read("windows", "MoongateApp", "UpdateService.cs");
+
+        // App 触发的自动更新走静默安装（用户无需再点一遍安装向导）并带上当前 PID。
+        Assert.Contains("/S /UPDATEPID=", updateService);
+        // 安装器把「带 /UPDATEPID」记为更新安装，安装成功后在静默模式下自动重启 App（自动覆盖并重启）。
+        Assert.Contains("Var UpdateRelaunch", installer);
+        Assert.Contains("StrCpy $UpdateRelaunch \"1\"", installer);
+        Assert.Contains("Function .onInstSuccess", installer);
+        Assert.Contains("${If} $UpdateRelaunch == \"1\"", installer);
+        Assert.Contains("${AndIf} ${Silent}", installer);
+        Assert.Contains("Exec '\"$INSTDIR\\${EXENAME}\"'", installer);
+        // UpdateRelaunch 仅在 /UPDATEPID 分支内置位：普通交互安装不自动重启（避免与 MUI_FINISHPAGE_RUN 双启动）。
+        var updatePidBranch = installer.IndexOf("${GetOptions} $R0 \"/UPDATEPID=\" $R1", StringComparison.Ordinal);
+        var relaunchSet = installer.IndexOf("StrCpy $UpdateRelaunch \"1\"", StringComparison.Ordinal);
+        Assert.True(updatePidBranch >= 0 && relaunchSet > updatePidBranch);
+    }
+
+    [Fact]
     public void ContinuousCiCoversPrPushSwiftWindowsAndSubtitleEvalWithoutAsrModelDownloads()
     {
         var workflow = Read(".github", "workflows", "ci.yml");

@@ -10,6 +10,47 @@ using System.Text.RegularExpressions;
 
 namespace Moongate.Core;
 
+/// <summary>
+/// CJK word-boundary lookup for Windows. .NET ships no morphological tokenizer like macOS
+/// NaturalLanguage, so this uses a deterministic same-script-run segmenter: a cut straddles a word
+/// when both sides belong to the same word-forming script (Latin / digits / Katakana / Hiragana /
+/// Han), plus the kanji→okurigana (Han→Hiragana) case. This covers the dominant mid-word-cut
+/// artifacts (within カード / within a latin word / 動く okurigana). For the script-run cases it
+/// agrees with macOS NLTokenizer, which a cross-platform parity test asserts on a curated input set.
+/// </summary>
+public static class CjkWordBoundary
+{
+    private enum ScriptClass { Other, Latin, Digit, Hiragana, Katakana, Han, Hangul }
+
+    private static ScriptClass Classify(char c)
+    {
+        if (c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z')) return ScriptClass.Latin;
+        if (c is >= '0' and <= '9') return ScriptClass.Digit;
+        int v = c;
+        if (v is >= 0x3040 and <= 0x309F) return ScriptClass.Hiragana;
+        if (v is >= 0x30A0 and <= 0x30FF) return ScriptClass.Katakana;
+        if (v is >= 0x4E00 and <= 0x9FFF) return ScriptClass.Han;
+        if (v is >= 0xAC00 and <= 0xD7A3) return ScriptClass.Hangul;
+        return ScriptClass.Other;
+    }
+
+    /// <summary>
+    /// True when <paramref name="charOffset"/> falls strictly inside a word (breaking there would
+    /// cut a word in half). False at real word boundaries / gaps. Mirrors Swift CJKWordBoundary.straddles.
+    /// </summary>
+    public static bool Straddles(string text, int charOffset)
+    {
+        if (charOffset <= 0 || charOffset >= text.Length) return false;
+        var left = Classify(text[charOffset - 1]);
+        var right = Classify(text[charOffset]);
+        if (left == ScriptClass.Other || right == ScriptClass.Other) return false;
+        if (left == right) return true;
+        // Okurigana: a kanji stem followed by its hiragana inflection is one word (動く, 食べる).
+        if (left == ScriptClass.Han && right == ScriptClass.Hiragana) return true;
+        return false;
+    }
+}
+
 public static class AsrJson
 {
     public static JsonSerializerOptions Options { get; } = CreateOptions();
@@ -28,6 +69,9 @@ public sealed record AsrRequest
     public string? LanguageCode { get; init; }
     public required string ModelId { get; init; }
     public string? Prompt { get; init; }
+    /// <summary>保留 / 暂未接通：whisper.cpp <c>--vad</c> 需要单独的 Silero VAD 模型，Moongate 尚未随包分发，
+    /// 因此 <see cref="WhisperCppCommandPlan"/> 刻意不发 <c>--vad</c>（见 forced-alignment ExecPlan 的推迟决定）。
+    /// 字段保留在请求契约里，以便日后无 wire 改动地启用；当前对 argv 无任何影响。</summary>
     public bool VadEnabled { get; init; } = true;
     public bool WordTimestamps { get; init; } = true;
     /// <summary>
@@ -505,10 +549,24 @@ public static class AsrTranscriptMapper
             .Select(word => new SubtitleCueSourceFragment(word.StartSeconds, word.EndSeconds, word.Text))
             .ToList();
 
-    public static IReadOnlyList<SubtitleCue> SourceCues(AsrTranscript transcript) =>
+    public static IReadOnlyList<SubtitleCue> SourceCues(
+        AsrTranscript transcript,
+        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech) =>
         WhisperCueRetimer.Retime(
-            LocalAsrSubtitleTimingPlanner.PlanCues(SourceFragments(transcript), transcript.DurationSeconds),
-            transcript.DurationSeconds);
+            LocalAsrSubtitleTimingPlanner.PlanCues(SourceFragments(transcript), transcript.DurationSeconds, profile),
+            transcript.DurationSeconds,
+            profile);
+
+    /// <summary>
+    /// Detect the content-type timing profile from the filename and a first-pass (Speech) cue
+    /// shape, then re-plan with the matching profile. Mirrors Swift sourceCues(from:fileName:).
+    /// </summary>
+    public static IReadOnlyList<SubtitleCue> SourceCues(AsrTranscript transcript, string fileName)
+    {
+        var speechCues = SourceCues(transcript, SubtitleTimingProfile.Speech);
+        var profile = SubtitleTimingProfileDetector.Detect(fileName, speechCues);
+        return profile == SubtitleTimingProfile.Speech ? speechCues : SourceCues(transcript, profile);
+    }
 
     public static string LocalAsrSourceSrtPath(string videoFile, string languageCode)
     {
@@ -520,7 +578,7 @@ public static class AsrTranscriptMapper
 
     public static string WriteLocalAsrSourceSrt(AsrTranscript transcript, string videoFile)
     {
-        var cues = SourceCues(transcript);
+        var cues = SourceCues(transcript, Path.GetFileName(videoFile));
         if (cues.Count == 0)
         {
             throw new WhisperCppRecognizerException(WhisperCppRecognizerError.EmptyTranscript);
@@ -539,6 +597,166 @@ public static class AsrTranscriptMapper
 
 }
 
+/// <summary>
+/// Content-type timing profile. Local-ASR subtitles for a lecture, a song, and an anime need
+/// different regroup ceilings, break gaps, and hold-to-next behaviour. The profile is detected once
+/// (filename + cue shape, see Translator.DetectTimingProfile) and threaded through all three timing
+/// layers. <c>Speech</c> reproduces the pre-profile behaviour exactly. Mirrors Swift SubtitleTimingProfile.
+/// </summary>
+public enum SubtitleTimingProfile
+{
+    Speech,
+    Lyrics,
+    Anime,
+}
+
+/// <summary>
+/// Detects the content-type timing profile from a filename and first-pass cue shape. Pure and
+/// deterministic so it is unit-testable and mirrored 1:1 in Swift SubtitleTimingProfileDetector.
+/// </summary>
+public static class SubtitleTimingProfileDetector
+{
+    private static readonly string[] LyricsFilenameKeywords =
+    [
+        "official music video", "music video", "official mv", " mv ",
+        "lyrics", "lyric", "song", "cover", "歌ってみた", "歌詞", "字幕版", "mv)",
+    ];
+    private static readonly string[] AnimeFilenameKeywords =
+    [
+        "anime", "アニメ", "动画", "動畫", "ova",
+    ];
+    private static readonly HashSet<char> SentenceEnders = ['.', '!', '?', '。', '！', '？'];
+
+    private static bool IsEpisodeDigit(char c) =>
+        c is >= '0' and <= '9' || c is >= '０' and <= '９'; // 半角 + 全角数字
+
+    private static bool IsAsciiLetter(char c) => c is >= 'a' and <= 'z'; // lower 已小写
+
+    /// <summary>
+    /// 仅在数字邻接时才把分集标记当动漫信号，避免裸「第/话/episode」把任意标题误判成动漫。
+    /// 命中：第&lt;数字&gt;话 / 第&lt;数字&gt;話 / episode&lt;可选分隔&gt;&lt;数字&gt; / ep&lt;可选 .或空格&gt;&lt;数字&gt;（含全角数字）。
+    /// 纯字符扫描、无正则，与 Swift containsEpisodeMarker 逐字符一致镜像。<paramref name="lower"/> 须为已小写的文件名。
+    /// </summary>
+    internal static bool ContainsEpisodeMarker(string lower)
+    {
+        var n = lower.Length;
+        for (var i = 0; i < n; i++)
+        {
+            var c = lower[i];
+            // 第<数字>(话|話)
+            if (c == '第')
+            {
+                var j = i + 1;
+                var sawDigit = false;
+                while (j < n && IsEpisodeDigit(lower[j])) { sawDigit = true; j++; }
+                if (sawDigit && j < n && (lower[j] == '话' || lower[j] == '話')) return true;
+            }
+            // 词边界处的 ep / episode，后跟可选 '.'/' ' 再接数字。
+            if (c == 'e' && (i == 0 || !IsAsciiLetter(lower[i - 1])))
+            {
+                var markerLen = 0;
+                if (Matches(lower, i, "episode")) markerLen = 7;
+                else if (Matches(lower, i, "ep")) markerLen = 2;
+                if (markerLen > 0)
+                {
+                    var k = i + markerLen;
+                    while (k < n && (lower[k] == '.' || lower[k] == ' ')) k++;
+                    if (k < n && IsEpisodeDigit(lower[k])) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool Matches(string s, int index, string word)
+    {
+        if (index + word.Length > s.Length) return false;
+        for (var offset = 0; offset < word.Length; offset++)
+        {
+            if (s[index + offset] != word[offset]) return false;
+        }
+        return true;
+    }
+
+    public static SubtitleTimingProfile Detect(string fileName, IReadOnlyList<SubtitleCue> cues)
+    {
+        var lower = fileName.ToLowerInvariant();
+        if (LyricsFilenameKeywords.Any(lower.Contains)) return SubtitleTimingProfile.Lyrics;
+        if (cues.Count < 20)
+        {
+            return AnimeFilenameKeywords.Any(lower.Contains) || ContainsEpisodeMarker(lower)
+                ? SubtitleTimingProfile.Anime : SubtitleTimingProfile.Speech;
+        }
+
+        var durations = new List<double>();
+        var largeGaps = 0;
+        var shortCues = 0;
+        var cjkChars = 0;
+        var totalChars = 0;
+        var punctuated = 0;
+        double? previousEnd = null;
+        foreach (var cue in cues)
+        {
+            var trimmed = cue.Text.Trim();
+            if (trimmed.Length > 0 && SentenceEnders.Contains(trimmed[^1])) punctuated++;
+            foreach (var ch in trimmed)
+            {
+                if (!char.IsWhiteSpace(ch)) totalChars++;
+                int value = ch;
+                if ((value >= 0x3040 && value <= 0x30FF)
+                    || (value >= 0x4E00 && value <= 0x9FFF)
+                    || (value >= 0xAC00 && value <= 0xD7A3))
+                {
+                    cjkChars++;
+                }
+            }
+            var start = SrtTools.SrtTimeToSeconds(cue.Start);
+            var end = SrtTools.SrtTimeToSeconds(cue.End);
+            if (start is null || end is null || end.Value <= start.Value) continue;
+            var duration = end.Value - start.Value;
+            durations.Add(duration);
+            if (duration <= 1.5) shortCues++;
+            if (previousEnd is { } prev && start.Value - prev >= 1.2) largeGaps++;
+            previousEnd = end.Value;
+        }
+        if (durations.Count == 0) return SubtitleTimingProfile.Speech;
+        var punctuatedRatio = (double)punctuated / cues.Count;
+        var average = durations.Sum() / durations.Count;
+
+        // Lyrics: few sentence-final punctuation marks, medium-length lines, frequent silent gaps
+        // between phrases (the shape of a sung verse) — matches Translator.LooksLikeLocalAsrLyrics.
+        if (punctuatedRatio < 0.2 && average >= 3.0 && average <= 5.8 && largeGaps >= 2)
+        {
+            return SubtitleTimingProfile.Lyrics;
+        }
+
+        var cjkRatio = totalChars > 0 ? (double)cjkChars / totalChars : 0;
+        var shortRatio = (double)shortCues / cues.Count;
+        if (AnimeFilenameKeywords.Any(lower.Contains) || ContainsEpisodeMarker(lower)) return SubtitleTimingProfile.Anime;
+        if (cjkRatio >= 0.5 && shortRatio >= 0.45 && punctuatedRatio < 0.35)
+        {
+            return SubtitleTimingProfile.Anime;
+        }
+        return SubtitleTimingProfile.Speech;
+    }
+}
+
+/// <summary>
+/// Per-profile regroup/timing thresholds. The single cross-platform source of truth for the
+/// differentiated values is Tests/fixtures/whisper-timing-constants.json (profiles section); the
+/// Swift and C# threshold tables are each asserted equal to it (ARCH-3 parity). Mirrors Swift
+/// SubtitleTimingThresholds.
+/// </summary>
+public readonly record struct SubtitleTimingThresholds(
+    double MaximumCjkCueSeconds,
+    double HardMaximumCjkCueSeconds,
+    double RelaxedCjkCueSeconds,
+    double MaximumLatinCueSeconds,
+    double LargeSpeechGapSeconds,
+    double HoldToNextSeconds,
+    double ResidualMaxStandaloneSeconds,
+    double BreathGapBreakSeconds);
+
 public static partial class LocalAsrSubtitleTimingPlanner
 {
     internal const double MinimumCueSeconds = 0.3;
@@ -554,6 +772,41 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private const int RelaxedShortMergeMaxCjkUnits = 34;
     private const int MaximumLatinTokens = 14;
     private const double LargeSpeechGapSeconds = 0.65;
+
+    // Per-profile thresholds. `Speech` reproduces the standalone constants above exactly (zero
+    // behaviour change for the default path); `Lyrics` / `Anime` tighten ceilings and break gaps
+    // for song lines and short anime reactions. Mirrors Swift LocalASRSubtitleTimingPlanner and
+    // asserted against Tests/fixtures/whisper-timing-constants.json (profiles section).
+    internal static SubtitleTimingThresholds Thresholds(SubtitleTimingProfile profile) => profile switch
+    {
+        SubtitleTimingProfile.Lyrics => new SubtitleTimingThresholds(
+            MaximumCjkCueSeconds: 3.0,
+            HardMaximumCjkCueSeconds: 4.0,
+            RelaxedCjkCueSeconds: 4.5,
+            MaximumLatinCueSeconds: 5.0,
+            LargeSpeechGapSeconds: 0.45,
+            HoldToNextSeconds: 0.35,
+            ResidualMaxStandaloneSeconds: 0.8,
+            BreathGapBreakSeconds: 0.25),
+        SubtitleTimingProfile.Anime => new SubtitleTimingThresholds(
+            MaximumCjkCueSeconds: 3.5,
+            HardMaximumCjkCueSeconds: 5.0,
+            RelaxedCjkCueSeconds: 5.5,
+            MaximumLatinCueSeconds: 7.0,
+            LargeSpeechGapSeconds: 0.55,
+            HoldToNextSeconds: 0.5,
+            ResidualMaxStandaloneSeconds: 1.2,
+            BreathGapBreakSeconds: 0.3),
+        _ => new SubtitleTimingThresholds(
+            MaximumCjkCueSeconds: MaximumCjkCueSeconds,
+            HardMaximumCjkCueSeconds: HardMaximumCjkCueSeconds,
+            RelaxedCjkCueSeconds: RelaxedCjkCueSeconds,
+            MaximumLatinCueSeconds: MaximumLatinCueSeconds,
+            LargeSpeechGapSeconds: LargeSpeechGapSeconds,
+            HoldToNextSeconds: WhisperCueRetimer.HoldToNextSeconds,
+            ResidualMaxStandaloneSeconds: double.MaxValue,
+            BreathGapBreakSeconds: 0.35),
+    };
     private static readonly HashSet<string> LatinContinuationSuffixes =
     [
         "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
@@ -565,14 +818,19 @@ public static partial class LocalAsrSubtitleTimingPlanner
         "mente", "mento", "miento", "amiento", "zione", "zioni", "ient", "aient",
         "lich", "chen", "en", "ern", "ung", "ungen", "heit", "keit",
         "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache", "ne", "wich",
+        "ità", "tà", "né", "nné", "rsità",
     ];
     private static readonly HashSet<string> ShortLatinContinuationSuffixes =
     [
-        "ne", "ês",
+        "ne", "ês", "né", "tà",
     ];
     private static readonly HashSet<string> LatinBridgeFragments =
     [
         "la", "le", "li", "lo",
+    ];
+    private static readonly HashSet<string> LatinBridgeTailSuffixes =
+    [
+        "ient", "aient",
     ];
     private static readonly HashSet<string> StrongLatinContinuationSuffixes =
     [
@@ -612,7 +870,8 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private const int JapaneseLoopMaxPhraseFragments = 12;
     private const int JapaneseLoopMinRepeatCount = 4;
     private const int JapaneseLoopAllowedRepeats = 1;
-    private const double JapaneseLoopMaxOccurrenceGapSeconds = 3.0;
+    private const double JapaneseLoopMaxPhraseSpanSeconds = 3.0;
+    private const double JapaneseLoopMaxOccurrenceGapSeconds = 0.8;
     private const double JapaneseLoopFuseSeconds = 90.0;
 
     // A cue with at most this many visible characters is too short to stand alone (lone 「顔」/「ね」)
@@ -633,8 +892,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     public static IReadOnlyList<SubtitleCue> PlanCues(
         IReadOnlyList<SubtitleCueSourceFragment> fragments,
-        double? transcriptDurationSeconds = null)
+        double? transcriptDurationSeconds = null,
+        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech)
     {
+        var thresholds = Thresholds(profile);
         var loopSuppressed = SuppressRepeatedJapaneseLoopFragments(fragments
             .Where(ShouldKeep)
             .ToList());
@@ -661,7 +922,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
                 var previous = current[^1];
                 var candidate = current.Append(fragment).ToList();
                 var gap = fragment.StartSeconds - previous.EndSeconds;
-                if (ShouldBreak(fragment, current, candidate, gap))
+                if (ShouldBreak(fragment, current, candidate, gap, thresholds))
                 {
                     FlushCurrent();
                 }
@@ -674,12 +935,12 @@ public static partial class LocalAsrSubtitleTimingPlanner
             }
         }
         FlushCurrent();
-        groups = MergeShortGroups(groups);
+        groups = MergeShortGroups(groups, thresholds);
 
         var cues = new List<SubtitleCue>();
         for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
         {
-            if (MakeCue(cues.Count + 1, groups[groupIndex], transcriptDurationSeconds) is { } cue)
+            if (MakeCue(cues.Count + 1, groups[groupIndex], transcriptDurationSeconds, thresholds) is { } cue)
             {
                 cues.Add(cue);
             }
@@ -856,7 +1117,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             return null;
         }
         var span = fragments[index + length - 1].EndSeconds - fragments[index].StartSeconds;
-        if (span > JapaneseLoopMaxOccurrenceGapSeconds) return null;
+        if (span > JapaneseLoopMaxPhraseSpanSeconds) return null;
 
         var builder = new StringBuilder();
         for (var i = index; i < index + length; i++)
@@ -866,7 +1127,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
         var signature = builder.ToString();
         return signature.Length >= JapaneseLoopMinPhraseFragments
             && signature.Length <= 16
-            && IsHiraganaLoopText(signature)
+            && IsJapaneseLoopSignatureText(signature)
             && signature.Distinct().Count() > 1
             ? signature
             : null;
@@ -877,7 +1138,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
         var builder = new StringBuilder();
         foreach (var ch in text)
         {
-            if (ch is >= '\u3040' and <= '\u309F')
+            if (IsJapaneseLoopSignatureChar(ch))
             {
                 builder.Append(ch);
             }
@@ -889,17 +1150,23 @@ public static partial class LocalAsrSubtitleTimingPlanner
     {
         var normalized = NormalizedJapaneseLoopText(text);
         return normalized.Length > 0
-            && IsHiraganaLoopText(normalized)
+            && IsJapaneseLoopSignatureText(normalized)
             && normalized.All(characters.Contains);
     }
 
-    private static bool IsHiraganaLoopText(string text) =>
-        text.All(ch => ch is >= '\u3040' and <= '\u309F');
+    private static bool IsJapaneseLoopSignatureText(string text) =>
+        text.All(IsJapaneseLoopSignatureChar);
+
+    private static bool IsJapaneseLoopSignatureChar(char ch) =>
+        ch is >= '\u3040' and <= '\u309F'
+        || ch is >= '\u30A0' and <= '\u30FF'
+        || ch is >= '\u4E00' and <= '\u9FFF';
 
     // Merge lone, too-short groups into the temporally-closest neighbour (avoids jarring 1-char
     // cues like 「顔」 separated from 「洗って」). Mirrors the Swift MergeShortGroups.
     private static List<List<SubtitleCueSourceFragment>> MergeShortGroups(
-        List<List<SubtitleCueSourceFragment>> groups)
+        List<List<SubtitleCueSourceFragment>> groups,
+        SubtitleTimingThresholds thresholds)
     {
         if (groups.Count <= 1) return groups;
         var result = new List<List<SubtitleCueSourceFragment>>();
@@ -914,7 +1181,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
                 var leading = new List<SubtitleCueSourceFragment> { group[0] };
                 var gapPrev = leading[0].StartSeconds - result[^1][^1].EndSeconds;
                 if (gapPrev <= LoneMergeMaxGapSeconds
-                    && FitsMergedCue([.. result[^1], .. leading], leading))
+                    && FitsMergedCue([.. result[^1], .. leading], thresholds, leading))
                 {
                     result[^1] = [.. result[^1], .. leading];
                     group = group.Skip(1).ToList();
@@ -934,10 +1201,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
                     : double.MaxValue;
                 var canMergePrevious = gapPrev <= LoneMergeMaxGapSeconds
                     && result.Count > 0
-                    && FitsMergedCue([.. result[^1], .. group], group);
+                    && FitsMergedCue([.. result[^1], .. group], thresholds, group);
                 var canMergeNext = gapNext <= LoneMergeMaxGapSeconds
                     && nextGroup is not null
-                    && FitsMergedCue([.. group, .. nextGroup], group);
+                    && FitsMergedCue([.. group, .. nextGroup], thresholds, group);
 
                 if (ShouldPreferNextMerge(text) && canMergeNext && nextGroup is not null)
                 {
@@ -973,6 +1240,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
 
     private static bool FitsMergedCue(
         IReadOnlyList<SubtitleCueSourceFragment> fragments,
+        SubtitleTimingThresholds thresholds,
         IReadOnlyList<SubtitleCueSourceFragment>? absorbingShortGroup = null)
     {
         if (fragments.Count == 0) return false;
@@ -981,7 +1249,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
         if (SubtitleTimingPlanner.ContainsCjkText(text))
         {
             var units = SubtitleTimingPlanner.TimingTokens(text).Count;
-            if (duration <= HardMaximumCjkCueSeconds && units <= HardMaximumCjkUnits)
+            if (duration <= thresholds.HardMaximumCjkCueSeconds && units <= HardMaximumCjkUnits)
             {
                 return true;
             }
@@ -989,27 +1257,42 @@ public static partial class LocalAsrSubtitleTimingPlanner
             {
                 return false;
             }
-            return duration <= RelaxedCjkCueSeconds
+            return duration <= thresholds.RelaxedCjkCueSeconds
                 && units <= RelaxedShortMergeMaxCjkUnits;
         }
-        return duration <= MaximumLatinCueSeconds;
+        return duration <= thresholds.MaximumLatinCueSeconds;
     }
 
-    internal static double MaximumCueSecondsFor(string text)
+    internal static double MaximumCueSecondsFor(string text) =>
+        MaximumCueSecondsFor(text, Thresholds(SubtitleTimingProfile.Speech));
+
+    internal static double MaximumCueSecondsFor(string text, SubtitleTimingThresholds thresholds)
     {
         if (IsShortStandaloneCjkCueText(text))
         {
-            return ShortStandaloneCjkCueSeconds;
+            // Lyrics/anime profiles cap a lone residual char tighter so a stray 「っ」/「ー」/「顔」
+            // cannot linger; Speech keeps the 2.4s standalone cap (residual cap is double.MaxValue).
+            return Math.Min(ShortStandaloneCjkCueSeconds, thresholds.ResidualMaxStandaloneSeconds);
         }
-        return SubtitleTimingPlanner.ContainsCjkText(text) ? HardMaximumCjkCueSeconds : MaximumLatinCueSeconds;
+        return SubtitleTimingPlanner.ContainsCjkText(text) ? thresholds.HardMaximumCjkCueSeconds : thresholds.MaximumLatinCueSeconds;
     }
 
-    internal static double MaximumCueSecondsFor(string text, double start, double lastTokenEnd)
+    internal static double MaximumCueSecondsFor(string text, double start, double lastTokenEnd) =>
+        MaximumCueSecondsFor(text, start, lastTokenEnd, Thresholds(SubtitleTimingProfile.Speech));
+
+    internal static double MaximumCueSecondsFor(string text, double start, double lastTokenEnd, SubtitleTimingThresholds thresholds)
     {
-        var cap = MaximumCueSecondsFor(text);
+        var cap = MaximumCueSecondsFor(text, thresholds);
+        // A short standalone residual keeps its tightened cap when the profile constrains residuals
+        // (Lyrics/Anime). Speech leaves residuals unconstrained, so its long-run bump below is
+        // unchanged — zero behaviour change for the default path.
+        if (IsShortStandaloneCjkCueText(text) && thresholds.ResidualMaxStandaloneSeconds < double.MaxValue)
+        {
+            return cap;
+        }
         if (SubtitleTimingPlanner.ContainsCjkText(text) && lastTokenEnd > start + cap)
         {
-            cap = Math.Max(cap, Math.Min(lastTokenEnd - start, RelaxedCjkCueSeconds));
+            cap = Math.Max(cap, Math.Min(lastTokenEnd - start, thresholds.RelaxedCjkCueSeconds));
         }
         return cap;
     }
@@ -1039,8 +1322,21 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private static bool StartsWithLeadingProhibited(string text)
     {
         var trimmed = text.Trim();
-        return trimmed.Length > 0 && CjkLeadingProhibited.Contains(trimmed[0]);
+        if (trimmed.Length == 0) return false;
+        if (CjkLeadingProhibited.Contains(trimmed[0])) return true;
+        // Korean: a bare josa/eomi (particle or verb ending) must never start a line — it belongs to
+        // the preceding eojeol. Conservative: only when the whole leading fragment IS the particle.
+        return KoreanLeadingProhibitedParticles.Contains(trimmed);
     }
+
+    // Korean particles / verb endings (josa / eomi) that must not stand alone at the start of a
+    // subtitle line. Mirrors Swift koreanLeadingProhibitedParticles.
+    private static readonly HashSet<string> KoreanLeadingProhibitedParticles =
+    [
+        "은", "는", "이", "가", "을", "를", "에", "의", "도", "만", "와", "과", "로", "으로",
+        "에서", "에게", "한테", "부터", "까지", "보다", "처럼", "마다", "조차", "밖에",
+        "고", "서", "며", "지만", "는데", "니까", "어서", "아서",
+    ];
 
     private static bool ContainsKanji(string text) =>
         text.Any(ch => ch is >= '\u4E00' and <= '\u9FFF');
@@ -1060,12 +1356,13 @@ public static partial class LocalAsrSubtitleTimingPlanner
         SubtitleCueSourceFragment next,
         IReadOnlyList<SubtitleCueSourceFragment> current,
         IReadOnlyList<SubtitleCueSourceFragment> candidate,
-        double gap)
+        double gap,
+        SubtitleTimingThresholds thresholds)
     {
         if (current.Count == 0) return false;
         var first = current[0];
         var last = current[^1];
-        if (gap > LargeSpeechGapSeconds) return true;
+        if (gap > thresholds.LargeSpeechGapSeconds) return true;
 
         var candidateText = JoinedText(candidate);
         var candidateDuration = next.EndSeconds - first.StartSeconds;
@@ -1074,36 +1371,46 @@ public static partial class LocalAsrSubtitleTimingPlanner
             var units = SubtitleTimingPlanner.TimingTokens(candidateText).Count;
             var latinContinuation = IsStrongLatinContinuationFragment(last.Text, next.Text);
             if (latinContinuation
-                && candidateDuration <= RelaxedCjkCueSeconds
+                && candidateDuration <= thresholds.RelaxedCjkCueSeconds
                 && units <= RelaxedShortMergeMaxCjkUnits)
             {
                 return false;
             }
             // Hard ceilings always break.
-            if (candidateDuration > HardMaximumCjkCueSeconds) return true;
+            if (candidateDuration > thresholds.HardMaximumCjkCueSeconds) return true;
             if (units > HardMaximumCjkUnits) return true;
-            // Soft ceilings break only at a natural boundary: never split right before a leading
-            // particle / small kana / closing punctuation (extend to the hard ceiling instead).
-            // NOTE (parity): macOS additionally avoids mid-word splits via NaturalLanguage
-            // morphological boundaries (CJKWordBoundary). .NET has no built-in CJK tokenizer, so
-            // Windows uses the particle heuristic only — a documented gap pending a tokenizer.
-            if (candidateDuration > MaximumCjkCueSeconds || units > MaximumCjkUnits)
+            // Soft ceilings break only at a natural boundary: never split mid-word (same-script run
+            // / okurigana via CjkWordBoundary), and never right before a leading particle / small
+            // kana / closing punctuation. Otherwise extend to the hard ceiling.
+            if (candidateDuration > thresholds.MaximumCjkCueSeconds || units > MaximumCjkUnits)
             {
-                return !HasWeakBoundary(last.Text, next.Text);
+                // Breath-gap anchor (stable-ts): a real inter-word silence is the natural place to
+                // break a long line, so break there rather than running to the hard ceiling. Never
+                // break right before a leading particle / small kana / closing punctuation, even
+                // after a pause. Only in this over-soft-ceiling zone.
+                if (gap >= thresholds.BreathGapBreakSeconds && !StartsWithLeadingProhibited(next.Text))
+                {
+                    return true;
+                }
+                var junction = JoinedText(current).Length;
+                var midWord = CjkWordBoundary.Straddles(candidateText, junction);
+                return !(midWord || HasWeakBoundary(last.Text, next.Text));
             }
             return false;
         }
 
-        if (candidateDuration > MaximumLatinCueSeconds) return true;
+        if (candidateDuration > thresholds.MaximumLatinCueSeconds) return true;
         var latinBudgetText = string.Join(
             " ",
             candidate
                 .Select(fragment => fragment.Text.Trim())
                 .Where(text => text.Length > 0));
-        if (SubtitleTimingPlanner.SpeechTokens(latinBudgetText).Count > MaximumLatinTokens
-            && !HasWeakBoundary(last.Text, next.Text))
+        if (SubtitleTimingPlanner.SpeechTokens(latinBudgetText).Count > MaximumLatinTokens)
         {
-            return true;
+            // Over the token budget: a breath gap is a natural break even at a weak boundary;
+            // otherwise keep the existing weak-boundary protection.
+            if (gap >= thresholds.BreathGapBreakSeconds) return true;
+            if (!HasWeakBoundary(last.Text, next.Text)) return true;
         }
         return false;
     }
@@ -1111,7 +1418,8 @@ public static partial class LocalAsrSubtitleTimingPlanner
     private static SubtitleCue? MakeCue(
         int index,
         IReadOnlyList<SubtitleCueSourceFragment> fragments,
-        double? transcriptDurationSeconds)
+        double? transcriptDurationSeconds,
+        SubtitleTimingThresholds thresholds)
     {
         if (fragments.Count == 0) return null;
         var text = JoinedText(fragments);
@@ -1123,7 +1431,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
         {
             end = Math.Min(end, duration);
         }
-        var maximumEnd = start + MaximumCueSecondsFor(text, start, fragments[^1].EndSeconds);
+        var maximumEnd = start + MaximumCueSecondsFor(text, start, fragments[^1].EndSeconds, thresholds);
         end = Math.Min(end, maximumEnd);
         end = Math.Max(end, start + MinimumCueSeconds);
         // Neighbor-aware timing (hold-to-next-onset, no-overlap) is applied by WhisperCueRetimer.
@@ -1188,6 +1496,11 @@ public static partial class LocalAsrSubtitleTimingPlanner
         {
             return true;
         }
+        // Korean: never break right before a bare josa/eomi fragment.
+        if (KoreanLeadingProhibitedParticles.Contains(trimmedRight))
+        {
+            return true;
+        }
         if (IsStrongLatinContinuationFragment(left, right))
         {
             return true;
@@ -1209,10 +1522,15 @@ public static partial class LocalAsrSubtitleTimingPlanner
         var leftRun = TrailingLatinLetterRun(left);
         var rightRun = LeadingLatinLetterRun(right);
         if (leftRun.Length == 0 || rightRun.Length == 0) return false;
+        var leftLower = leftRun.ToLowerInvariant();
         var rightLower = rightRun.ToLowerInvariant();
-        if (StrongLatinContinuationSuffixes.Contains(rightLower)) return true;
+        if (StrongLatinContinuationSuffixes.Contains(rightLower))
+        {
+            return !LatinContinuationFunctionWords.Contains(leftLower);
+        }
         return leftRun.Length == 1
             && char.IsUpper(leftRun[0])
+            && !LatinContinuationFunctionWords.Contains(leftLower)
             && StartsWithLowercaseLetter(rightRun);
     }
 
@@ -1224,19 +1542,30 @@ public static partial class LocalAsrSubtitleTimingPlanner
         if (leftRun.Length == 0 || rightRun.Length == 0) return false;
         var leftLower = leftRun.ToLowerInvariant();
         var rightLower = rightRun.ToLowerInvariant();
+        if (LatinBridgeFragments.Contains(leftLower) && LatinBridgeTailSuffixes.Contains(rightLower))
+        {
+            return true;
+        }
         if (LatinContinuationSuffixes.Contains(rightLower))
         {
             if (ShortLatinContinuationSuffixes.Contains(rightLower))
             {
                 return leftRun.Length >= 2 && !LatinContinuationFunctionWords.Contains(leftLower);
             }
-            return true;
+            return !LatinContinuationFunctionWords.Contains(leftLower);
         }
         if (!allowBroadHeuristics) return false;
-        if (leftRun.Length == 1 && char.IsUpper(leftRun[0]) && StartsWithLowercaseLetter(rightRun)) return true;
+        if (leftRun.Length == 1
+            && char.IsUpper(leftRun[0])
+            && !LatinContinuationFunctionWords.Contains(leftLower)
+            && StartsWithLowercaseLetter(rightRun))
+        {
+            return true;
+        }
         if (leftRun.Length <= 3
             && StartsWithUppercaseLetter(leftRun)
             && rightRun.Length >= 3
+            && !LatinContinuationFunctionWords.Contains(leftLower)
             && !LatinContinuationFunctionWords.Contains(rightLower)
             && StartsWithLowercaseLetter(rightRun))
         {
@@ -1349,10 +1678,12 @@ public static class WhisperCueRetimer
 
     public static IReadOnlyList<SubtitleCue> Retime(
         IReadOnlyList<SubtitleCue> cues,
-        double? transcriptDurationSeconds)
+        double? transcriptDurationSeconds,
+        SubtitleTimingProfile profile = SubtitleTimingProfile.Speech)
     {
         if (cues.Count == 0) return cues;
 
+        var thresholds = LocalAsrSubtitleTimingPlanner.Thresholds(profile);
         var starts = new double[cues.Count];
         var ends = new double[cues.Count];
         var lastTokenEnds = new double[cues.Count];
@@ -1369,7 +1700,7 @@ public static class WhisperCueRetimer
             ends[i] = end.Value;
             var fragments = cues[i].SourceFragments;
             lastTokenEnds[i] = fragments.Count > 0 ? fragments[^1].EndSeconds : end.Value;
-            caps[i] = LocalAsrSubtitleTimingPlanner.MaximumCueSecondsFor(cues[i].Text, start.Value, lastTokenEnds[i]);
+            caps[i] = LocalAsrSubtitleTimingPlanner.MaximumCueSecondsFor(cues[i].Text, start.Value, lastTokenEnds[i], thresholds);
         }
 
         var output = new List<SubtitleCue>(cues.Count);
@@ -1390,7 +1721,7 @@ public static class WhisperCueRetimer
             // Disappearance: extend toward the next real onset to absorb whisper's early word ends,
             // capped at HoldToNextSeconds past the last token and at the next onset minus a guard.
             var ceiling = hasNext ? nextStart - InterCueGuardSeconds : double.PositiveInfinity;
-            var hold = HoldToNextSecondsFor(cues[i].Text);
+            var hold = HoldToNextSecondsFor(cues[i].Text, thresholds);
             var end = Math.Max(ends[i], Math.Min(ceiling, lastTokenEnds[i] + hold));
             if (transcriptDurationSeconds is { } duration) end = Math.Min(end, duration);
             end = Math.Min(end, start + caps[i]);
@@ -1410,8 +1741,8 @@ public static class WhisperCueRetimer
         return output;
     }
 
-    private static double HoldToNextSecondsFor(string text) =>
-        ContainsCjkLatinMix(text) ? MixedCjkLatinHoldToNextSeconds : HoldToNextSeconds;
+    private static double HoldToNextSecondsFor(string text, SubtitleTimingThresholds thresholds) =>
+        ContainsCjkLatinMix(text) ? Math.Min(MixedCjkLatinHoldToNextSeconds, thresholds.HoldToNextSeconds) : thresholds.HoldToNextSeconds;
 
     private static bool ContainsCjkLatinMix(string text) =>
         SubtitleTimingPlanner.ContainsCjkText(text)
@@ -1749,6 +2080,8 @@ public sealed record WhisperCppCommandPlan
             "-pp",
         ];
 
+        // 注意：request.VadEnabled 暂不接通——whisper.cpp --vad 需要单独的 Silero VAD 模型，尚未随包分发，
+        // 故这里刻意不发 --vad（见 forced-alignment ExecPlan 的推迟决定）。字段保留以便日后无契约改动地启用。
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
         // OFF (-nfa) — otherwise whisper.cpp silently disables DTW.
         if (request.WordTimestamps
@@ -1960,7 +2293,11 @@ public static class WhisperCppProgressParser
 {
     public static AsrProgress? Parse(string line)
     {
-        var match = Regex.Match(line, @"([0-9]+(?:\.[0-9]+)?)\s*%");
+        // 只认 whisper.cpp 自己的进度行（`whisper_print_progress_callback: progress = 25%` /
+        // `whisper.cpp progress: 25%`）。旧版用 `([0-9.]+)\s*%` 匹配任意含 % 的行，会把转写出来的台词
+        // 文本（如 "…sales up 50%…"）误当成进度更新，导致进度条乱跳。用 “progress” 关键字 + 分隔符锚定，
+        // 同时兼容 `=`/`:` 两种 whisper.cpp 版本格式。
+        var match = Regex.Match(line, @"progress\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*%", RegexOptions.IgnoreCase);
         if (!match.Success) return null;
         if (!double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
             || double.IsNaN(value)

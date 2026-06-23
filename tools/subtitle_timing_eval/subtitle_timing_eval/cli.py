@@ -13,6 +13,7 @@ from .pipeline import (
     build_iteration_report,
     build_qa_packet,
     collect_eval_status,
+    collect_local_asr_suite_status,
     collect_manual_suite_status,
     compare_report_files,
     evaluate_files,
@@ -156,6 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
     manual_suite_status.add_argument("--out")
     manual_suite_status.add_argument("--require-ready", action="store_true", help="Exit non-zero unless the selected suite has complete passing artifacts.")
 
+    local_asr_suite_status = sub.add_parser("local-asr-suite-status", help="Summarize selected human-caption samples using only local-ASR generated subtitle evidence.")
+    local_asr_suite_status.add_argument("--manifest", default="tools/subtitle_timing_eval/samples.json")
+    local_asr_suite_status.add_argument("--selection", required=True)
+    local_asr_suite_status.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
+    local_asr_suite_status.add_argument("--out")
+    local_asr_suite_status.add_argument("--require-ready", action="store_true", help="Exit non-zero unless every selected sample has passing local-ASR evidence.")
+
     manual_suite_audit = sub.add_parser("manual-suite-audit", help="Run several seeded manual-caption suite draws against current strict timing artifacts.")
     manual_suite_audit.add_argument("--manifest", default="tools/subtitle_timing_eval/samples.json")
     manual_suite_audit.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
@@ -223,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     metrics.add_argument("--window-end-seconds", type=float)
     metrics.add_argument("--alignment-mode", choices=["text", "overlap", "speech"], default="text")
     metrics.add_argument("--alignment-text-candidate", help="Subtitle file whose text should be used only for ASR alignment while scoring candidate cue times.")
+    metrics.add_argument("--reference-subtitle", help="Human/reference subtitle path to record in the report metadata.")
 
     reference_metrics = sub.add_parser("reference-metrics", help="Compare a candidate subtitle directly against human reference cue timings.")
     reference_metrics.add_argument("--candidate", required=True)
@@ -542,6 +551,31 @@ def main() -> None:
             )
         return
 
+    if args.command == "local-asr-suite-status":
+        data = load_manifest(args.manifest)
+        selection = json.loads(Path(args.selection).read_text(encoding="utf-8"))
+        result = collect_local_asr_suite_status(data, selection, args.artifacts)
+        raw = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.out).write_text(raw + "\n", encoding="utf-8")
+            print(args.out)
+        else:
+            print(raw)
+        if args.require_ready and not result["passes_local_asr_suite_gate"]:
+            raise SystemExit(
+                "local-ASR suite gate failed: missing_samples=%s blocked_samples=%s failing_samples=%s insufficient_window_samples=%s missing_local_asr_samples=%s missing_required_categories=%s"
+                % (
+                    result["missing_samples"],
+                    result["blocked_samples"],
+                    result["failing_samples"],
+                    result["insufficient_window_samples"],
+                    result["missing_local_asr_samples"],
+                    result.get("missing_required_categories", []),
+                )
+            )
+        return
+
     if args.command == "manual-suite-audit":
         data = load_manifest(args.manifest)
         if args.seed:
@@ -666,6 +700,7 @@ def main() -> None:
             window_end=args.window_end_seconds,
             alignment_mode=args.alignment_mode,
             alignment_text_path=args.alignment_text_candidate,
+            reference_path=args.reference_subtitle,
         )
         print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
         return
