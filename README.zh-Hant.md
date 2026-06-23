@@ -47,6 +47,8 @@
 
 App 本身僅透過 SwiftPM 引入 Sparkle 2，用於 macOS 自更新。
 
+發布 / 更新包和本機安裝建置分開：`./make-sparkle-zip.sh` 產生 Sparkle 使用的 `Moongate-macOS-v0.8.0-rc.1.zip`，上傳到對應 GitHub Release 後，再用 `./make-appcast.sh` 寫入簽名後的 `docs/appcast.xml`。`./make-dmg.sh` 仍保留為手動拖曳安裝包。
+
 ### Windows
 
 ```sh
@@ -73,6 +75,8 @@ App 本身僅透過 SwiftPM 引入 Sparkle 2，用於 macOS 自更新。
 > 摘要需要「文字產生」能力：僅 Apple Translation 的引擎不能摘要，設定裡會提示而非靜默失敗。
 
 ## 命令列
+
+發布命令名是 `moongate-cli`；SwiftPM target 原始碼位於 `Sources/moongate-cli/`。
 
 不開 GUI 也能跑完整流程：
 

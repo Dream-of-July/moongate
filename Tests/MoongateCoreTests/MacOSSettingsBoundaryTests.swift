@@ -303,8 +303,9 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(rowBody.contains("settingsUpdateBadge"))
         XCTAssertTrue(rowBody.contains("localizer.t(L.Update.updateAvailableStatus)"))
         XCTAssertTrue(rowBody.contains(".accessibilityValue"))
-        XCTAssertTrue(badgeBody.contains("Text(\"1\")"))
-        XCTAssertTrue(badgeBody.contains("Circle().fill(.red)"))
+        XCTAssertFalse(badgeBody.contains("Text(\"1\")"))
+        XCTAssertTrue(badgeBody.contains("Circle()"))
+        XCTAssertTrue(badgeBody.contains(".fill(.red)"))
         XCTAssertTrue(badgeBody.contains(".accessibilityHidden(true)"))
     }
 

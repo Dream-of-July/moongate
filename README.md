@@ -47,6 +47,8 @@ Runtime media tools come from Homebrew:
 
 The app itself pulls only Sparkle 2 via SwiftPM, for macOS self-update.
 
+Release/update packaging is separate from the local install build: `./make-sparkle-zip.sh` creates `Moongate-macOS-v0.8.0-rc.1.zip` for Sparkle, then `./make-appcast.sh` signs that ZIP into `docs/appcast.xml` after it is uploaded to the matching GitHub Release. `./make-dmg.sh` remains the manual drag-install fallback.
+
 ### Windows
 
 ```sh
@@ -73,6 +75,8 @@ Settings folds translation and summary into one **AI settings** page: configure 
 > Summary needs text generation. An Apple Translation-only engine can't summarize, and the settings page says so instead of failing silently.
 
 ## CLI
+
+The published command is `moongate-cli`; its SwiftPM target source lives in `Sources/moongate-cli/`.
 
 Run the whole flow without the GUI:
 
