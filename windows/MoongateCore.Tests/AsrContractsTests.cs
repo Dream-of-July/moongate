@@ -1098,6 +1098,55 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void LocalAsrTimingPlannerRejoinsLatinFragmentsInSourceLanguages()
+    {
+        var transcript = new AsrTranscript
+        {
+            Id = "latin-source-subwords",
+            LanguageCode = "pt",
+            Words =
+            [
+                new AsrWord { Text = "Quando", StartSeconds = 0.0, EndSeconds = 0.2 },
+                new AsrWord { Text = "a", StartSeconds = 0.2, EndSeconds = 0.3 },
+                new AsrWord { Text = "pal", StartSeconds = 0.3, EndSeconds = 0.45 },
+                new AsrWord { Text = "estra", StartSeconds = 0.45, EndSeconds = 0.7 },
+                new AsrWord { Text = "não", StartSeconds = 0.7, EndSeconds = 0.9 },
+                new AsrWord { Text = "é", StartSeconds = 0.9, EndSeconds = 1.0 },
+                new AsrWord { Text = "d", StartSeconds = 1.0, EndSeconds = 1.1 },
+                new AsrWord { Text = "ada", StartSeconds = 1.1, EndSeconds = 1.25 },
+                new AsrWord { Text = "em", StartSeconds = 1.25, EndSeconds = 1.35 },
+                new AsrWord { Text = "ingl", StartSeconds = 1.35, EndSeconds = 1.55 },
+                new AsrWord { Text = "ês", StartSeconds = 1.55, EndSeconds = 1.75 },
+                new AsrWord { Text = "Sand", StartSeconds = 1.75, EndSeconds = 1.95 },
+                new AsrWord { Text = "wich", StartSeconds = 1.95, EndSeconds = 2.10 },
+                new AsrWord { Text = "Ker", StartSeconds = 2.10, EndSeconds = 2.25 },
+                new AsrWord { Text = "ne", StartSeconds = 2.25, EndSeconds = 2.40 },
+                new AsrWord { Text = "vou", StartSeconds = 2.40, EndSeconds = 2.55 },
+                new AsrWord { Text = "la", StartSeconds = 2.55, EndSeconds = 2.70 },
+                new AsrWord { Text = "ient", StartSeconds = 2.70, EndSeconds = 2.90 },
+            ],
+            SourceModelId = "whisper.cpp:test",
+        };
+
+        var text = string.Join(" ", AsrTranscriptMapper.SourceCues(transcript).Select(cue => cue.Text));
+
+        Assert.Contains("palestra", text, StringComparison.Ordinal);
+        Assert.Contains("dada", text, StringComparison.Ordinal);
+        Assert.Contains("inglês", text, StringComparison.Ordinal);
+        Assert.Contains("Sandwich", text, StringComparison.Ordinal);
+        Assert.Contains("Kerne", text, StringComparison.Ordinal);
+        Assert.Contains("voulaient", text, StringComparison.Ordinal);
+        Assert.Contains("a palestra", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("pal estra", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("d ada", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("ingl ês", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sand wich", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ker ne", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("vou la", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("apalestra", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalAsrTimingPlannerAbsorbsJapaneseOrphanFragmentsAcrossSoftCaps()
     {
         var transcript = new AsrTranscript

@@ -561,9 +561,18 @@ public static partial class LocalAsrSubtitleTimingPlanner
         "al", "ial", "ual", "cial", "ance", "ence", "ancia", "anca", "ança",
         "encia", "ência", "eiro", "eira", "eiros", "eiras", "iro", "iros", "ira", "iras",
         "ais", "ias", "ción", "ciones", "ção", "ções", "dad", "dade", "idades",
-        "mente", "mento", "miento", "amiento", "zione", "zioni",
-        "lich", "chen", "en", "em", "ern", "ung", "ungen", "heit", "keit",
-        "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache",
+        "ada", "adas", "ado", "ados", "estra", "estre", "ês",
+        "mente", "mento", "miento", "amiento", "zione", "zioni", "ient", "aient",
+        "lich", "chen", "en", "ern", "ung", "ungen", "heit", "keit",
+        "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache", "ne", "wich",
+    ];
+    private static readonly HashSet<string> ShortLatinContinuationSuffixes =
+    [
+        "ne", "ês",
+    ];
+    private static readonly HashSet<string> LatinBridgeFragments =
+    [
+        "la", "le", "li", "lo",
     ];
     private static readonly HashSet<string> StrongLatinContinuationSuffixes =
     [
@@ -927,9 +936,11 @@ public static partial class LocalAsrSubtitleTimingPlanner
         var builder = new StringBuilder();
         var previous = "";
         var allowBroadLatinContinuation = SubtitleTimingPlanner.ContainsCjkText(string.Concat(parts));
-        foreach (var part in parts)
+        for (var index = 0; index < parts.Count; index++)
         {
-            if (builder.Length > 0 && ShouldInsertSpace(previous, part, allowBroadLatinContinuation))
+            var part = parts[index];
+            var next = index + 1 < parts.Count ? parts[index + 1] : null;
+            if (builder.Length > 0 && ShouldInsertSpace(previous, part, next, allowBroadLatinContinuation))
             {
                 builder.Append(' ');
             }
@@ -939,11 +950,16 @@ public static partial class LocalAsrSubtitleTimingPlanner
         return builder.ToString().Trim();
     }
 
-    private static bool ShouldInsertSpace(string left, string right, bool allowBroadLatinContinuation) =>
+    private static bool ShouldInsertSpace(
+        string left,
+        string right,
+        string? next,
+        bool allowBroadLatinContinuation) =>
         right.Length > 0
         && !IsNoSpaceBefore(right[0])
+        && !IsLatinBridgeFragment(left, right, next)
         && !IsStrongLatinContinuationFragment(left, right)
-        && (!allowBroadLatinContinuation || !IsLatinContinuationFragment(left, right))
+        && !IsLatinContinuationFragment(left, right, allowBroadLatinContinuation)
         && (ContainsAsciiAlphanumeric(left) || ContainsAsciiAlphanumeric(right));
 
     private static bool ContainsAsciiAlphanumeric(string text) =>
@@ -963,6 +979,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
             return true;
         }
         if (IsStrongLatinContinuationFragment(left, right))
+        {
+            return true;
+        }
+        if (IsLatinContinuationFragment(left, right, allowBroadHeuristics: false))
         {
             return true;
         }
@@ -986,7 +1006,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             && StartsWithLowercaseLetter(rightRun);
     }
 
-    private static bool IsLatinContinuationFragment(string left, string right)
+    private static bool IsLatinContinuationFragment(string left, string right, bool allowBroadHeuristics)
     {
         if (HasApostropheInsideLatinRun(left)) return false;
         var leftRun = TrailingLatinLetterRun(left);
@@ -994,7 +1014,15 @@ public static partial class LocalAsrSubtitleTimingPlanner
         if (leftRun.Length == 0 || rightRun.Length == 0) return false;
         var leftLower = leftRun.ToLowerInvariant();
         var rightLower = rightRun.ToLowerInvariant();
-        if (LatinContinuationSuffixes.Contains(rightLower)) return true;
+        if (LatinContinuationSuffixes.Contains(rightLower))
+        {
+            if (ShortLatinContinuationSuffixes.Contains(rightLower))
+            {
+                return leftRun.Length >= 2 && !LatinContinuationFunctionWords.Contains(leftLower);
+            }
+            return true;
+        }
+        if (!allowBroadHeuristics) return false;
         if (leftRun.Length == 1 && char.IsUpper(leftRun[0]) && StartsWithLowercaseLetter(rightRun)) return true;
         if (leftRun.Length <= 3
             && StartsWithUppercaseLetter(leftRun)
@@ -1013,6 +1041,22 @@ public static partial class LocalAsrSubtitleTimingPlanner
             return true;
         }
         return false;
+    }
+
+    private static bool IsLatinBridgeFragment(string left, string right, string? next)
+    {
+        if (next is null) return false;
+        if (HasApostropheInsideLatinRun(left)) return false;
+        var leftRun = TrailingLatinLetterRun(left);
+        var rightRun = LeadingLatinLetterRun(right);
+        var nextRun = LeadingLatinLetterRun(next);
+        if (leftRun.Length == 0 || rightRun.Length == 0 || nextRun.Length == 0) return false;
+        var leftLower = leftRun.ToLowerInvariant();
+        var rightLower = rightRun.ToLowerInvariant();
+        var nextLower = nextRun.ToLowerInvariant();
+        return LatinBridgeFragments.Contains(rightLower)
+            && !LatinContinuationFunctionWords.Contains(leftLower)
+            && LatinContinuationSuffixes.Contains(nextLower);
     }
 
     private static bool HasApostropheInsideLatinRun(string text)

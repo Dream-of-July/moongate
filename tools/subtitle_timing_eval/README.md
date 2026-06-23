@@ -124,7 +124,7 @@ python3 -m subtitle_timing_eval.cli manual-suite-status \
 
 This status gate scopes missing/failing/insufficient-window checks to the selected videos only. It requires strict timing evidence for the selected human-caption suite; `preserve` comparisons are reported but do not satisfy the 90% manual-suite gate. Translated public subtitle tracks are grouped by spoken/source language rather than by the generic `translated` bucket.
 
-Current validated run (`manual-caption-suite-2026-06-22`, with blocked sources excluded) passes strict timing for 10/10 source languages: `de`, `en`, `es`, `fr`, `it`, `ja`, `ko`, `pt`, `yue`, and `zh`. The remaining release gate is human side-by-side QA, not missing automated timing evidence.
+Current validated run (`manual-caption-suite-2026-06-22`, with blocked sources excluded) passes strict timing for 10/10 source languages: `de`, `en`, `es`, `fr`, `it`, `ja`, `ko`, `pt`, `yue`, and `zh`. After the Latin local-ASR subword repair, all selected samples currently report `accepted_ratio=1.0`. The remaining release gate is human side-by-side QA, not missing automated timing evidence.
 
 Audit several seeded human-caption draws against the current strict artifacts:
 

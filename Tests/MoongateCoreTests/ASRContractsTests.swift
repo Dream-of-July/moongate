@@ -1069,6 +1069,51 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(text.contains("yosiempre"))
     }
 
+    func testLocalASRTimingPlannerRejoinsLatinFragmentsInSourceLanguages() {
+        let transcript = ASRTranscript(
+            id: "latin-source-subwords",
+            languageCode: "pt",
+            words: [
+                ASRWord(text: "Quando", startSeconds: 0.0, endSeconds: 0.2),
+                ASRWord(text: "a", startSeconds: 0.2, endSeconds: 0.3),
+                ASRWord(text: "pal", startSeconds: 0.3, endSeconds: 0.45),
+                ASRWord(text: "estra", startSeconds: 0.45, endSeconds: 0.7),
+                ASRWord(text: "não", startSeconds: 0.7, endSeconds: 0.9),
+                ASRWord(text: "é", startSeconds: 0.9, endSeconds: 1.0),
+                ASRWord(text: "d", startSeconds: 1.0, endSeconds: 1.1),
+                ASRWord(text: "ada", startSeconds: 1.1, endSeconds: 1.25),
+                ASRWord(text: "em", startSeconds: 1.25, endSeconds: 1.35),
+                ASRWord(text: "ingl", startSeconds: 1.35, endSeconds: 1.55),
+                ASRWord(text: "ês", startSeconds: 1.55, endSeconds: 1.75),
+                ASRWord(text: "Sand", startSeconds: 1.75, endSeconds: 1.95),
+                ASRWord(text: "wich", startSeconds: 1.95, endSeconds: 2.10),
+                ASRWord(text: "Ker", startSeconds: 2.10, endSeconds: 2.25),
+                ASRWord(text: "ne", startSeconds: 2.25, endSeconds: 2.40),
+                ASRWord(text: "vou", startSeconds: 2.40, endSeconds: 2.55),
+                ASRWord(text: "la", startSeconds: 2.55, endSeconds: 2.70),
+                ASRWord(text: "ient", startSeconds: 2.70, endSeconds: 2.90)
+            ],
+            sourceModelID: "whisper.cpp:test"
+        )
+
+        let text = ASRTranscriptMapper.sourceCues(from: transcript).map(\.text).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("palestra"))
+        XCTAssertTrue(text.contains("dada"))
+        XCTAssertTrue(text.contains("inglês"))
+        XCTAssertTrue(text.contains("Sandwich"))
+        XCTAssertTrue(text.contains("Kerne"))
+        XCTAssertTrue(text.contains("voulaient"))
+        XCTAssertTrue(text.contains("a palestra"))
+        XCTAssertFalse(text.contains("pal estra"))
+        XCTAssertFalse(text.contains("d ada"))
+        XCTAssertFalse(text.contains("ingl ês"))
+        XCTAssertFalse(text.contains("Sand wich"))
+        XCTAssertFalse(text.contains("Ker ne"))
+        XCTAssertFalse(text.contains("vou la"))
+        XCTAssertFalse(text.contains("apalestra"))
+    }
+
     func testLocalASRTimingPlannerMergesLoneShortCue() {
         // A long phrase pushes the soft cap so 「顔」 would break off as a lone 1-char cue; with a big
         // gap to the next word it would otherwise stand alone. It must be merged into a neighbour.

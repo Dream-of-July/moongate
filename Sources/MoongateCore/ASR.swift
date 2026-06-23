@@ -774,9 +774,16 @@ enum LocalASRSubtitleTimingPlanner {
         "al", "ial", "ual", "cial", "ance", "ence", "ancia", "anca", "ança",
         "encia", "ência", "eiro", "eira", "eiros", "eiras", "iro", "iros", "ira", "iras",
         "ais", "ias", "ción", "ciones", "ção", "ções", "dad", "dade", "idades",
-        "mente", "mento", "miento", "amiento", "zione", "zioni",
-        "lich", "chen", "en", "em", "ern", "ung", "ungen", "heit", "keit",
-        "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache"
+        "ada", "adas", "ado", "ados", "estra", "estre", "ês",
+        "mente", "mento", "miento", "amiento", "zione", "zioni", "ient", "aient",
+        "lich", "chen", "en", "ern", "ung", "ungen", "heit", "keit",
+        "zial", "ier", "ieren", "uren", "feld", "sprach", "sprache", "ne", "wich"
+    ]
+    private static let shortLatinContinuationSuffixes: Set<String> = [
+        "ne", "ês"
+    ]
+    private static let latinBridgeFragments: Set<String> = [
+        "la", "le", "li", "lo"
     ]
     private static let strongLatinContinuationSuffixes: Set<String> = [
         "s", "es", "ed", "er", "ers", "or", "ors", "ing", "ly", "ally", "ually",
@@ -1090,13 +1097,18 @@ enum LocalASRSubtitleTimingPlanner {
         var output = ""
         var previous = ""
         let allowBroadLatinContinuation = containsCJK(fragments.map(\.text).joined())
-        for part in fragments.map(\.text) {
+        let parts = fragments.map(\.text)
+        for (index, part) in parts.enumerated() {
             let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+            let next = index + 1 < parts.count
+                ? parts[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
             if !output.isEmpty,
                shouldInsertSpace(
                 left: previous,
                 right: trimmed,
+                next: next,
                 allowBroadLatinContinuation: allowBroadLatinContinuation
                ) {
                 output += " "
@@ -1116,12 +1128,18 @@ enum LocalASRSubtitleTimingPlanner {
     private static func shouldInsertSpace(
         left: String,
         right: String,
+        next: String?,
         allowBroadLatinContinuation: Bool
     ) -> Bool {
         guard let rightFirst = right.first else { return false }
         if isNoSpaceBefore(rightFirst) { return false }
+        if isLatinBridgeFragment(left: left, right: right, next: next) { return false }
         if isStrongLatinContinuationFragment(left: left, right: right) { return false }
-        if allowBroadLatinContinuation, isLatinContinuationFragment(left: left, right: right) {
+        if isLatinContinuationFragment(
+            left: left,
+            right: right,
+            allowBroadHeuristics: allowBroadLatinContinuation
+        ) {
             return false
         }
         return containsASCIIAlphanumeric(left) || containsASCIIAlphanumeric(right)
@@ -1150,6 +1168,9 @@ enum LocalASRSubtitleTimingPlanner {
         if isStrongLatinContinuationFragment(left: left, right: right) {
             return true
         }
+        if isLatinContinuationFragment(left: left, right: right, allowBroadHeuristics: false) {
+            return true
+        }
         let leftTokens = SubtitleTimingPlanner.wordTokens(left)
         let rightTokens = SubtitleTimingPlanner.wordTokens(right)
         guard let last = leftTokens.last, let first = rightTokens.first else { return false }
@@ -1168,14 +1189,24 @@ enum LocalASRSubtitleTimingPlanner {
             && startsWithLowercaseLetter(rightRun)
     }
 
-    private static func isLatinContinuationFragment(left: String, right: String) -> Bool {
+    private static func isLatinContinuationFragment(
+        left: String,
+        right: String,
+        allowBroadHeuristics: Bool
+    ) -> Bool {
         if hasApostropheInsideLatinRun(left) { return false }
         let leftRun = trailingLatinLetterRun(left)
         let rightRun = leadingLatinLetterRun(right)
         guard !leftRun.isEmpty, !rightRun.isEmpty else { return false }
         let leftLower = leftRun.lowercased()
         let rightLower = rightRun.lowercased()
-        if latinContinuationSuffixes.contains(rightLower) { return true }
+        if latinContinuationSuffixes.contains(rightLower) {
+            if shortLatinContinuationSuffixes.contains(rightLower) {
+                return leftRun.count >= 2 && !latinContinuationFunctionWords.contains(leftLower)
+            }
+            return true
+        }
+        if !allowBroadHeuristics { return false }
         if leftRun.count == 1,
            leftRun == leftRun.uppercased(),
            startsWithLowercaseLetter(rightRun) {
@@ -1196,6 +1227,21 @@ enum LocalASRSubtitleTimingPlanner {
             return true
         }
         return false
+    }
+
+    private static func isLatinBridgeFragment(left: String, right: String, next: String?) -> Bool {
+        guard let next else { return false }
+        if hasApostropheInsideLatinRun(left) { return false }
+        let leftRun = trailingLatinLetterRun(left)
+        let rightRun = leadingLatinLetterRun(right)
+        let nextRun = leadingLatinLetterRun(next)
+        guard !leftRun.isEmpty, !rightRun.isEmpty, !nextRun.isEmpty else { return false }
+        let leftLower = leftRun.lowercased()
+        let rightLower = rightRun.lowercased()
+        let nextLower = nextRun.lowercased()
+        return latinBridgeFragments.contains(rightLower)
+            && !latinContinuationFunctionWords.contains(leftLower)
+            && latinContinuationSuffixes.contains(nextLower)
     }
 
     private static func hasApostropheInsideLatinRun(_ text: String) -> Bool {

@@ -309,6 +309,37 @@ class TimingMetricTests(unittest.TestCase):
         self.assertEqual(report["cues"][0]["match_method"], "text")
         self.assertTrue(report["cues"][0]["accepted"])
 
+    def test_evaluate_cues_matches_joined_latin_words_to_asr_fragments(self):
+        cues = [
+            Cue(index=1, start=76.56, end=80.20, text="Quando a palestra não é dada em inglês como é o caso"),
+        ]
+        words = [
+            {"start": 76.36, "end": 76.70, "text": "Quando"},
+            {"start": 76.70, "end": 76.82, "text": "a"},
+            {"start": 76.82, "end": 77.05, "text": "pal"},
+            {"start": 77.05, "end": 77.35, "text": "estra"},
+            {"start": 77.35, "end": 77.58, "text": "não"},
+            {"start": 77.58, "end": 77.70, "text": "é"},
+            {"start": 77.70, "end": 77.82, "text": "d"},
+            {"start": 77.82, "end": 78.00, "text": "ada"},
+            {"start": 78.00, "end": 78.10, "text": "em"},
+            {"start": 78.10, "end": 78.34, "text": "ingl"},
+            {"start": 78.34, "end": 78.58, "text": "ês"},
+            {"start": 78.58, "end": 78.80, "text": "como"},
+            {"start": 78.80, "end": 78.92, "text": "é"},
+            {"start": 78.92, "end": 79.05, "text": "o"},
+            {"start": 79.05, "end": 79.35, "text": "caso"},
+        ]
+
+        report = evaluate_cues(cues, words, sample_id="latin_joined_fragments")
+        row = report["cues"][0]
+
+        self.assertEqual(cue_tokens("inglês"), ["inglês"])
+        self.assertEqual(row["match_method"], "text")
+        self.assertAlmostEqual(row["reference_start"], 76.36, places=2)
+        self.assertAlmostEqual(row["reference_end"], 79.35, places=2)
+        self.assertTrue(row["accepted"])
+
     def test_evaluate_cues_text_matches_cjk_words_with_multi_character_chunks(self):
         cues = [
             Cue(index=1, start=10.00, end=11.90, text="日本行きたい"),

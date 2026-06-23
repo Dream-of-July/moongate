@@ -24,7 +24,7 @@ WEAK_BOUNDARY_WORDS = {
 }
 SHORT_FEEDBACK_MAX_WORDS = 3
 CJK_START_TIME_SCORE_WEIGHT = 40.0
-LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?|[€$£¥₩]")
+LATIN_TOKEN_RE = re.compile(r"[^\W_]+(?:['-][^\W_]+)?|[€$£¥₩]", re.UNICODE)
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 CJK_MIXED_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?|[€$£¥₩]|[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 SENTENCE_END_RE = re.compile(r"[.!?。！？][\"')\]”’」』）]*$")
@@ -79,6 +79,36 @@ def offset_words(words: Iterable[Any], offset_seconds: float) -> List[Dict[str, 
     ]
 
 
+def _match_joined_latin_tokens(
+    tokens: Sequence[str],
+    flattened: Sequence[str],
+    start: int,
+    max_parts_per_token: int = 4,
+) -> Optional[Tuple[int, int]]:
+    position = start
+    matched_start: Optional[int] = None
+    matched_end: Optional[int] = None
+    for token in tokens:
+        joined = ""
+        found_end: Optional[int] = None
+        for end in range(position, min(len(flattened), position + max_parts_per_token)):
+            joined += flattened[end]
+            if joined == token:
+                found_end = end
+                break
+            if not token.startswith(joined):
+                break
+        if found_end is None:
+            return None
+        if matched_start is None:
+            matched_start = position
+        matched_end = found_end
+        position = found_end + 1
+    if matched_start is None or matched_end is None:
+        return None
+    return matched_start, matched_end
+
+
 def _match_by_tokens(cue: Cue, words: Sequence[Dict[str, Any]], cursor: int) -> Tuple[Optional[int], Optional[int], int, int, int]:
     tokens = cue_tokens(cue.text)
     if not tokens:
@@ -95,9 +125,19 @@ def _match_by_tokens(cue: Cue, words: Sequence[Dict[str, Any]], cursor: int) -> 
     cjk_token_stream = any(CJK_RE.fullmatch(token) for token in tokens)
     best_exact: Optional[Tuple[float, int, int, int, int, int]] = None
     for start in range(search_start, len(flattened)):
-        if flattened[start:start + len(tokens)] == tokens:
-            start_word = token_word_indices[start]
-            end_word = token_word_indices[start + len(tokens) - 1]
+        exact_start = start
+        exact_end = start + len(tokens) - 1
+        if not cjk_token_stream:
+            joined_match = _match_joined_latin_tokens(tokens, flattened, start)
+            if joined_match is not None:
+                exact_start, exact_end = joined_match
+            elif flattened[start:start + len(tokens)] != tokens:
+                continue
+        elif flattened[start:start + len(tokens)] != tokens:
+            continue
+        if exact_end < len(flattened):
+            start_word = token_word_indices[exact_start]
+            end_word = token_word_indices[exact_end]
             start_time_delta = abs(words[start_word]["start"] - cue.start)
             if not cjk_token_stream:
                 score = (

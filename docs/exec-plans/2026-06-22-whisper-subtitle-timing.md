@@ -251,6 +251,7 @@ Gate（`comparison.py:9-44`）：每样本 `accepted_ratio ≥ 0.90` 且 `early_
 - 2026-06-23：**M25 remaining queue 顶部 Text Risk 摘要**——`qa-remaining` 现在会在文件头显示剩余 `text-risk rows` 数量及对应 `Review ID`。已人工确认的风险行会从摘要中扣除；这让最后人工 QA 可以先看最可能失败的文本行，而不是在 20 行表格里逐个找红点。
 - 2026-06-23：**M26 Text Risk verdict 审计**——Markdown verdict parser 现在读取 `Text Risk` 与 `Notes` 列；`qa-verdicts` summary 按语言统计 `text_risk_count`、`text_risk_pass/fail/unchecked_count`，并列出 `PASS` 但未写 notes 的风险行。这样 reviewer 即使把高风险行标 PASS，也会在最终 verdict summary 里留下“是否解释过”的证据。
 - 2026-06-23：**M27 Text Risk notes final gate**——`qa-verdicts` 与 `completion-audit` 新增 `--require-text-risk-notes`。最终验收时，带 `Text Risk` 的行如果被人工标为 `PASS`，必须填写 `Notes`，否则该语言组和最终 `human_verified` 都不能通过。已重建当前 artifact：`machine_ready=true`、`human_verified=false`、`goal_complete=false`、`text_quality_risk_count=3`；当前 checklist 仍是 20/20 unchecked，风险行主要集中在德语 2 行、意大利语 1 行。
+- 2026-06-23：**M28 Latin local-ASR subword repair + fair metric alignment**——从 QA remaining queue 发现纯拉丁语系 local-ASR 仍有 `pal estra`、`ingl ês`、`Sand wich`、`Ker ne`、`vou la ient` 等碎词。Swift/C# 同步扩展拉丁后缀/桥接 fragment 规则，并把宽松 `A + llow` 这类拼接继续限制在 CJK+Latin 混合场景，避免纯拉丁误粘 `inglês como`。Python metric 同步修复：Latin token regex 支持重音字母，text matcher 可把候选合词对齐到 ASR reference 的多个碎片词。真实重跑 de/fr/it/pt local-ASR SRT 与 reports 后，固定 10 语言套件全部 `accepted_ratio=1.0`，multi-seed audit 仍 6/6；葡语 QA 行已从 `Quando a pal estra...ingl ês` 变为 `Quando a palestra não é dada em inglês como é o caso`。剩余 Text Risk 仍为 3 行，集中在德语/意大利语更深的 ASR 词形碎片或识别文本质量。
 
 ## 14. 最终验证 Checklist
 - [x] M1：`WhisperCueRetimer` 实现；retimer 单测 + 全套 Swift 测试绿；`git diff --check` 通过；CLI 真实跑通。
@@ -276,4 +277,5 @@ Gate（`comparison.py:9-44`）：每样本 `accepted_ratio ≥ 0.90` 且 `early_
 - [x] M25：`qa-remaining` 文件头已汇总剩余 text-risk 行数和 Review ID，人工验收可优先处理高风险行。
 - [x] M26：`qa-verdicts` summary 已统计 text-risk verdict 状态与 PASS-without-notes 风险行。
 - [x] M27：`qa-verdicts --require-text-risk-notes` 与 `completion-audit --require-text-risk-notes` 已把风险行 notes 变成最终人工验收硬条件。
+- [x] M28：纯拉丁语系 local-ASR 合词与 metric 对齐已修复；固定 10 语言样本当前全部 `accepted_ratio=1.0`，但人工 QA 仍未填写。
 - [ ] M11：人工 side-by-side QA 尚未完成；`qa.manual-suite.verdicts.json` 当前为每语言 2 段 unchecked。需每个语言/类型至少 2 段 PASS、0 FAIL、0 unchecked，才能宣称本轮“90% 接近真人字幕”由人工验收完成。
