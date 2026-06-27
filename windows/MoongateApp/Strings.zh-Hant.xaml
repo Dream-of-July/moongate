@@ -56,6 +56,12 @@
     <sys:String x:Key="L.Ready.FormatSection">格式</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">字幕</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSourceSection">字幕來源</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleLanguageSection">源字幕/原聲語言</sys:String>
+    <sys:String x:Key="L.Ready.RecommendedBadge">推薦</sys:String>
+    <sys:String x:Key="L.Ready.AutoSourceExplanation">按原聲語言和字幕來源選擇；自動字幕不會優先於更可靠的源語言</sys:String>
+    <sys:String x:Key="L.Ready.MoreLanguages">更多語言</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguageAuto">自動</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguagePickerAccessibility">原聲語言</sys:String>
     <sys:String x:Key="L.Ready.SubtitleOutputSection">字幕輸出</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">這個影片沒有字幕</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitleSource">不需要字幕</sys:String>
@@ -97,7 +103,7 @@
     <sys:String x:Key="L.Hint.ChineseSourceUse">該字幕已是目標語言，將直接使用（不翻譯）</sys:String>
 
     <!-- 失敗頁 -->
-    <sys:String x:Key="L.Failed.GoLogin">前往登入</sys:String>
+    <sys:String x:Key="L.Failed.GoLogin">打開網頁並儲存驗證資訊</sys:String>
     <sys:String x:Key="L.Failed.Restart">重新開始</sys:String>
     <sys:String x:Key="L.Failed.BackToList">返回列表</sys:String>
 
@@ -181,11 +187,12 @@
     <sys:String x:Key="L.Settings.General">一般</sys:String>
     <sys:String x:Key="L.Settings.Language">介面語言</sys:String>
     <sys:String x:Key="L.Settings.TargetLanguage">翻譯目標語言</sys:String>
+    <sys:String x:Key="L.Settings.DefaultSourceLanguage">預設原聲語言</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">跟隨系統</sys:String>
-    <sys:String x:Key="L.Settings.LangHint">切換語言會立即生效；進行中任務的狀態文案會在下次重新整理時切換。</sys:String>
+    <sys:String x:Key="L.Settings.LangHint">切換語言會立即生效；預設原聲語言用於不清晰的影片，選檔頁可臨時改。</sys:String>
     <sys:String x:Key="L.Settings.LocalASRSection">本機語音識別</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">允許呼叫本機 whisper.cpp 識別</sys:String>
-    <sys:String x:Key="L.Settings.LocalASRHelp">重新識別音訊，速度更慢，但部分語言/專名可能更好。Moongate 不會自動下載模型。</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRHelp">當平台字幕品質較差時自動補充識別，速度更慢，但部分語言/專名可能更好。Moongate 不會自動下載模型。</sys:String>
     <sys:String x:Key="L.Settings.AdvancedDetails">進階說明</sys:String>
     <sys:String x:Key="L.Settings.LocalASRImportModel">匯入模型…</sys:String>
     <sys:String x:Key="L.Settings.LocalASRModelImportComplete">{0} 已匯入並啟用</sys:String>
@@ -208,7 +215,7 @@
     <sys:String x:Key="L.Settings.AIService">AI 服務</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">預設 AI 服務會被翻譯和摘要共用；需要不同模型時可在下方單獨覆寫。</sys:String>
     <sys:String x:Key="L.Settings.Translation">翻譯服務</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPrompts">增強模式</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">AI 翻譯規劃</sys:String>
     <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">開啟後，翻譯前先理解整段字幕：分析內容、依類型選擇合適的翻譯風格，並把自動字幕的碎句整理成完整句子。</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">翻譯跟隨預設 AI 服務</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">預設共用上方服務。關閉後可給翻譯單獨指定模型或閘道。</sys:String>
@@ -328,17 +335,18 @@
     <sys:String x:Key="L.Update.KeepTasks">繼續任務</sys:String>
 
     <!-- 站點登入窗 -->
-    <sys:String x:Key="L.Login.Title">站點登入</sys:String>
-    <sys:String x:Key="L.Login.HeadlineFmt">登入 {0}</sys:String>
-    <sys:String x:Key="L.Login.Instruction">在下方頁面完成登入，然後點右上角「完成登入」</sys:String>
-    <sys:String x:Key="L.Login.Finish">完成登入</sys:String>
+    <sys:String x:Key="L.Login.Title">站點驗證</sys:String>
+    <sys:String x:Key="L.Login.HeadlineFmt">驗證 {0}</sys:String>
+    <sys:String x:Key="L.Login.Instruction">在下方頁面完成登入或網頁驗證，然後儲存站點驗證資訊</sys:String>
+    <sys:String x:Key="L.Login.Finish">儲存驗證資訊</sys:String>
     <sys:String x:Key="L.Login.LoadingPage">正在載入登入頁…</sys:String>
     <sys:String x:Key="L.Login.PageLoadFailed">頁面載入失敗，請檢查網路後重試</sys:String>
     <sys:String x:Key="L.Login.NotReady">登入頁尚未載入完成</sys:String>
     <sys:String x:Key="L.Login.NotSignedInConfirm">未偵測到登入狀態，仍要儲存嗎？</sys:String>
     <sys:String x:Key="L.Login.NotSignedInDetail">沒有發現該站點的認證 Cookie，可能還沒登入成功。建議在頁面裡完成登入後再儲存。</sys:String>
     <sys:String x:Key="L.Login.SaveAnyway">仍然儲存</sys:String>
-    <sys:String x:Key="L.Login.SaveFailedFmt">儲存登入資訊失敗：{0}</sys:String>
+    <sys:String x:Key="L.Login.SaveFailedFmt">儲存驗證資訊失敗：{0}</sys:String>
+    <sys:String x:Key="L.Login.NoUsableCookiesForPage">目前網頁沒有產生可用於這個地址的驗證資訊，請在頁面內完成驗證後再儲存。</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 執行階段</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">這台電腦還沒有安裝 WebView2 執行階段，登入視窗需要它才能顯示網頁。&#x0a;請前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下載安裝，然後重新開啟登入視窗。</sys:String>
     <sys:String x:Key="L.Login.WebView2Install">安裝 WebView2 執行階段</sys:String>

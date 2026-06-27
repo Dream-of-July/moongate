@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 from urllib.parse import quote
 
-from .asr import transcribe_words, transcribe_words_whisper_cpp
+from .asr import transcribe_words, transcribe_words_sensevoice_funasr, transcribe_words_whisper_cpp
 from .comparison import compare_reports, summarize_suite
 from .segmentation import (
     evaluate_segmentation,
@@ -3605,6 +3605,7 @@ def transcribe_file(
     ffmpeg: str = "ffmpeg",
     prompt: Optional[str] = None,
     whisper_cpp_no_gpu: bool = False,
+    whisper_cpp_max_context_tokens: Optional[int] = None,
 ) -> Dict[str, object]:
     if engine == "whisper-cpp":
         return transcribe_words_whisper_cpp(
@@ -3616,6 +3617,14 @@ def transcribe_file(
             ffmpeg=ffmpeg,
             prompt=prompt,
             no_gpu=whisper_cpp_no_gpu,
+            max_context_tokens=whisper_cpp_max_context_tokens,
+        )
+    if engine == "sensevoice-funasr":
+        return transcribe_words_sensevoice_funasr(
+            audio_path=audio_path,
+            output_path=output_path,
+            model_size=model_size or "iic/SenseVoiceSmall",
+            language=language,
         )
     return transcribe_words(audio_path=audio_path, output_path=output_path, model_size=model_size, language=language)
 

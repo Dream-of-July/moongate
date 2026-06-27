@@ -81,6 +81,51 @@ public class CookieIsolationTests : IDisposable
     }
 
     [Fact]
+    public void DynamicHostFiltering_UsesOnlyRelatedDomains()
+    {
+        var mixed = new[]
+        {
+            Cookie(".missav.live", "cf_clearance"),
+            Cookie("cdn.missav.live", "cdn"),
+            Cookie(".example.com", "other"),
+        };
+
+        var filtered = CookieSites.FilterToHost(mixed, "missav.live");
+        Assert.Equal(["cdn", "cf_clearance"], filtered.Select(c => c.Name).OrderBy(name => name).ToArray());
+        Assert.Equal("site-missav.live", CookieSites.DynamicKeyForHost("https://missav.live/cn/hublk-074"));
+        Assert.True(CookieSites.DomainMatches("cn.missav.live", ".missav.live"));
+        Assert.False(CookieSites.DomainMatches("missav.live", ".evilmissav.live"));
+    }
+
+    [Fact]
+    public void EngineCookieResolution_UsesKnownThenDynamicJar()
+    {
+        Assert.EndsWith(
+            Path.Combine("cookies", "youtube.txt"),
+            YtDlpEngine.CookieFileForUrl("https://www.youtube.com/watch?v=abc"));
+        Assert.EndsWith(
+            Path.Combine("cookies", "site-missav.live.txt"),
+            YtDlpEngine.CookieFileForUrl("https://missav.live/cn/hublk-074"));
+    }
+
+    [Fact]
+    public void CookieHeaderFor_FiltersByUrlDomainPathAndScheme()
+    {
+        var path = Path.Combine(_dir, "site-missav.live.txt");
+        File.WriteAllText(path, string.Join('\n', [
+            "# Netscape HTTP Cookie File",
+            ".missav.live\tTRUE\t/\tTRUE\t9999999999\tcf_clearance\tok",
+            ".missav.live\tTRUE\t/cn\tFALSE\t9999999999\tlang\tzh",
+            ".example.com\tTRUE\t/\tFALSE\t9999999999\tother\tbad",
+        ]) + "\n");
+
+        var header = NetscapeCookieFile.CookieHeaderFor(
+            new Uri("https://missav.live/cn/hublk-074"), path);
+        Assert.Equal("lang=zh; cf_clearance=ok", header);
+        Assert.Null(NetscapeCookieFile.CookieHeaderFor(new Uri("http://missav.live/"), path));
+    }
+
+    [Fact]
     public void ContainsAuthCookie_RequiresKnownAuthCookieOnAllowedDomain()
     {
         // 仅有一个无关 cookie：不算已登录。

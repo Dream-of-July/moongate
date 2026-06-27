@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     runbook.add_argument("--manifest", default="tools/subtitle_timing_eval/samples.json")
     runbook.add_argument("--artifacts", default="artifacts/subtitle_timing_eval")
     runbook.add_argument("--model", default="small")
-    runbook.add_argument("--asr-engine", choices=["faster-whisper", "whisper-cpp"], default="faster-whisper")
+    runbook.add_argument("--asr-engine", choices=["faster-whisper", "whisper-cpp", "sensevoice-funasr"], default="faster-whisper")
     runbook.add_argument("--model-path", help="Local ggml model path when --asr-engine whisper-cpp is used.")
     runbook.add_argument("--whisper-cli", default="whisper-cli")
     runbook.add_argument("--ffmpeg", default="ffmpeg")
@@ -200,12 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
     asr.add_argument("--out", required=True)
     asr.add_argument("--model", default="small")
     asr.add_argument("--language")
-    asr.add_argument("--engine", choices=["faster-whisper", "whisper-cpp"], default="faster-whisper")
+    asr.add_argument("--engine", choices=["faster-whisper", "whisper-cpp", "sensevoice-funasr"], default="faster-whisper")
     asr.add_argument("--model-path", help="Local ggml model path when --engine whisper-cpp is used.")
     asr.add_argument("--whisper-cli", default="whisper-cli")
     asr.add_argument("--ffmpeg", default="ffmpeg")
     asr.add_argument("--prompt")
     asr.add_argument("--no-gpu", action="store_true", help="Pass --no-gpu to whisper.cpp.")
+    asr.add_argument("--max-context", type=int, help="Pass -mc to whisper.cpp, e.g. 0 for music samples that should not carry prompt context.")
 
     vad = sub.add_parser("vad", help="Extract speech activity segments from audio using local energy VAD.")
     vad.add_argument("--audio", required=True)
@@ -703,6 +704,7 @@ def main() -> None:
             ffmpeg=args.ffmpeg,
             prompt=args.prompt,
             whisper_cpp_no_gpu=args.no_gpu,
+            whisper_cpp_max_context_tokens=args.max_context,
         )
         print("words: %d" % len(payload["words"]))
         return

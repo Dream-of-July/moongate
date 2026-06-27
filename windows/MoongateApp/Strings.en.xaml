@@ -56,6 +56,12 @@
     <sys:String x:Key="L.Ready.FormatSection">Format</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">Subtitles</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSourceSection">Subtitle source</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleLanguageSection">Source subtitle/audio language</sys:String>
+    <sys:String x:Key="L.Ready.RecommendedBadge">Recommended</sys:String>
+    <sys:String x:Key="L.Ready.AutoSourceExplanation">Chosen from source-language evidence; auto captions do not outrank a more reliable source language</sys:String>
+    <sys:String x:Key="L.Ready.MoreLanguages">More languages</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguageAuto">Auto</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguagePickerAccessibility">Original audio language</sys:String>
     <sys:String x:Key="L.Ready.SubtitleOutputSection">Subtitle output</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">This video has no subtitles</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitleSource">No subtitles</sys:String>
@@ -97,7 +103,7 @@
     <sys:String x:Key="L.Hint.ChineseSourceUse">This subtitle is already in the target language; it will be used directly (no translation)</sys:String>
 
     <!-- Failed page -->
-    <sys:String x:Key="L.Failed.GoLogin">Sign in</sys:String>
+    <sys:String x:Key="L.Failed.GoLogin">Open page and save verification</sys:String>
     <sys:String x:Key="L.Failed.Restart">Start over</sys:String>
     <sys:String x:Key="L.Failed.BackToList">Back to list</sys:String>
 
@@ -181,11 +187,12 @@
     <sys:String x:Key="L.Settings.General">General</sys:String>
     <sys:String x:Key="L.Settings.Language">Language</sys:String>
     <sys:String x:Key="L.Settings.TargetLanguage">Translation target</sys:String>
+    <sys:String x:Key="L.Settings.DefaultSourceLanguage">Default source language</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">Follow system</sys:String>
-    <sys:String x:Key="L.Settings.LangHint">Takes effect immediately; status text of running tasks switches on their next refresh.</sys:String>
+    <sys:String x:Key="L.Settings.LangHint">Takes effect immediately. Default source language helps ambiguous videos and can be changed per video.</sys:String>
     <sys:String x:Key="L.Settings.LocalASRSection">Local speech recognition</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">Allow local whisper.cpp recognition</sys:String>
-    <sys:String x:Key="L.Settings.LocalASRHelp">Re-recognizes the audio. It is slower, may help with some languages or names, and Moongate will not download a model automatically.</sys:String>
+    <sys:String x:Key="L.Settings.LocalASRHelp">Automatically fills in recognition when platform subtitles are low quality. It is slower, may help with some languages or names, and Moongate will not download a model automatically.</sys:String>
     <sys:String x:Key="L.Settings.AdvancedDetails">Advanced details</sys:String>
     <sys:String x:Key="L.Settings.LocalASRImportModel">Import model...</sys:String>
     <sys:String x:Key="L.Settings.LocalASRModelImportComplete">{0} has been imported and enabled</sys:String>
@@ -208,7 +215,7 @@
     <sys:String x:Key="L.Settings.AIService">AI service</sys:String>
     <sys:String x:Key="L.Settings.AIServiceHint">The default AI service is reused by translation and summaries; override below when a different model is needed.</sys:String>
     <sys:String x:Key="L.Settings.Translation">Translation service</sys:String>
-    <sys:String x:Key="L.Settings.SmartTranslationPrompts">Enhanced mode</sys:String>
+    <sys:String x:Key="L.Settings.SmartTranslationPrompts">AI translation planning</sys:String>
     <sys:String x:Key="L.Settings.SmartTranslationPromptsHint">Reads the whole subtitle before translating—analyzing the content, picking a translation style for it, and reassembling fragmented auto-captions into complete sentences.</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefault">Translation follows the default AI service</sys:String>
     <sys:String x:Key="L.Settings.TranslationFollowsDefaultHint">Reuses the service above by default. Turn this off to give translation its own model or gateway.</sys:String>
@@ -328,17 +335,18 @@
     <sys:String x:Key="L.Update.KeepTasks">Keep tasks</sys:String>
 
     <!-- Sign-in window -->
-    <sys:String x:Key="L.Login.Title">Site sign-in</sys:String>
-    <sys:String x:Key="L.Login.HeadlineFmt">Sign in to {0}</sys:String>
-    <sys:String x:Key="L.Login.Instruction">Sign in on the page below, then click "Finish sign-in" at the top right</sys:String>
-    <sys:String x:Key="L.Login.Finish">Finish sign-in</sys:String>
+    <sys:String x:Key="L.Login.Title">Site verification</sys:String>
+    <sys:String x:Key="L.Login.HeadlineFmt">Verify {0}</sys:String>
+    <sys:String x:Key="L.Login.Instruction">Finish sign-in or browser verification below, then save the site cookies</sys:String>
+    <sys:String x:Key="L.Login.Finish">Save verification</sys:String>
     <sys:String x:Key="L.Login.LoadingPage">Loading the sign-in page…</sys:String>
     <sys:String x:Key="L.Login.PageLoadFailed">Page failed to load. Check your network and retry</sys:String>
     <sys:String x:Key="L.Login.NotReady">The sign-in page has not finished loading</sys:String>
     <sys:String x:Key="L.Login.NotSignedInConfirm">No sign-in detected. Save anyway?</sys:String>
     <sys:String x:Key="L.Login.NotSignedInDetail">No authentication cookie was found for this site, so sign-in may not have completed. Finish signing in on the page, then save.</sys:String>
     <sys:String x:Key="L.Login.SaveAnyway">Save anyway</sys:String>
-    <sys:String x:Key="L.Login.SaveFailedFmt">Failed to save sign-in: {0}</sys:String>
+    <sys:String x:Key="L.Login.SaveFailedFmt">Failed to save verification: {0}</sys:String>
+    <sys:String x:Key="L.Login.NoUsableCookiesForPage">This page did not produce verification cookies usable for this address. Finish verification on the page, then save again.</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">WebView2 runtime missing</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">This PC does not have the WebView2 runtime, which the sign-in window needs to display web pages.&#x0a;Download it from https://developer.microsoft.com/microsoft-edge/webview2/ and reopen this window.</sys:String>
     <sys:String x:Key="L.Login.WebView2Install">Install WebView2 runtime</sys:String>

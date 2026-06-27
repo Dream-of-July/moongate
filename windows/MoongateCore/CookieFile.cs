@@ -87,4 +87,30 @@ public static class NetscapeCookieFile
     /// <summary>只保留属于该站点允许域的 cookie（导出隔离用）。</summary>
     public static List<CookieRecord> FilterToSite(IEnumerable<CookieRecord> cookies, CookieSite site) =>
         cookies.Where(c => CookieSites.DomainAllowed(site, c.Domain)).ToList();
+
+    /// <summary>为指定 URL 从 Netscape jar 生成 HTTP Cookie header。</summary>
+    public static string? CookieHeaderFor(Uri url, string filePath)
+    {
+        var host = url.Host;
+        if (string.IsNullOrEmpty(host)) return null;
+        var isHttps = string.Equals(url.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+        var requestPath = string.IsNullOrEmpty(url.AbsolutePath) ? "/" : url.AbsolutePath;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var pairs = Read(filePath)
+            .Where(record =>
+            {
+                if (record.IsSecure && !isHttps) return false;
+                if (record.ExpiresEpochSeconds is { } expiry && expiry <= now) return false;
+                if (!CookieSites.DomainMatches(host, record.Domain)) return false;
+                var cookiePath = string.IsNullOrEmpty(record.Path) ? "/" : record.Path;
+                return requestPath == cookiePath
+                    || requestPath.StartsWith(
+                        cookiePath.EndsWith('/') ? cookiePath : cookiePath + "/",
+                        StringComparison.Ordinal);
+            })
+            .OrderByDescending(record => record.Path.Length)
+            .Select(record => $"{record.Name}={record.Value}")
+            .ToList();
+        return pairs.Count == 0 ? null : string.Join("; ", pairs);
+    }
 }

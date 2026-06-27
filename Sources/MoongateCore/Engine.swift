@@ -501,10 +501,21 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return (["--cookies", temp.path], { try? FileManager.default.removeItem(at: temp) })
     }
 
-    /// 按 URL host 解析对应站点的 cookie 文件；非受支持站点返回 nil。
+    /// 按 URL host 解析对应站点的 cookie 文件；未注册站点使用动态 host jar。
     private static func cookieFile(for urlString: String) -> URL? {
-        guard let host = URL(string: urlString)?.host, let site = CookieSites.forHost(host) else { return nil }
-        return AppSettings.siteCookieFileURL(site.key)
+        guard let host = URL(string: urlString)?.host else { return nil }
+        if let site = CookieSites.forHost(host) {
+            return AppSettings.siteCookieFileURL(site.key)
+        }
+        let normalized = CookieSites.normalizedHost(host)
+        let fallbackHost = normalized.hasPrefix("www.") ? String(normalized.dropFirst(4)) : nil
+        let candidates = ([normalized] + [fallbackHost].compactMap { $0 })
+            .compactMap(CookieSites.dynamicKey(forHost:))
+            .map(AppSettings.siteCookieFileURL)
+        if let existing = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            return existing
+        }
+        return candidates.first
     }
 
     /// 该 URL 对应站点是否已有导出的登录 cookie 文件。
@@ -519,35 +530,67 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
     }
 
     private static func detectLoginRequired(stderr: String, url urlString: String, hasCookies: Bool) -> MoongateError? {
+        func siteCookieRequired(site: String, reason: String) -> MoongateError {
+            .siteCookieRequired(site: site, url: urlString, reason: reason)
+        }
         if stderr.contains("Sign in to confirm") {
-            // 已登录过仍被风控：再弹登录窗没有意义，提示重新登录或稍后重试。
-            if hasCookies {
-                return .downloadFailed(CoreL10n.text(
-                    en: "YouTube requires login confirmation. Your saved login may have expired; log in again in Settings or retry later.",
-                    zhHans: "YouTube 要求确认登录状态。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
-                    zhHant: "YouTube 要求確認登入狀態。已儲存的登入資訊可能已過期；可在設定裡重新登入，或稍後重試。"
-                ))
-            }
-            return .loginRequired("youtube.com")
+            let reason = hasCookies
+                ? CoreL10n.text(
+                    en: "YouTube asked to confirm sign-in. The saved verification may have expired.",
+                    zhHans: "YouTube 要求确认登录状态，已保存的验证信息可能已过期。",
+                    zhHant: "YouTube 要求確認登入狀態，已儲存的驗證資訊可能已過期。"
+                )
+                : CoreL10n.text(
+                    en: "YouTube asked to confirm sign-in.",
+                    zhHans: "YouTube 要求确认登录状态。",
+                    zhHant: "YouTube 要求確認登入狀態。"
+                )
+            return siteCookieRequired(site: "youtube.com", reason: reason)
         }
         let host = (URL(string: urlString)?.host ?? "").lowercased()
         let lowerStderr = stderr.lowercased()
+        if !host.isEmpty,
+           !isNativeExtractorHost(host),
+           lowerStderr.contains("[generic]"),
+           lowerStderr.contains("unable to download webpage"),
+           lowerStderr.range(of: #"http error (403|404|503)"#, options: .regularExpression) != nil {
+            let site = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            return siteCookieRequired(
+                site: site,
+                reason: CoreL10n.text(
+                    en: "The site did not return the real webpage to the downloader. Open the page here to complete any browser verification, save the site cookies, then retry.",
+                    zhHans: "站点没有把真实网页返回给下载器。请在这里打开页面完成可能存在的浏览器验证，保存站点验证信息后重试。",
+                    zhHant: "站點沒有把真實網頁返回給下載器。請在這裡打開頁面完成可能存在的瀏覽器驗證，儲存站點驗證資訊後重試。"
+                )
+            )
+        }
         if isBilibiliHost(host),
            !hasCookies,
            (lowerStderr.contains("412") || lowerStderr.contains("precondition failed")) {
-            return .loginRequired("bilibili.com")
+            return siteCookieRequired(
+                site: "bilibili.com",
+                reason: CoreL10n.text(
+                    en: "Bilibili requires browser sign-in or verification before metadata can be loaded.",
+                    zhHans: "哔哩哔哩需要先完成网页登录或验证，才能读取视频信息。",
+                    zhHant: "嗶哩嗶哩需要先完成網頁登入或驗證，才能讀取影片資訊。"
+                )
+            )
         }
         // YouTube 的 403 实质是 PO token / 未登录，登录 cookies 是正解；其他站点的 403 保持防盗链文案。
         // 只看最后一条 ERROR 行，避免中间分片的瞬时 403 被误判成需要登录。
         if isYouTubeHost(host), summarizeStderr(stderr).contains("HTTP Error 403") {
-            if hasCookies {
-                return .downloadFailed(CoreL10n.text(
-                    en: "YouTube rejected the request (403). Your saved login may have expired; log in again in Settings or retry later.",
-                    zhHans: "YouTube 拒绝了请求（403）。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
-                    zhHant: "YouTube 拒絕了請求（403）。已儲存的登入資訊可能已過期；可在設定裡重新登入，或稍後重試。"
-                ))
-            }
-            return .loginRequired("youtube.com")
+            let reason = hasCookies
+                ? CoreL10n.text(
+                    en: "YouTube rejected the request (403). The saved verification may have expired.",
+                    zhHans: "YouTube 拒绝了请求（403），已保存的验证信息可能已过期。",
+                    zhHant: "YouTube 拒絕了請求（403），已儲存的驗證資訊可能已過期。"
+                )
+                : CoreL10n.text(
+                    en: "YouTube rejected the request (403) and needs browser verification.",
+                    zhHans: "YouTube 拒绝了请求（403），需要先完成网页验证。",
+                    zhHant: "YouTube 拒絕了請求（403），需要先完成網頁驗證。"
+                )
+            return siteCookieRequired(site: "youtube.com", reason: reason)
         }
         let pattern = "login required|need to log ?in|requires? (?:a )?login|account cookies|cookies.*(?:required|--cookies)|members?[- ]only|premium|sign ?in|authenticat|登录|登陆|大会员|会员|付费|请先登录|需要登录"
         if stderr.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
@@ -555,18 +598,29 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             if site.isEmpty {
                 site = CoreL10n.text(en: "This site", zhHans: "该站点", zhHant: "此站點")
             }
-            return .loginRequired(site)
+            return siteCookieRequired(
+                site: site,
+                reason: CoreL10n.text(
+                    en: "The downloader reported that this page requires cookies, sign-in, or authentication.",
+                    zhHans: "下载器提示该页面需要 Cookie、登录或身份验证。",
+                    zhHant: "下載器提示該頁面需要 Cookie、登入或身份驗證。"
+                )
+            )
         }
         return nil
     }
 
-    /// 测试用：暴露登录检测与风控检测，验证未登录失败会被识别为 .loginRequired。
+    /// 测试用：暴露登录检测与风控检测，验证未登录/验证失败会被识别为 .siteCookieRequired。
     static func _testLoginRequired(stderr: String, url: String) -> MoongateError? {
         detectLoginRequired(stderr: stderr, url: url)
     }
 
     static func _testLoginRequired(stderr: String, url: String, hasCookies: Bool) -> MoongateError? {
         detectLoginRequired(stderr: stderr, url: url, hasCookies: hasCookies)
+    }
+
+    static func _testCookieFile(for url: String) -> URL? {
+        cookieFile(for: url)
     }
 
     static func _testRiskControlMessage(stderr: String, host: String) -> String? {
@@ -658,7 +712,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             }
             let candidates: [VideoCandidate]
             do {
-                candidates = try await PageSniffer().sniff(pageURL: url)
+                candidates = try await PageSniffer(cookieFileURL: Self.cookieFile(for: trimmed)).sniff(pageURL: url)
             } catch let error as MoongateError {
                 throw error
             } catch {

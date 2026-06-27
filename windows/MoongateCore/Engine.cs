@@ -370,12 +370,24 @@ public class YtDlpEngine : IDownloadEngine
         return (["--cookies", temp], () => { try { File.Delete(temp); } catch { /* 忽略 */ } });
     }
 
-    /// <summary>按 URL host 解析对应站点的 cookie 文件路径；非受支持站点返回 null。</summary>
+    /// <summary>按 URL host 解析对应站点的 cookie 文件路径；未注册站点使用动态 host jar。</summary>
     internal static string? CookieFileForUrl(string urlString)
     {
         var host = Uri.TryCreate(urlString, UriKind.Absolute, out var u) ? u.Host : "";
-        var site = CookieSites.ForHost(host);
-        return site is null ? null : AppSettings.SiteCookieFilePath(site.Key);
+        if (CookieSites.ForHost(host) is { } site)
+        {
+            return AppSettings.SiteCookieFilePath(site.Key);
+        }
+        var normalized = CookieSites.NormalizeHost(host);
+        var candidateHosts = normalized.StartsWith("www.", StringComparison.Ordinal)
+            ? new[] { normalized, normalized[4..] }
+            : new[] { normalized };
+        var candidates = candidateHosts
+            .Select(CookieSites.DynamicKeyForHost)
+            .Where(key => key is { Length: > 0 })
+            .Select(key => AppSettings.SiteCookieFilePath(key!))
+            .ToList();
+        return candidates.FirstOrDefault(File.Exists) ?? candidates.FirstOrDefault();
     }
 
     /// <summary>该 URL 对应站点是否已有导出的登录 cookie 文件。</summary>
@@ -411,44 +423,64 @@ public class YtDlpEngine : IDownloadEngine
     /// </summary>
     internal static MoongateException? DetectLoginRequired(string stderr, string urlString, bool hasCookies)
     {
+        MoongateException SiteCookieRequired(string site, string reason) =>
+            MoongateException.SiteCookieRequired(site, urlString, reason);
+
         if (stderr.Contains("Sign in to confirm"))
         {
-            // 已登录过仍被风控：再弹登录窗没有意义，提示重新登录或稍后重试。
-            if (hasCookies)
-            {
-                return MoongateException.DownloadFailed(L10n.T(
-                    "YouTube 要求确认登录状态。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
-                    "YouTube 要求確認登入狀態。登入資訊可能已過期，可在設定裡重新登入，或稍後重試。",
-                    "YouTube asked to confirm sign-in. Your login may have expired; sign in again in Settings or retry later."));
-            }
-            return MoongateException.LoginRequired("youtube.com");
+            var reason = hasCookies
+                ? L10n.T("YouTube 要求确认登录状态，已保存的验证信息可能已过期。",
+                    "YouTube 要求確認登入狀態，已儲存的驗證資訊可能已過期。",
+                    "YouTube asked to confirm sign-in. The saved verification may have expired.")
+                : L10n.T("YouTube 要求确认登录状态。",
+                    "YouTube 要求確認登入狀態。",
+                    "YouTube asked to confirm sign-in.");
+            return SiteCookieRequired("youtube.com", reason);
         }
         var host = Uri.TryCreate(urlString, UriKind.Absolute, out var url) ? url.Host.ToLowerInvariant() : "";
         var lowerStderr = stderr.ToLowerInvariant();
+        if (host.Length > 0
+            && !IsNativeExtractorHost(host)
+            && lowerStderr.Contains("[generic]")
+            && lowerStderr.Contains("unable to download webpage")
+            && Regex.IsMatch(lowerStderr, @"http error (403|404|503)", RegexOptions.IgnoreCase))
+        {
+            var site = host.StartsWith("www.") ? host[4..] : host;
+            return SiteCookieRequired(site, L10n.T(
+                "站点没有把真实网页返回给下载器。请在这里打开页面完成可能存在的浏览器验证，保存站点验证信息后重试。",
+                "站點沒有把真實網頁返回給下載器。請在這裡打開頁面完成可能存在的瀏覽器驗證，儲存站點驗證資訊後重試。",
+                "The site did not return the real webpage to the downloader. Open the page here to complete any browser verification, save the site cookies, then retry."));
+        }
         if (IsBilibiliHost(host)
             && !hasCookies
             && (lowerStderr.Contains("412") || lowerStderr.Contains("precondition failed")))
         {
-            return MoongateException.LoginRequired("bilibili.com");
+            return SiteCookieRequired("bilibili.com", L10n.T(
+                "哔哩哔哩需要先完成网页登录或验证，才能读取视频信息。",
+                "嗶哩嗶哩需要先完成網頁登入或驗證，才能讀取影片資訊。",
+                "Bilibili requires browser sign-in or verification before metadata can be loaded."));
         }
         // YouTube 的 403 实质是 PO token / 未登录，登录 cookies 是正解；其他站点的 403 保持防盗链文案。
         // 只看最后一条 ERROR 行，避免中间分片的瞬时 403 被误判成需要登录。
         if (IsYouTubeHost(host) && SummarizeStderr(stderr).Contains("HTTP Error 403"))
         {
-            if (hasCookies)
-            {
-                return MoongateException.DownloadFailed(L10n.T(
-                    "YouTube 拒绝了请求（403）。登录信息可能已过期，可在设置里重新登录，或稍后重试。",
-                    "YouTube 拒絕了請求（403）。登入資訊可能已過期，可在設定裡重新登入，或稍後重試。",
-                    "YouTube rejected the request (403). Your login may have expired; sign in again in Settings or retry later."));
-            }
-            return MoongateException.LoginRequired("youtube.com");
+            var reason = hasCookies
+                ? L10n.T("YouTube 拒绝了请求（403），已保存的验证信息可能已过期。",
+                    "YouTube 拒絕了請求（403），已儲存的驗證資訊可能已過期。",
+                    "YouTube rejected the request (403). The saved verification may have expired.")
+                : L10n.T("YouTube 拒绝了请求（403），需要先完成网页验证。",
+                    "YouTube 拒絕了請求（403），需要先完成網頁驗證。",
+                    "YouTube rejected the request (403) and needs browser verification.");
+            return SiteCookieRequired("youtube.com", reason);
         }
         if (LoginRequiredRegex.IsMatch(stderr))
         {
             var site = host.StartsWith("www.") ? host[4..] : host;
             if (site.Length == 0) site = L10n.T("该站点", "該站點", "this site");
-            return MoongateException.LoginRequired(site);
+            return SiteCookieRequired(site, L10n.T(
+                "下载器提示该页面需要 Cookie、登录或身份验证。",
+                "下載器提示該頁面需要 Cookie、登入或身份驗證。",
+                "The downloader reported that this page requires cookies, sign-in, or authentication."));
         }
         return null;
     }
@@ -575,7 +607,7 @@ public class YtDlpEngine : IDownloadEngine
 
     /// <summary>页面嗅探入口；virtual 供测试替换。</summary>
     protected virtual Task<IReadOnlyList<VideoCandidate>> SniffPageAsync(Uri pageUrl, CancellationToken ct) =>
-        new PageSniffer().SniffAsync(pageUrl, ct);
+        new PageSniffer(cookieFilePath: CookieFileForUrl(pageUrl.ToString())).SniffAsync(pageUrl, ct);
 
     // MARK: - 第二步：解析格式与字幕
 

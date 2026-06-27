@@ -94,11 +94,14 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(retryBody.contains("$0.progressPlan = Self.progressPlan(for: request, mode: retryMode)"))
         XCTAssertTrue(retryBody.contains("$0.workPlan = Self.workPlan(for: request, mode: retryMode)"))
         XCTAssertTrue(retryBody.contains("runPipeline(id: id, skipDownload: true)"))
-        XCTAssertTrue(helperBody.contains("languageCode.isEmpty ? \"auto\" : languageCode"))
+        XCTAssertTrue(helperBody.contains("SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: $0)"))
+        XCTAssertTrue(helperBody.contains("languageCode.isEmpty ? (inferredLanguageCode ?? \"auto\") : languageCode"))
         XCTAssertTrue(helperBody.contains("source?.label ?? CoreL10n.t(L.Ready.localASRAutoDetectLabel)"))
         XCTAssertTrue(helperBody.contains("sourceKind: .localASR"))
         XCTAssertTrue(helperBody.contains("provider: \"whisper.cpp\""))
         XCTAssertTrue(helperBody.contains("variant: \"local\""))
+        XCTAssertTrue(queueManager.contains("existingLocalASRSubtitleIsUsable(existing, languageCode: languageCode, request: request)"))
+        XCTAssertTrue(queueManager.contains("LocalASRConfidence.assessSubtitle"))
         XCTAssertTrue(buttonsBody.contains("canRetryWithLocalASR"))
         XCTAssertTrue(buttonsBody.contains("isLocalASRRetryReady"))
         XCTAssertTrue(buttonsBody.contains("onRetryWithLocalASR"))
@@ -228,12 +231,14 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let languageBody = try XCTUnwrap(functionBody(named: "localASRLanguageCode", in: source))
         let prepareBody = try XCTUnwrap(functionBody(named: "prepareLocalASRSourceSubtitleIfNeeded", in: source))
 
-        XCTAssertTrue(workPlanBody.contains("let needsLocalASR = request.requestedSubtitleTracks.contains { $0.sourceKind == .localASR }"))
+        XCTAssertTrue(workPlanBody.contains("let needsLocalASR = shouldPrepareLocalASRSource(for: request)"))
         XCTAssertTrue(workPlanBody.contains("shouldExtractAudio: needsLocalASR"))
         XCTAssertTrue(workPlanBody.contains("shouldRunASR: needsLocalASR"))
         XCTAssertTrue(workPlanBody.contains("shouldSegmentSubtitles: needsLocalASR"))
-        XCTAssertTrue(languageBody.contains("request.primarySubtitleTrack?.sourceKind == .localASR"))
-        XCTAssertTrue(languageBody.contains("first(where: { $0.sourceKind == .localASR })?"))
+        XCTAssertTrue(languageBody.contains("if let primarySubtitleTrack = request.primarySubtitleTrack"))
+        XCTAssertTrue(languageBody.contains("primarySubtitleTrack.sourceKind == .localASR ? primarySubtitleTrack.languageCode : nil"))
+        XCTAssertTrue(languageBody.contains("guard shouldPrepareLocalASRSource(for: request) else { return nil }"))
+        XCTAssertTrue(source.contains("let hasNonLocalTrack = request.requestedSubtitleTracks.contains { $0.sourceKind != .localASR }"))
         XCTAssertTrue(prepareBody.contains("guard let languageCode = Self.localASRLanguageCode(in: request) else"))
         XCTAssertTrue(prepareBody.contains("return files"))
         XCTAssertLessThan(
@@ -295,6 +300,21 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(keys.contains("audioExtractingPercent"))
         XCTAssertTrue(keys.contains("speechRecognizingPercent"))
         XCTAssertTrue(keys.contains("subtitleSegmentingPercent"))
+    }
+
+    /// M3：下载后源质量解析的接线必须存在于 QueueManager——平台自动字幕过质量门，
+    /// 不可用且本地识别可用时自动回退 whisper（不比时序），并把来源/原因记到 item 上供 UI 展开区显示。
+    func testQueueManagerWiresPostDownloadQualityGateFallback() throws {
+        let source = try queueManagerSource()
+        XCTAssertTrue(source.contains("resolveSubtitleSourceWithQualityGate"))
+        XCTAssertTrue(source.contains("PlatformSubtitleQualityGate.assess"))
+        XCTAssertTrue(source.contains("effectivePreferredLanguageCode"))
+        XCTAssertTrue(source.contains("$0.resolvedSubtitleSource = resolution.resolved"))
+        XCTAssertTrue(source.contains("subtitleSourceNote"))
+        XCTAssertTrue(source.contains("pickedIsAuto"))
+        XCTAssertTrue(source.contains("primarySubtitleTrack.sourceKind == .platformAuto"))
+        XCTAssertFalse(source.contains("pickedSource.pathExtension.lowercased() == \"vtt\"\n            || primarySubtitleTrack?.sourceKind == .platformAuto"))
+        XCTAssertTrue(source.contains("subtitleSourceLowQualityEnableLocalASR"))
     }
 
     func testQueueItemUsesOverallProgressAndAddsRemainingDetails() throws {

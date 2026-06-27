@@ -39,7 +39,7 @@ final class MacOSLoginBoundaryTests: XCTestCase {
         let updateBody = try XCTUnwrap(functionBody(prefix: "func updateNSView", in: source))
 
         XCTAssertTrue(topBarBody.contains("openCurrentPageInBrowser()"))
-        XCTAssertTrue(openBrowserBody.contains("currentPageURL ?? Self.startURL(for: site)"))
+        XCTAssertTrue(openBrowserBody.contains("currentPageURL ?? resolvedStartURL"))
         XCTAssertTrue(openBrowserBody.contains("NSWorkspace.shared.open"))
         XCTAssertFalse(makeBody.contains("NSWorkspace.shared.open"))
         XCTAssertFalse(updateBody.contains("NSWorkspace.shared.open"))
@@ -91,10 +91,22 @@ final class MacOSLoginBoundaryTests: XCTestCase {
 
         XCTAssertTrue(exportBody.contains("WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in"))
         // SEC-COOKIE-001：按站点过滤后写入该站点专属文件，不再把全部 cookie 写进一个全局文件。
-        XCTAssertTrue(exportBody.contains("CookieSites.forLoginSite(site)"))
-        XCTAssertTrue(exportBody.contains("CookieSites.filterToSite(cookies, cookieSite)"))
-        XCTAssertTrue(exportBody.contains("AppSettings.siteCookieFileURL(cookieSite.key)"))
-        XCTAssertTrue(exportBody.contains("NetscapeCookieFile.write(cookies: filtered, to: fileURL)"))
+        XCTAssertTrue(source.contains("let startURL: URL?"))
+        XCTAssertTrue(exportBody.contains("cookieExportDestination(for: site)"))
+        XCTAssertTrue(source.contains("CookieSites.filterToSite($0, cookieSite)"))
+        XCTAssertTrue(source.contains("CookieSites.filterToHost($0, host: site)"))
+        XCTAssertTrue(source.contains("AppSettings.siteCookieFileURL(key)"))
+        XCTAssertTrue(exportBody.contains("NetscapeCookieFile.write(cookies: filtered, to: destination.fileURL)"))
+    }
+
+    func testCookieExportRequiresJarUsableForFailedStartURLBeforeRetrying() throws {
+        let source = try loginWebViewSource()
+        let exportBody = try XCTUnwrap(functionBody(prefix: "private func exportCookies", in: source))
+
+        XCTAssertTrue(exportBody.contains("NetscapeCookieFile.cookieHeader(for: resolvedStartURL, from: destination.fileURL)"))
+        XCTAssertTrue(exportBody.contains("localizer.t(L.Login.noUsableCookiesForPage"))
+        XCTAssertTrue(exportBody.contains("finishExport(failureText)"))
+        XCTAssertTrue(exportBody.contains("return"))
     }
 
     func testLoginWebViewExposesLoadingStateThroughBinding() throws {

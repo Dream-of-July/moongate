@@ -237,43 +237,44 @@ public class DetectLoginRequiredTests
     private const string YoutubeUrl = "https://www.youtube.com/watch?v=abc";
 
     [Fact]
-    public void SignInToConfirm_NoCookies_LoginRequired()
+    public void SignInToConfirm_NoCookies_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: Sign in to confirm you're not a bot", YoutubeUrl, hasCookies: false);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
         Assert.Equal("youtube.com", error.Detail);
+        Assert.Equal(YoutubeUrl, error.CookieRequestUrl);
     }
 
     [Fact]
-    public void SignInToConfirm_WithCookies_SuggestsRelogin()
+    public void SignInToConfirm_WithCookies_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: Sign in to confirm you're not a bot", YoutubeUrl, hasCookies: true);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.DownloadFailed, error.Kind);
-        Assert.Contains("登录信息可能已过期", error.Detail);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
+        Assert.Contains("验证信息可能已过期", error.Message);
     }
 
     [Fact]
-    public void Youtube403InLastErrorLine_NoCookies_LoginRequired()
+    public void Youtube403InLastErrorLine_NoCookies_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "WARNING: something\nERROR: unable to download video data: HTTP Error 403: Forbidden",
             YoutubeUrl, hasCookies: false);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
     }
 
     [Fact]
-    public void Youtube403_WithCookies_SuggestsRelogin()
+    public void Youtube403_WithCookies_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: HTTP Error 403: Forbidden", YoutubeUrl, hasCookies: true);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.DownloadFailed, error.Kind);
-        Assert.Contains("403", error.Detail);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
+        Assert.Contains("403", error.Message);
     }
 
     /// <summary>只看最后一条 ERROR 行：中间分片的瞬时 403 不触发登录判定。</summary>
@@ -295,27 +296,42 @@ public class DetectLoginRequiredTests
     }
 
     [Fact]
-    public void MembersOnlyPattern_LoginRequiredWithSite()
+    public void MembersOnlyPattern_SiteCookieRequiredWithSite()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: This video is members-only content", "https://www.example.com/v", hasCookies: false);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
         Assert.Equal("example.com", error.Detail);  // www. 前缀剥掉
     }
 
     [Fact]
-    public void ChinesePattern_Bilibili_LoginRequired()
+    public void GenericWebpage404_SiteCookieRequiredWithOriginalUrl()
+    {
+        var error = YtDlpEngine.DetectLoginRequired(
+            "ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found (caused by <HTTPError 404: Not Found>)",
+            "https://missav.live/cn/hublk-074",
+            hasCookies: false);
+
+        Assert.NotNull(error);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
+        Assert.Equal("missav.live", error.Detail);
+        Assert.Equal("https://missav.live/cn/hublk-074", error.CookieRequestUrl);
+        Assert.Contains("浏览器验证", error.Message);
+    }
+
+    [Fact]
+    public void ChinesePattern_Bilibili_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: 大会员专享，请登录后重试", "https://www.bilibili.com/video/BV1x", hasCookies: false);
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
         Assert.Equal("bilibili.com", error.Detail);
     }
 
     [Fact]
-    public void Bilibili412WithoutSavedCookies_LoginRequired()
+    public void Bilibili412WithoutSavedCookies_SiteCookieRequired()
     {
         var error = YtDlpEngine.DetectLoginRequired(
             "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed",
@@ -323,7 +339,7 @@ public class DetectLoginRequiredTests
             hasCookies: false);
 
         Assert.NotNull(error);
-        Assert.Equal(MoongateErrorKind.LoginRequired, error.Kind);
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
         Assert.Equal("bilibili.com", error.Detail);
     }
 
@@ -558,9 +574,9 @@ public class EngineI18nTests
                 "https://www.youtube.com/watch?v=abc",
                 hasCookies: true);
             Assert.NotNull(expired);
-            Assert.Equal(MoongateErrorKind.DownloadFailed, expired.Kind);
-            Assert.Contains("登入資訊可能已過期", expired.Detail);
-            Assert.DoesNotContain("登录信息可能已过期", expired.Detail);
+            Assert.Equal(MoongateErrorKind.SiteCookieRequired, expired.Kind);
+            Assert.Contains("驗證資訊可能已過期", expired.Message);
+            Assert.DoesNotContain("验证信息可能已过期", expired.Message);
 
             var fallbackSite = YtDlpEngine.DetectLoginRequired(
                 "ERROR: login required",

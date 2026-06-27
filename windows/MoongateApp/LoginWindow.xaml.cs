@@ -13,11 +13,13 @@ namespace Moongate.App;
 public partial class LoginWindow : Window
 {
     private readonly string _site;
+    private readonly string? _startUrl;
     private bool _exporting;
 
-    public LoginWindow(string site)
+    public LoginWindow(string site, string? startUrl = null)
     {
         _site = site;
+        _startUrl = startUrl;
         LocalizationManager.ApplyTypography(this);
         InitializeComponent();
         ThemeManager.ApplyWindowTheme(this);
@@ -42,7 +44,7 @@ public partial class LoginWindow : Window
                 core.Navigate(args.Uri);
             };
             InitText.Visibility = Visibility.Collapsed;
-            core.Navigate(StartUrl(_site));
+            core.Navigate(StartUrl(_site, _startUrl));
         }
         catch (WebView2RuntimeNotFoundException)
         {
@@ -119,16 +121,16 @@ public partial class LoginWindow : Window
                     ExpiresEpochSeconds = ExpiryEpochSeconds(cookie),
                 });
             }
-            // 按站点隔离：只导出本站点允许域的 cookie，绝不把其它站点会话写进来。
-            var site = CookieSites.ForLoginSite(_site);
-            if (site is null)
+            // 按站点隔离：已知站点使用注册域名过滤，未知站点使用 host-scoped 动态 jar。
+            var destination = CookieDestination(_site, records);
+            if (destination is null) throw new InvalidOperationException(Loc.S("L.Login.NotReady"));
+            var (path, filtered, knownSite) = destination.Value;
+            if (filtered.Count == 0)
             {
-                // 非受支持的登录站点（理论上不会发生，UI 只提供 YouTube/Bilibili）。
                 throw new InvalidOperationException(Loc.S("L.Login.NotReady"));
             }
-            var filtered = NetscapeCookieFile.FilterToSite(records, site);
-            // 未检测到认证 cookie：可能还没真正登录完成，让用户确认而不是默默写一个无效登录态。
-            if (!CookieSites.ContainsAuthCookie(site, filtered))
+            // 已知站点未检测到认证 cookie：可能还没真正登录完成，让用户确认而不是默默写一个无效登录态。
+            if (knownSite is not null && !CookieSites.ContainsAuthCookie(knownSite, filtered))
             {
                 var proceed = ConfirmWindow.Show(
                     this, Loc.S("L.Login.NotSignedInConfirm"), Loc.S("L.Login.NotSignedInDetail"),
@@ -138,7 +140,11 @@ public partial class LoginWindow : Window
                     return;
                 }
             }
-            NetscapeCookieFile.Write(filtered, AppSettings.SiteCookieFilePath(site.Key));
+            NetscapeCookieFile.Write(filtered, path);
+            if (NetscapeCookieFile.CookieHeaderFor(new Uri(StartUrl(_site, _startUrl)), path) is null)
+            {
+                throw new InvalidOperationException(Loc.S("L.Login.NoUsableCookiesForPage"));
+            }
             DialogResult = true;
         }
         catch (Exception error)
@@ -171,9 +177,36 @@ public partial class LoginWindow : Window
         }
     }
 
-    /// <summary>各站点的登录入口页。</summary>
-    internal static string StartUrl(string site)
+    private static (string Path, List<CookieRecord> Records, CookieSite? KnownSite)? CookieDestination(
+        string site,
+        List<CookieRecord> records)
     {
+        if (CookieSites.ForLoginSite(site) is { } known)
+        {
+            return (
+                AppSettings.SiteCookieFilePath(known.Key),
+                NetscapeCookieFile.FilterToSite(records, known),
+                known
+            );
+        }
+        var key = CookieSites.DynamicKeyForHost(site);
+        if (key is null) return null;
+        return (
+            AppSettings.SiteCookieFilePath(key),
+            CookieSites.FilterToHost(records, site),
+            null
+        );
+    }
+
+    /// <summary>各站点的登录入口页。</summary>
+    internal static string StartUrl(string site, string? startUrl = null)
+    {
+        if (!string.IsNullOrWhiteSpace(startUrl)
+            && Uri.TryCreate(startUrl, UriKind.Absolute, out var parsed)
+            && (parsed.Scheme == "http" || parsed.Scheme == "https"))
+        {
+            return parsed.ToString();
+        }
         var s = site.ToLowerInvariant();
         if (s.Contains("youtube.com"))
         {

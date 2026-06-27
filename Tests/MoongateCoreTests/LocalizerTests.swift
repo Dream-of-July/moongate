@@ -97,7 +97,7 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.langHans, language: .zhHant), "简体中文")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.langHant, language: .en), "繁體中文")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.aiSettingsSection, language: .en), "AI settings")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.smartTranslationPrompts, language: .zhHant), "增強模式")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.smartTranslationPrompts, language: .zhHant), "AI 翻譯規劃")
         XCTAssertEqual(LocalizedStrings.format(L.Settings.fetchedModels, language: .en, [3]), "Fetched 3 models")
         XCTAssertEqual(LocalizedStrings.format(L.Settings.connectionFailed, language: .zhHant, ["逾時"]), "連線失敗：逾時")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.advancedDetails, language: .en), "Advanced details")
@@ -121,7 +121,7 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.notificationsSection, language: .zhHans), "完成提醒")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.completionSound, language: .zhHant), "佇列完成時播放提示音")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSection, language: .en), "Local speech recognition")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRHelp, language: .zhHans), "重新识别音频，速度更慢，但部分语言/专名可能更好。Moongate 不会自动下载模型。")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRHelp, language: .zhHans), "当平台字幕质量较差时自动补充识别，速度更慢，但部分语言/专名可能更好。Moongate 不会自动下载模型。")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRRepairSetup, language: .zhHans), "修复/配置")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupReady, language: .zhHans), "本地 Whisper 已就绪")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupMissingRuntime, language: .en), "whisper-cli is not configured")
@@ -153,7 +153,7 @@ final class LocalizerTests: XCTestCase {
 
     func testFailedStateStringsAreLocalized() {
         XCTAssertEqual(LocalizedStrings.string(L.Failed.technicalDetails, language: .en), "Technical details")
-        XCTAssertEqual(LocalizedStrings.string(L.Failed.login, language: .zhHant), "前往登入")
+        XCTAssertEqual(LocalizedStrings.string(L.Failed.login, language: .zhHant), "打開網頁並儲存驗證資訊")
         XCTAssertEqual(LocalizedStrings.string(L.Failed.restart, language: .zhHans), "重新开始")
     }
 
@@ -183,9 +183,9 @@ final class LocalizerTests: XCTestCase {
     }
 
     func testLoginStringsAreLocalized() {
-        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .en, ["YouTube"]), "Log in to YouTube")
-        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .zhHant, ["YouTube"]), "登入 YouTube")
-        XCTAssertEqual(LocalizedStrings.string(L.Login.saveLogin, language: .en), "Save login")
+        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .en, ["YouTube"]), "Verify YouTube")
+        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .zhHant, ["YouTube"]), "驗證 YouTube")
+        XCTAssertEqual(LocalizedStrings.string(L.Login.saveLogin, language: .en), "Save verification")
         XCTAssertEqual(LocalizedStrings.string(L.Login.saving, language: .zhHant), "儲存中…")
         XCTAssertEqual(LocalizedStrings.string(L.Login.cookieReady, language: .zhHans), "已检测到当前站点 Cookie")
         XCTAssertEqual(LocalizedStrings.string(L.Login.loadFailed, language: .zhHant), "頁面載入失敗，請檢查網路後重試")

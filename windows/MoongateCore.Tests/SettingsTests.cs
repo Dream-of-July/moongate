@@ -431,9 +431,10 @@ public class SettingsTests
     [Fact]
     public void FromJson_UnknownLanguageValues_FallBackSafely()
     {
-        var settings = AppSettings.FromJson("""{"appLanguage": "klingon", "translationTargetLanguage": "elvish"}""");
+        var settings = AppSettings.FromJson("""{"appLanguage": "klingon", "translationTargetLanguage": "elvish", "preferredSourceLanguage": "na'vi"}""");
         Assert.Equal("auto", settings.AppLanguage);
         Assert.Equal("zh-Hans", settings.TranslationTargetLanguage);
+        Assert.Equal("auto", settings.PreferredSourceLanguage);
     }
 
     /// <summary>parity：ToJson 必须用与 Swift 端完全一致的 JSON key 名。</summary>
@@ -443,7 +444,19 @@ public class SettingsTests
         var json = new AppSettings().ToJson();
         Assert.Contains("\"appLanguage\"", json);
         Assert.Contains("\"translationTargetLanguage\"", json);
+        Assert.Contains("\"preferredSourceLanguage\"", json);
         Assert.Contains("\"onboardingCompleted\"", json);
+    }
+
+    [Fact]
+    public void PreferredSourceLanguage_DefaultsAndRoundTrips()
+    {
+        Assert.Equal("auto", new AppSettings().PreferredSourceLanguage);
+        Assert.Equal("auto", AppSettings.FromJson("{}").PreferredSourceLanguage);
+
+        var settings = new AppSettings { PreferredSourceLanguage = "ja" };
+        var back = AppSettings.FromJson(settings.ToJson());
+        Assert.Equal("ja", back.PreferredSourceLanguage);
     }
 
     [Fact]

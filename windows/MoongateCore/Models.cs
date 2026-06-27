@@ -12,6 +12,8 @@ public enum MoongateErrorKind
     DownloadFailed,
     /// <summary>站点风控/会员限制，需要用户在 App 内登录该站点后重试。Detail 为站点 host（如 "youtube.com"）。</summary>
     LoginRequired,
+    /// <summary>站点需要用户在网页完成登录、验证或风控确认后保存 Cookie 再重试。</summary>
+    SiteCookieRequired,
     TranslateFailed,
     BurnFailed,
     Cancelled,
@@ -26,11 +28,17 @@ public sealed class MoongateException : Exception
     public MoongateErrorKind Kind { get; }
     /// <summary>原因文本或站点 host（LoginRequired 时）。</summary>
     public string Detail { get; }
+    public string? CookieRequestUrl { get; }
+    public string? CookieRequestReason { get; }
 
-    private MoongateException(MoongateErrorKind kind, string detail, string message) : base(message)
+    private MoongateException(
+        MoongateErrorKind kind, string detail, string message,
+        string? cookieRequestUrl = null, string? cookieRequestReason = null) : base(message)
     {
         Kind = kind;
         Detail = detail;
+        CookieRequestUrl = cookieRequestUrl;
+        CookieRequestReason = cookieRequestReason;
     }
 
     public static MoongateException BinaryNotFound(string name) => new(
@@ -62,6 +70,14 @@ public sealed class MoongateException : Exception
         L10n.T($"{site} 需要登录后才能下载。点击「去登录」，在弹出的页面里登录账号后重试。",
             $"{site} 需要登入後才能下載。點擊「去登入」，在彈出的頁面裡登入帳號後重試。",
             $"{site} requires sign-in before downloading. Click \"Sign in\", log in on the page that opens, then retry."));
+
+    public static MoongateException SiteCookieRequired(string site, string url, string reason) => new(
+        MoongateErrorKind.SiteCookieRequired, site,
+        L10n.T($"{site} 需要先完成网页登录或验证，月之门才能访问真实视频页面。请打开页面并保存站点验证信息，随后会自动重试。\n{reason}",
+            $"{site} 需要先完成網頁登入或驗證，月之門才能存取真實影片頁面。請打開頁面並儲存站點驗證資訊，隨後會自動重試。\n{reason}",
+            $"{site} needs browser verification or sign-in before Moongate can access the video. Open the page here, save the site cookies, then Moongate will retry.\n{reason}"),
+        cookieRequestUrl: url,
+        cookieRequestReason: reason);
 
     public static MoongateException TranslateFailed(string reason) => new(
         MoongateErrorKind.TranslateFailed, reason,
@@ -272,6 +288,91 @@ public sealed record SubtitleChoice
         };
 }
 
+/// <summary>
+/// Upper-level language aggregation consumed by the ready page UI. A language groups all of its
+/// technical tracks (manual / platform-auto / local ASR) so users pick a language, not a source.
+/// Pure derived view: never persisted, never sent to yt-dlp directly.
+/// </summary>
+public sealed record SubtitleLanguageChoice
+{
+    /// <summary>Normalized language code (lowercased, first '-' segment), e.g. "ja". Also the identity.</summary>
+    public required string LanguageCode { get; init; }
+    /// <summary>Display label, taken from the best (first non-localASR) track in the group.</summary>
+    public required string DisplayLabel { get; init; }
+    /// <summary>Tracks for this language, sorted manual → platformAuto → localASR.</summary>
+    public required IReadOnlyList<SubtitleChoice> Tracks { get; init; }
+
+    public bool HasManualTrack => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.Manual);
+    public bool HasAutoTrack => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.PlatformAuto);
+    /// <summary>Whether the group carries a local-ASR option (independent of runtime readiness).</summary>
+    public bool SupportsLocalAsr => Tracks.Any(t => t.SourceKind == SubtitleSourceKind.LocalAsr);
+    /// <summary>Preferred technical track: manual > auto > localASR (tracks are pre-sorted).</summary>
+    public SubtitleChoice? PreferredTrack => Tracks.Count > 0 ? Tracks[0] : null;
+
+    /// <summary>
+    /// Normalizes a subtitle language code to a stable bucket key: lowercased, first '-' segment.
+    /// So "ja", "ja-JP", "ja-orig" all collapse to "ja".
+    /// </summary>
+    public static string NormalizedLanguageCode(string code)
+    {
+        var lower = code.ToLowerInvariant();
+        var dash = lower.IndexOf('-');
+        return dash >= 0 ? lower[..dash] : lower;
+    }
+
+    /// <summary>Sort rank for technical tracks within a language group.</summary>
+    public static int TrackRank(SubtitleSourceKind kind) => kind switch
+    {
+        SubtitleSourceKind.Manual => 0,
+        SubtitleSourceKind.PlatformAuto => 1,
+        SubtitleSourceKind.HlsManifest => 2,
+        SubtitleSourceKind.LocalAsr => 3,
+        SubtitleSourceKind.ImportedFile => 4,
+        _ => 5,
+    };
+
+    /// <summary>
+    /// Groups flat subtitle choices by normalized language code into ordered language choices.
+    /// Group order follows first appearance of each language; tracks within a group are stably
+    /// sorted by source rank. Deterministic, no regex.
+    /// </summary>
+    public static IReadOnlyList<SubtitleLanguageChoice> Aggregate(IReadOnlyList<SubtitleChoice> choices)
+    {
+        var order = new List<string>();
+        var grouped = new Dictionary<string, List<SubtitleChoice>>(StringComparer.Ordinal);
+        foreach (var choice in choices)
+        {
+            var key = NormalizedLanguageCode(choice.LanguageCode);
+            if (key.Length == 0) continue;
+            if (!grouped.TryGetValue(key, out var list))
+            {
+                list = [];
+                grouped[key] = list;
+                order.Add(key);
+            }
+            list.Add(choice);
+        }
+        return order.Select(key =>
+        {
+            var tracks = grouped[key]
+                .Select((choice, index) => (choice, index))
+                .OrderBy(pair => TrackRank(pair.choice.SourceKind))
+                .ThenBy(pair => pair.index)
+                .Select(pair => pair.choice)
+                .ToList();
+            var label = tracks.FirstOrDefault(t => t.SourceKind != SubtitleSourceKind.LocalAsr)?.Label
+                ?? tracks.FirstOrDefault()?.Label
+                ?? key;
+            return new SubtitleLanguageChoice
+            {
+                LanguageCode = key,
+                DisplayLabel = label,
+                Tracks = tracks,
+            };
+        }).ToList();
+    }
+}
+
 public sealed record VideoInfo
 {
     public required string SourceUrl { get; init; }
@@ -307,6 +408,12 @@ public sealed record DownloadRequest
     public IReadOnlyList<SubtitleChoice> SubtitleTracks { get; init; } = [];
     /// <summary>The single primary subtitle source selected on the ready page.</summary>
     public string? PrimarySubtitleTrackId { get; init; }
+    /// <summary>
+    /// The language (normalized code) the user picked on the language-first ready page. The
+    /// post-download source resolver uses this for language matching / quality fallback.
+    /// null falls back to <see cref="PrimarySubtitleLanguageCode"/>.
+    /// </summary>
+    public string? PreferredSubtitleLanguageCode { get; init; }
     public required string DestinationDirectory { get; init; }
     /// <summary>
     /// 期望的文件名标题。直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名
@@ -344,6 +451,12 @@ public sealed record DownloadRequest
     }
 
     public string? PrimarySubtitleLanguageCode => PrimarySubtitleTrack?.LanguageCode;
+
+    /// <summary>
+    /// The language the post-download source resolver should match against: the user's
+    /// language-first pick, falling back to the primary track's language.
+    /// </summary>
+    public string? EffectivePreferredLanguageCode => PreferredSubtitleLanguageCode ?? PrimarySubtitleTrack?.LanguageCode;
 
     public IReadOnlyList<string> YtDlpSubtitleLangs =>
         UniqueForYtDlpSubLangs(RequestedSubtitleTracks

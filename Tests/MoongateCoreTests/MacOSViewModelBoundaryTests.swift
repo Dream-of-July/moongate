@@ -120,6 +120,16 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("evaluator: runtimeReadinessEvaluator"))
     }
 
+    func testBatchSubtitleSourceUsesLanguageRecommendation() throws {
+        let source = try viewModelSource()
+        let processBatchBody = try XCTUnwrap(functionBody(prefix: "private func processBatch", in: source))
+
+        XCTAssertTrue(processBatchBody.contains("SubtitleLanguageRecommender.recommend("))
+        XCTAssertTrue(processBatchBody.contains("availableSubtitleChoices(for: info)"))
+        XCTAssertTrue(processBatchBody.contains("recommended.preferredTrack"))
+        XCTAssertFalse(processBatchBody.contains("info.subtitles.first(where: { !$0.isAuto }) ?? info.subtitles.first"))
+    }
+
     func testSummaryAvailabilityUsesSummaryRuntimeReadiness() throws {
         let source = try viewModelSource()
         let refreshBody = try XCTUnwrap(functionBody(prefix: "func refreshSummaryRuntimeReadiness", in: source))
@@ -218,10 +228,11 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let settingsBody = try XCTUnwrap(publishedSettingsBody(in: source))
 
         XCTAssertFalse(availableBody.contains("guard queue.hasLocalASRGenerator else { return choices }"))
-        XCTAssertTrue(availableBody.contains("SubtitleChoice("))
-        XCTAssertTrue(availableBody.contains("sourceKind: .localASR"))
-        XCTAssertTrue(availableBody.contains("provider: \"whisper.cpp\""))
-        XCTAssertTrue(availableBody.contains("variant: \"local\""))
+        XCTAssertTrue(availableBody.contains("appendLocalASRChoice"))
+        XCTAssertTrue(source.contains("SubtitleChoice("))
+        XCTAssertTrue(source.contains("sourceKind: .localASR"))
+        XCTAssertTrue(source.contains("provider: \"whisper.cpp\""))
+        XCTAssertTrue(source.contains("variant: \"local\""))
         XCTAssertTrue(source.contains("var localASRReadyForDownload: Bool"))
         XCTAssertTrue(source.contains("func openLocalASRSettings()"))
         XCTAssertTrue(source.contains("pendingSettingsPaneID"))
@@ -255,13 +266,49 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
     func testReadySelectionIncludesAutoLocalASRWhenNoPlatformSubtitles() throws {
         let source = try viewModelSource()
         let availableBody = try XCTUnwrap(functionBody(prefix: "func availableSubtitleChoices", in: source))
+        let effectiveBody = try XCTUnwrap(functionBody(prefix: "func effectiveSourceLanguagePreference", in: source))
 
         XCTAssertTrue(availableBody.contains("info.subtitles.isEmpty"))
-        XCTAssertTrue(availableBody.contains("languageCode: \"auto\""))
+        XCTAssertTrue(effectiveBody.contains("?? \"auto\""))
         XCTAssertTrue(availableBody.contains("CoreL10n.t(L.Ready.localASRAutoDetectLabel)"))
-        XCTAssertTrue(availableBody.contains("sourceKind: .localASR"))
-        XCTAssertTrue(availableBody.contains("provider: \"whisper.cpp\""))
-        XCTAssertTrue(availableBody.contains("variant: \"local\""))
+        XCTAssertTrue(source.contains("sourceKind: .localASR"))
+        XCTAssertTrue(source.contains("provider: \"whisper.cpp\""))
+        XCTAssertTrue(source.contains("variant: \"local\""))
+    }
+
+    func testReadySelectionAddsPreferredSourceLanguageLocalASRWhenPlatformLacksIt() throws {
+        let source = try viewModelSource()
+        let availableBody = try XCTUnwrap(functionBody(prefix: "func availableSubtitleChoices", in: source))
+        let recommendationBody = try XCTUnwrap(functionBody(prefix: "func languageRecommendation", in: source))
+        let restoreBody = try XCTUnwrap(functionBody(prefix: "private func restoreDownloadOptions", in: source))
+
+        XCTAssertTrue(source.contains("@Published var readySourceLanguagePreference"))
+        XCTAssertTrue(source.contains("func effectiveSourceLanguagePreference(for info: VideoInfo) -> String"))
+        XCTAssertTrue(availableBody.contains("effectiveSourceLanguagePreference(for: info)"))
+        XCTAssertTrue(availableBody.contains("appendLocalASRChoice"))
+        XCTAssertTrue(source.contains("TranslationLanguage.sourceDisplayName(for: languageCode)"))
+        XCTAssertTrue(recommendationBody.contains("preferredSourceLanguage: effectiveSourceLanguagePreference(for: info)"))
+        XCTAssertTrue(restoreBody.contains("readySourceLanguagePreference = settings.preferredSourceLanguage"))
+    }
+
+    func testReadyPageUsesLanguageFirstRecommendationAndThreadsPreferredLanguage() throws {
+        let source = try viewModelSource()
+
+        // 语言优先 API：聚合 + 推荐 + 选择，全部委托给共享 SubtitleLanguageRecommender。
+        XCTAssertTrue(source.contains("func recommendedLanguage(for info: VideoInfo) -> SubtitleLanguageChoice?"))
+        XCTAssertTrue(source.contains("func otherLanguages(for info: VideoInfo) -> [SubtitleLanguageChoice]"))
+        XCTAssertTrue(source.contains("SubtitleLanguageRecommender.recommend("))
+        XCTAssertTrue(source.contains("func selectLanguage(_ language: SubtitleLanguageChoice)"))
+        XCTAssertTrue(source.contains("primarySubtitleTrackID = track.id"))
+        XCTAssertTrue(source.contains("@Published var languageSectionExpanded: Bool = false"))
+
+        // 恢复优先级：上次手选/语言未命中时，回退到推荐语言。
+        let restoreBody = try XCTUnwrap(functionBody(prefix: "private func restoreDownloadOptions", in: source))
+        XCTAssertTrue(restoreBody.contains("recommendedLanguage(for: info)?.preferredTrack"))
+        XCTAssertTrue(restoreBody.contains("languageSectionExpanded = false"))
+
+        // 构造请求填 preferredSubtitleLanguageCode（语言优先选择）。
+        XCTAssertTrue(source.contains("preferredSubtitleLanguageCode: primarySubtitleTrackIDSnapshot.map(normalizedLang)"))
     }
 
     func testDownloadsUseAppOwnedDirectoryForStorageSafety() throws {

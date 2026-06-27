@@ -15,8 +15,11 @@ public struct PageSniffer {
     }()
 
     private var session: URLSession { Self.sharedSession }
+    private let cookieFileURL: URL?
 
-    public init() {}
+    public init(cookieFileURL: URL? = nil) {
+        self.cookieFileURL = cookieFileURL
+    }
 
     // MARK: - 入口
 
@@ -36,7 +39,15 @@ public struct PageSniffer {
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        if let cookieFileURL,
+           let cookieHeader = NetscapeCookieFile.cookieHeader(for: url, from: cookieFileURL) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
         let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse,
+           Self.isCloudflareChallenge(statusCode: http.statusCode, headerValue: http.value(forHTTPHeaderField: "cf-mitigated")) {
+            throw Self.cloudflareChallengeError(for: url)
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw URLError(.badServerResponse)
         }
@@ -50,6 +61,33 @@ public struct PageSniffer {
             throw MoongateError.sniffFailed(CoreL10n.t(L.Core.pageTooLarge, data.count / 1024 / 1024))
         }
         return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+    }
+
+    static let cloudflareChallengeMessage = CoreL10n.text(
+        en: "This site returned a Cloudflare browser challenge, so Moongate could not access the real video page. Open the page in a browser and try again later, or paste a direct media URL if the site provides one.",
+        zhHans: "这个站点返回了 Cloudflare 浏览器验证，月之门拿不到真实视频页面。请先在浏览器打开页面完成验证后稍后重试，或粘贴站点提供的直链媒体地址。",
+        zhHant: "這個站點返回了 Cloudflare 瀏覽器驗證，月之門拿不到真實影片頁面。請先在瀏覽器打開頁面完成驗證後稍後重試，或貼上站點提供的直連媒體地址。"
+    )
+
+    static func isCloudflareChallenge(statusCode: Int, headerValue: String?) -> Bool {
+        guard statusCode == 403 || statusCode == 503 else { return false }
+        return headerValue?.lowercased() == "challenge"
+    }
+
+    static func _testIsCloudflareChallenge(statusCode: Int, headerValue: String?) -> Bool {
+        isCloudflareChallenge(statusCode: statusCode, headerValue: headerValue)
+    }
+
+    static func _testCloudflareChallengeError(for url: URL) -> MoongateError {
+        cloudflareChallengeError(for: url)
+    }
+
+    private static func cloudflareChallengeError(for url: URL) -> MoongateError {
+        MoongateError.siteCookieRequired(
+            site: CookieSites.normalizedHost(url.host ?? ""),
+            url: url.absoluteString,
+            reason: Self.cloudflareChallengeMessage
+        )
     }
 
     // MARK: - 提取

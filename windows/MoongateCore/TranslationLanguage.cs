@@ -31,6 +31,7 @@ public static class TranslationLanguage
         {
             "zh-Hans" => "简体中文",
             "zh-Hant" => "繁体中文",
+            "yue" => "粤语",
             "ja" => "日语",
             "ko" => "韩语",
             "en" => "英语",

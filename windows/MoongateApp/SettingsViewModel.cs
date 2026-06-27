@@ -53,6 +53,15 @@ public sealed class SettingsViewModel : ObservableObject
         _styleIndex = current.SubtitleStyle == SubtitleStyle.ChineseOnly ? 1 : 0;
         _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "zh-Hant" => 2, "en" => 3, _ => 0 };
         _targetLanguageIndex = current.TranslationTargetLanguage switch { "zh-Hant" => 1, "en" => 2, _ => 0 };
+        _sourceLanguageIndex = AppSettings.NormalizePreferredSourceLanguage(current.PreferredSourceLanguage) switch
+        {
+            "ja" => 1,
+            "en" => 2,
+            "ko" => 3,
+            "zh-Hans" => 4,
+            "yue" => 5,
+            _ => 0,
+        };
         _onboardingCompleted = current.OnboardingCompleted;
         _completionNotificationsEnabled = current.CompletionNotificationsEnabled;
         _completionSoundEnabled = current.CompletionSoundEnabled;
@@ -529,6 +538,10 @@ public sealed class SettingsViewModel : ObservableObject
     /// <summary>翻译目标语言：0 = 简体中文，1 = 繁體中文，2 = English。</summary>
     public int TargetLanguageIndex { get => _targetLanguageIndex; set => SetProperty(ref _targetLanguageIndex, value); }
 
+    private int _sourceLanguageIndex;
+    /// <summary>默认原声语言：0 = 自动，1 = 日语，2 = 英语，3 = 韩语，4 = 中文，5 = 粤语。</summary>
+    public int SourceLanguageIndex { get => _sourceLanguageIndex; set => SetProperty(ref _sourceLanguageIndex, value); }
+
     private readonly bool _onboardingCompleted;
 
     private bool _completionNotificationsEnabled;
@@ -817,10 +830,7 @@ public sealed class SettingsViewModel : ObservableObject
     {
         try
         {
-            var paths = CookieSites.All
-                .Select(site => AppSettings.SiteCookieFilePath(site.Key))
-                .Where(File.Exists)
-                .ToList();
+            var paths = CookieJarFilePaths().ToList();
             if (paths.Count > 0)
             {
                 var date = paths.Max(File.GetLastWriteTime);
@@ -851,9 +861,9 @@ public sealed class SettingsViewModel : ObservableObject
     public void ClearAllLogins()
     {
         var allCleared = true;
-        foreach (var site in CookieSites.All)
+        foreach (var path in CookieJarFilePaths())
         {
-            allCleared &= TryDeleteFile(AppSettings.SiteCookieFilePath(site.Key));
+            allCleared &= TryDeleteFile(path);
         }
         // 旧版全局文件若还在也一并清掉。
         allCleared &= TryDeleteFile(AppSettings.CookieFilePath);
@@ -869,6 +879,15 @@ public sealed class SettingsViewModel : ObservableObject
             ? Loc.S("L.Settings.Cleared")
             : Loc.S("L.Settings.ClearedPartial");
         RefreshLoginStatus();
+    }
+
+    private static IEnumerable<string> CookieJarFilePaths()
+    {
+        var known = CookieSites.All.Select(site => AppSettings.SiteCookieFilePath(site.Key));
+        var dynamic = Directory.Exists(AppSettings.CookieDirectory)
+            ? Directory.EnumerateFiles(AppSettings.CookieDirectory, "*.txt")
+            : Enumerable.Empty<string>();
+        return known.Concat(dynamic).Distinct(StringComparer.Ordinal).Where(File.Exists);
     }
 
     /// <summary>WebView2 数据目录被占用删不掉时的待删标记，App 启动时据此清理。</summary>
@@ -1155,6 +1174,7 @@ public sealed class SettingsViewModel : ObservableObject
         MaxConcurrentBurns = MaxBurns,
         AppLanguage = LanguageIndex switch { 1 => "zh-Hans", 2 => "zh-Hant", 3 => "en", _ => "auto" },
         TranslationTargetLanguage = TargetLanguageIndex switch { 1 => "zh-Hant", 2 => "en", _ => "zh-Hans" },
+        PreferredSourceLanguage = SourceLanguageIndex switch { 1 => "ja", 2 => "en", 3 => "ko", 4 => "zh-Hans", 5 => "yue", _ => "auto" },
         OnboardingCompleted = _onboardingCompleted,
         CompletionNotificationsEnabled = CompletionNotificationsEnabled,
         CompletionSoundEnabled = CompletionSoundEnabled,

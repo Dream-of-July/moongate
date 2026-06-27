@@ -5,6 +5,15 @@ import Foundation
 /// 把 App 内 WKWebView 登录后取到的 cookies 导出成 yt-dlp 可读的 Netscape 格式文件。
 /// 文件属于登录凭证，权限固定 0600，只落在本地 Application Support 目录。
 public enum NetscapeCookieFile {
+    public struct Record: Sendable, Equatable {
+        public let domain: String
+        public let path: String
+        public let isSecure: Bool
+        public let expiresEpochSeconds: Int?
+        public let name: String
+        public let value: String
+    }
+
     /// 凭证文件创建属性：POSIX 平台 0600；Windows 无 POSIX 权限位（详见 docs/WINDOWS.md）。
     static var secureFileAttributes: [FileAttributeKey: Any]? {
         #if os(Windows)
@@ -62,6 +71,49 @@ public enum NetscapeCookieFile {
             try? fm.removeItem(at: url)
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
         }
+    }
+
+    /// 读取 Netscape 格式 cookies 文件，跳过注释、空行与字段不足的行。
+    public static func read(from url: URL) throws -> [Record] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let content = try String(contentsOf: url, encoding: .utf8)
+        var records: [Record] = []
+        for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            let fields = line.components(separatedBy: "\t")
+            guard fields.count >= 7 else { continue }
+            let expiry = Int(fields[4]).flatMap { $0 > 0 ? $0 : nil }
+            records.append(Record(
+                domain: fields[0],
+                path: fields[2],
+                isSecure: fields[3].caseInsensitiveCompare("TRUE") == .orderedSame,
+                expiresEpochSeconds: expiry,
+                name: fields[5],
+                value: fields[6]
+            ))
+        }
+        return records
+    }
+
+    /// 为指定 URL 从 Netscape jar 生成 HTTP Cookie header。
+    public static func cookieHeader(for url: URL, from fileURL: URL) -> String? {
+        guard let host = url.host else { return nil }
+        let isHTTPS = (url.scheme?.lowercased() == "https")
+        let requestPath = url.path.isEmpty ? "/" : url.path
+        let now = Int(Date().timeIntervalSince1970)
+        let pairs = ((try? read(from: fileURL)) ?? []).filter { record in
+            if record.isSecure && !isHTTPS { return false }
+            if let expiry = record.expiresEpochSeconds, expiry <= now { return false }
+            if !CookieSites.domainMatches(host: host, cookieDomain: record.domain) { return false }
+            let cookiePath = record.path.isEmpty ? "/" : record.path
+            return requestPath == cookiePath
+                || requestPath.hasPrefix(cookiePath.hasSuffix("/") ? cookiePath : cookiePath + "/")
+        }
+        .sorted { lhs, rhs in lhs.path.count > rhs.path.count }
+        .map { "\($0.name)=\($0.value)" }
+        guard !pairs.isEmpty else { return nil }
+        return pairs.joined(separator: "; ")
     }
 
     /// 删除 cookies 文件（清除登录态）；文件不存在时静默忽略。

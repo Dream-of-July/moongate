@@ -21,14 +21,16 @@ public sealed class PageSniffer
     { Timeout = TimeSpan.FromSeconds(20) };
 
     private readonly HttpClient _client;
+    private readonly string? _cookieFilePath;
 
     /// <summary>测试注入：任天堂直链 HEAD 验证（默认真网络请求）。</summary>
     internal Func<string, CancellationToken, Task<bool>>? ValidateNintendoHook { get; set; }
     /// <summary>测试注入：YouTube oEmbed 标题获取（默认真网络请求）。</summary>
     internal Func<string, CancellationToken, Task<string?>>? FetchYouTubeTitleHook { get; set; }
 
-    public PageSniffer(HttpMessageHandler? handler = null)
+    public PageSniffer(HttpMessageHandler? handler = null, string? cookieFilePath = null)
     {
+        _cookieFilePath = cookieFilePath;
         _client = handler is null
             ? SharedClient
             : new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(20) };
@@ -64,8 +66,20 @@ public sealed class PageSniffer
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+        if (_cookieFilePath is { Length: > 0 }
+            && NetscapeCookieFile.CookieHeaderFor(url, _cookieFilePath) is { Length: > 0 } cookieHeader)
+        {
+            request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+        }
         using var response = await _client.SendAsync(request, ct).ConfigureAwait(false);
         var status = (int)response.StatusCode;
+        if (IsCloudflareChallenge(response))
+        {
+            throw MoongateException.SiteCookieRequired(
+                CookieSites.NormalizeHost(url.Host),
+                url.ToString(),
+                CloudflareChallengeMessage);
+        }
         if (status is < 200 or > 299)
         {
             throw new HttpRequestException($"HTTP {status}");
@@ -88,6 +102,19 @@ public sealed class PageSniffer
                 $"The page is too large ({data.Length / 1024 / 1024}MB); sniffing stopped."));
         }
         return System.Text.Encoding.UTF8.GetString(data);
+    }
+
+    internal static string CloudflareChallengeMessage => L10n.T(
+        "这个站点返回了 Cloudflare 浏览器验证，月之门拿不到真实视频页面。请先在浏览器打开页面完成验证后稍后重试，或粘贴站点提供的直链媒体地址。",
+        "這個站點返回了 Cloudflare 瀏覽器驗證，月之門拿不到真實影片頁面。請先在瀏覽器打開頁面完成驗證後稍後重試，或貼上站點提供的直連媒體地址。",
+        "This site returned a Cloudflare browser challenge, so Moongate could not access the real video page. Open the page in a browser and try again later, or paste a direct media URL if the site provides one.");
+
+    internal static bool IsCloudflareChallenge(HttpResponseMessage response)
+    {
+        var status = (int)response.StatusCode;
+        if (status is not (403 or 503)) return false;
+        return response.Headers.TryGetValues("cf-mitigated", out var values)
+            && values.Any(value => string.Equals(value, "challenge", StringComparison.OrdinalIgnoreCase));
     }
 
     // MARK: - 提取
