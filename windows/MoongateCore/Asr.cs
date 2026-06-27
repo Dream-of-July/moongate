@@ -69,6 +69,13 @@ public enum AsrRecognitionProfile
     LyricsHighQuality,
 }
 
+public enum AsrBackendKind
+{
+    Unknown,
+    WhisperCpp,
+    SenseVoiceFunASR,
+}
+
 public sealed record AsrRequest
 {
     public required string AudioPath { get; init; }
@@ -101,6 +108,13 @@ public sealed record AsrWord
     public double? Probability { get; init; }
 }
 
+public sealed record AsrSegment
+{
+    public required string Text { get; init; }
+    public required double StartSeconds { get; init; }
+    public required double EndSeconds { get; init; }
+}
+
 public sealed record AsrTranscript
 {
     public required string Id { get; init; }
@@ -109,6 +123,11 @@ public sealed record AsrTranscript
     public double? DurationSeconds { get; init; }
     public required IReadOnlyList<AsrWord> Words { get; init; }
     public required string SourceModelId { get; init; }
+    public AsrBackendKind BackendKind { get; init; } = AsrBackendKind.WhisperCpp;
+    public IReadOnlyList<AsrSegment> Segments { get; init; } = [];
+    public string? RawText { get; init; }
+    public Dictionary<string, string> BackendDiagnostics { get; init; } = [];
+    public LocalAsrConfidenceSummary? QualitySummary { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
@@ -592,6 +611,7 @@ public sealed record AsrTranscriptCacheEntry
     public required string CacheKey { get; init; }
     public required string AudioFingerprint { get; init; }
     public required string ModelId { get; init; }
+    public AsrBackendKind BackendKind { get; init; } = AsrBackendKind.WhisperCpp;
     public string? LanguageCode { get; init; }
     public required string TranscriptPath { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
@@ -3851,21 +3871,13 @@ public static class AsrPromptBuilder
         AsrRecognitionProfile recognitionProfile = AsrRecognitionProfile.Speech)
     {
         if (recognitionProfile == AsrRecognitionProfile.LyricsHighQuality) return 0;
-        var title = Path.GetFileNameWithoutExtension(videoPath).Trim().ToLowerInvariant();
-        if (title.Length == 0) return null;
         var language = languageCode.Trim().ToLowerInvariant();
         var cjkLanguage = language.StartsWith("ja", StringComparison.Ordinal)
             || language.StartsWith("ko", StringComparison.Ordinal)
             || language.StartsWith("zh", StringComparison.Ordinal)
             || language.StartsWith("yue", StringComparison.Ordinal)
             || language.StartsWith("cmn", StringComparison.Ordinal);
-        if (!cjkLanguage) return null;
-        string[] markers =
-        [
-            "official music video", "music video", "official mv", " mv", "mv ",
-            "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ",
-        ];
-        return markers.Any(marker => title.Contains(marker, StringComparison.Ordinal)) ? 0 : null;
+        return cjkLanguage ? 0 : null;
     }
 
     public static AsrRecognitionProfile RecognitionProfile(string videoPath, string languageCode)
@@ -4103,9 +4115,6 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
         Directory.CreateDirectory(_workDirectoryPath);
 
-        var recognitionProfile = AsrPromptBuilder.RecognitionProfile(videoFile, languageCode);
-        var prompt = _promptProvider?.Invoke(videoFile, languageCode);
-        var maxTextContextTokens = AsrPromptBuilder.MaxTextContextTokens(videoFile, languageCode, recognitionProfile);
         var audioPath = AudioPath(videoFile, languageCode);
         if (File.Exists(audioPath))
         {
@@ -4117,7 +4126,35 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             await _audioExtractor.ExtractAudioAsync(plan, control, progress, ct).ConfigureAwait(false);
         }
 
-        var request = new AsrRequest
+        var request = MakeRequest(videoFile, audioPath, languageCode);
+        var transcript = await _recognizer.TranscribeAsync(request, progress, control, ct).ConfigureAwait(false);
+        var languageHintCode = SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(Path.GetFileNameWithoutExtension(videoFile));
+        var qualitySummary = QualitySummary(transcript, request, languageHintCode);
+        if (ShouldRetryAutoTranscript(qualitySummary, request, languageHintCode))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
+            request = MakeRequest(videoFile, audioPath, languageHintCode!);
+            transcript = await _recognizer.TranscribeAsync(request, progress, control, ct).ConfigureAwait(false);
+            qualitySummary = QualitySummary(transcript, request, languageHintCode);
+        }
+        if (qualitySummary.HasSevereQualityBlocker)
+        {
+            throw MoongateException.DownloadFailed(SevereAsrQualityMessage());
+        }
+        progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 0, TotalUnits = 1 });
+        var activity = await AudioActivityIfNeededAsync(transcript, videoFile, audioPath, control, ct).ConfigureAwait(false);
+        var output = AsrTranscriptMapper.WriteLocalAsrSourceSrt(transcript, videoFile, activity);
+        progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 1, TotalUnits = 1 });
+        return new GeneratedLocalAsrSource(output, qualitySummary);
+    }
+
+    private AsrRequest MakeRequest(string videoFile, string audioPath, string languageCode)
+    {
+        var recognitionProfile = AsrPromptBuilder.RecognitionProfile(videoFile, languageCode);
+        var prompt = _promptProvider?.Invoke(videoFile, languageCode);
+        var maxTextContextTokens = AsrPromptBuilder.MaxTextContextTokens(videoFile, languageCode, recognitionProfile);
+        return new AsrRequest
         {
             AudioPath = audioPath,
             LanguageCode = languageCode,
@@ -4127,15 +4164,48 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             MaxTextContextTokens = maxTextContextTokens,
             VadEnabled = true,
             WordTimestamps = true,
-            CacheKey = CacheKey(videoFile, languageCode, prompt, recognitionProfile, maxTextContextTokens),
+            CacheKey = CacheKey(
+                videoFile,
+                languageCode,
+                prompt,
+                recognitionProfile,
+                maxTextContextTokens,
+                AsrBackendKind.WhisperCpp,
+                vadEnabled: true,
+                wordTimestamps: true,
+                dtwTokenTimestamps: true),
         };
-        var transcript = await _recognizer.TranscribeAsync(request, progress, control, ct).ConfigureAwait(false);
-        progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 0, TotalUnits = 1 });
-        var activity = await AudioActivityIfNeededAsync(transcript, videoFile, audioPath, control, ct).ConfigureAwait(false);
-        var output = AsrTranscriptMapper.WriteLocalAsrSourceSrt(transcript, videoFile, activity);
-        progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 1, TotalUnits = 1 });
-        return new GeneratedLocalAsrSource(output, LocalAsrConfidence.Assess(transcript.Words));
     }
+
+    private static LocalAsrConfidenceSummary QualitySummary(
+        AsrTranscript transcript,
+        AsrRequest request,
+        string? languageHintCode) =>
+        LocalAsrConfidence.Assess(
+            transcript.Words,
+            transcript.LanguageCode,
+            transcript.Segments,
+            request.LanguageCode,
+            languageHintCode);
+
+    private static bool ShouldRetryAutoTranscript(
+        LocalAsrConfidenceSummary summary,
+        AsrRequest request,
+        string? languageHintCode)
+    {
+        var requested = (request.LanguageCode ?? "").Trim().ToLowerInvariant();
+        if (requested is not ("" or "auto" or "und" or "unknown")) return false;
+        if (string.IsNullOrWhiteSpace(languageHintCode)) return false;
+        return summary.QualityIssues.Contains("autoLanguageMismatch")
+            || summary.QualityIssues.Contains("phraseLoop")
+            || summary.QualityIssues.Contains("lowSegmentDiversity");
+    }
+
+    private static string SevereAsrQualityMessage() =>
+        L10n.T(
+            "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
+            "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。",
+            "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.");
 
     private async Task<AsrAudioActivity?> AudioActivityIfNeededAsync(
         AsrTranscript transcript,
@@ -4169,10 +4239,38 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         string languageCode,
         string? prompt,
         AsrRecognitionProfile recognitionProfile,
-        int? maxTextContextTokens) =>
+        int? maxTextContextTokens,
+        AsrBackendKind backendKind,
+        bool vadEnabled,
+        bool wordTimestamps,
+        bool dtwTokenTimestamps) =>
         "local-asr:" + StableFileStem(
-            AudioSeed(videoFile, languageCode) + "\n" + (prompt ?? "") + "\nrp=" + recognitionProfile + "\nmc=" +
-            (maxTextContextTokens?.ToString(CultureInfo.InvariantCulture) ?? "default"));
+            AudioSeed(videoFile, languageCode)
+            + "\nbackend=" + BackendKindCacheValue(backendKind)
+            + "\n" + (prompt ?? "")
+            + "\nrp=" + RecognitionProfileCacheValue(recognitionProfile)
+            + "\nmc=" + (maxTextContextTokens?.ToString(CultureInfo.InvariantCulture) ?? "default")
+            + "\nvad=" + BoolCacheValue(vadEnabled)
+            + "\nwords=" + BoolCacheValue(wordTimestamps)
+            + "\ndtw=" + BoolCacheValue(dtwTokenTimestamps)
+            + "\nschema=v3");
+
+    private static string BackendKindCacheValue(AsrBackendKind backendKind) =>
+        backendKind switch
+        {
+            AsrBackendKind.WhisperCpp => "whisperCpp",
+            AsrBackendKind.SenseVoiceFunASR => "senseVoiceFunASR",
+            _ => "unknown",
+        };
+
+    private static string RecognitionProfileCacheValue(AsrRecognitionProfile profile) =>
+        profile switch
+        {
+            AsrRecognitionProfile.LyricsHighQuality => "lyricsHighQuality",
+            _ => "speech",
+        };
+
+    private static string BoolCacheValue(bool value) => value ? "true" : "false";
 
     private string AudioSeed(string videoFile, string languageCode)
     {
@@ -4291,6 +4389,7 @@ public sealed record WhisperCppCommandPlan
     public required string ModelPath { get; init; }
     public required AsrRequest Request { get; init; }
     public required string OutputBasePath { get; init; }
+    public bool DisableGpu { get; init; }
     public required IReadOnlyList<string> Arguments { get; init; }
 
     public string ExecutablePath => Runtime.ExecutablePath;
@@ -4301,7 +4400,8 @@ public sealed record WhisperCppCommandPlan
         AsrRuntimeInfo runtime,
         string modelPath,
         AsrRequest request,
-        string outputBasePath)
+        string outputBasePath,
+        bool disableGpu = false)
     {
         var normalizedOutputBase = WithoutExtension(outputBasePath);
         List<string> arguments =
@@ -4312,6 +4412,10 @@ public sealed record WhisperCppCommandPlan
             "-of", normalizedOutputBase,
             "-pp",
         ];
+        if (disableGpu)
+        {
+            arguments.Add("--no-gpu");
+        }
 
         // 注意：request.VadEnabled 暂不接通——whisper.cpp --vad 需要单独的 Silero VAD 模型，尚未随包分发，
         // 故这里刻意不发 --vad（见 forced-alignment ExecPlan 的推迟决定）。字段保留以便日后无契约改动地启用。
@@ -4347,6 +4451,7 @@ public sealed record WhisperCppCommandPlan
             ModelPath = modelPath,
             Request = request,
             OutputBasePath = normalizedOutputBase,
+            DisableGpu = disableGpu,
             Arguments = arguments,
         };
     }
@@ -4564,17 +4669,31 @@ public sealed class WhisperCppJsonTranscriptParser
         var languageCode = LanguageCode(root, request);
         var languageConfidence = LanguageConfidence(root);
         var words = new List<AsrWord>();
+        var transcriptSegments = new List<AsrSegment>();
+        var rawTexts = new List<string>();
         var dtwStarts = new List<double?>();
         double? maxEnd = null;
+        var segmentCount = 0;
 
         if (TryGetArray(root, "transcription", out var segments)
             || TryGetArray(root, "segments", out segments))
         {
+            segmentCount = segments.GetArrayLength();
             foreach (var segment in segments.EnumerateArray())
             {
                 if (TryInterval(segment, offsetsAreMilliseconds: true, out var segmentStart, out var segmentEnd))
                 {
                     maxEnd = Math.Max(maxEnd ?? segmentEnd, segmentEnd);
+                    if (TryCleanText(segment, out var segmentText))
+                    {
+                        transcriptSegments.Add(new AsrSegment
+                        {
+                            Text = segmentText,
+                            StartSeconds = segmentStart,
+                            EndSeconds = segmentEnd,
+                        });
+                        rawTexts.Add(segmentText);
+                    }
                 }
 
                 var tokenEntries = ParseTokenEntries(segment);
@@ -4621,6 +4740,21 @@ public sealed class WhisperCppJsonTranscriptParser
             DurationSeconds = maxEnd,
             Words = words,
             SourceModelId = request.ModelId,
+            BackendKind = AsrBackendKind.WhisperCpp,
+            Segments = transcriptSegments,
+            RawText = rawTexts.Count == 0 ? null : string.Join('\n', rawTexts),
+            BackendDiagnostics = new Dictionary<string, string>
+            {
+                ["segmentCount"] = segmentCount.ToString(CultureInfo.InvariantCulture),
+                ["wordTimestampMode"] = request.WordTimestamps ? "word" : "segment",
+                ["dtwRequested"] = request.DtwTokenTimestamps && request.WordTimestamps ? "True" : "False",
+                ["vadRequested"] = request.VadEnabled ? "True" : "False",
+            },
+            QualitySummary = LocalAsrConfidence.Assess(
+                words,
+                languageCode,
+                transcriptSegments,
+                request.LanguageCode),
             CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
         };
     }
@@ -4976,7 +5110,12 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
         progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 0, TotalUnits = 1 });
         var audioFingerprint = "sha256:" + AsrModelStore.Sha256Hex(request.AudioPath);
         if (request.CacheKey is { } cacheKey
-            && _cacheStore?.CachedTranscript(cacheKey, audioFingerprint, request.ModelId, request.LanguageCode) is { } cached)
+            && _cacheStore?.CachedTranscript(
+                cacheKey,
+                audioFingerprint,
+                request.ModelId,
+                AsrBackendKind.WhisperCpp,
+                request.LanguageCode) is { } cached)
         {
             progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 1, TotalUnits = 1 });
             return cached;
@@ -4986,9 +5125,11 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
         var transcriptId = request.CacheKey ?? Guid.NewGuid().ToString("N");
         var outputBasePath = Path.Combine(_outputDirectoryPath, StableFileStem(transcriptId));
 
-        async Task<(WhisperCppCommandPlan Plan, AsrCommandResult Result)> RunAsync(AsrRequest planRequest)
+        async Task<(WhisperCppCommandPlan Plan, AsrCommandResult Result)> RunAsync(
+            AsrRequest planRequest,
+            bool disableGpu = false)
         {
-            var plan = WhisperCppCommandPlan.Create(_runtime, _modelPath, planRequest, outputBasePath);
+            var plan = WhisperCppCommandPlan.Create(_runtime, _modelPath, planRequest, outputBasePath, disableGpu);
             var result = await _commandRunner.RunWhisperAsync(plan, control, line =>
             {
                 if (WhisperCppProgressParser.Parse(line) is { } parsed)
@@ -5000,7 +5141,13 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
             return (plan, result);
         }
 
-        var (plan, result) = await RunAsync(request).ConfigureAwait(false);
+        var disableGpu = false;
+        var (plan, result) = await RunAsync(request, disableGpu).ConfigureAwait(false);
+        if (ShouldRetryWithoutGpu(result))
+        {
+            disableGpu = true;
+            (plan, result) = await RunAsync(request, disableGpu).ConfigureAwait(false);
+        }
         var usedDtw = request.WordTimestamps
             && request.DtwTokenTimestamps
             && WhisperDtwPreset.Preset(request.ModelId) is not null;
@@ -5008,7 +5155,7 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
         {
             // Fail-safe: if a model build rejects -dtw/-nfa, retry once without it so a DTW
             // incompatibility degrades to plain offsets instead of failing the whole run.
-            (plan, result) = await RunAsync(request with { DtwTokenTimestamps = false }).ConfigureAwait(false);
+            (plan, result) = await RunAsync(request with { DtwTokenTimestamps = false }, disableGpu).ConfigureAwait(false);
         }
 
         if (control?.IsCancelled == true) throw MoongateException.Cancelled();
@@ -5033,6 +5180,15 @@ public sealed class WhisperCppSpeechRecognizer : ISpeechRecognizer
         }
         progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 1, TotalUnits = 1 });
         return transcript;
+    }
+
+    private static bool ShouldRetryWithoutGpu(AsrCommandResult result)
+    {
+        if (result.Status == 0) return false;
+        var stderr = result.StderrTail.ToLowerInvariant();
+        return stderr.Contains("ggml_metal", StringComparison.Ordinal)
+            || stderr.Contains("metal buffer", StringComparison.Ordinal)
+            || stderr.Contains("failed to allocate buffer", StringComparison.Ordinal);
     }
 
     private static bool IsExecutable(string path)
@@ -5085,6 +5241,7 @@ public sealed class AsrTranscriptCacheStore
             CacheKey = cacheKey,
             AudioFingerprint = audioFingerprint,
             ModelId = transcript.SourceModelId,
+            BackendKind = transcript.BackendKind,
             LanguageCode = NormalizeCacheLanguage(languageCode) ?? NormalizeCacheLanguage(transcript.LanguageCode),
             TranscriptPath = transcriptPath,
             CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
@@ -5109,6 +5266,7 @@ public sealed class AsrTranscriptCacheStore
         string cacheKey,
         string audioFingerprint,
         string modelId,
+        AsrBackendKind backendKind,
         string? languageCode)
     {
         var entry = ReadEntry(cacheKey);
@@ -5116,6 +5274,7 @@ public sealed class AsrTranscriptCacheStore
         if (entry is null
             || entry.AudioFingerprint != audioFingerprint
             || entry.ModelId != modelId
+            || entry.BackendKind != backendKind
             || (requestedLanguageCode is not null && NormalizeCacheLanguage(entry.LanguageCode) != requestedLanguageCode)
             || !File.Exists(entry.TranscriptPath))
         {

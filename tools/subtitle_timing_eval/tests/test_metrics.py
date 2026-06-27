@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from subtitle_timing_eval import pipeline
-from subtitle_timing_eval.asr import parse_whisper_cpp_words, whisper_cpp_language
+from subtitle_timing_eval.asr import parse_sensevoice_funasr_result, parse_whisper_cpp_words, whisper_cpp_language
 from subtitle_timing_eval.cli import main as cli_main
 from subtitle_timing_eval.comparison import compare_reports, summarize_suite
 from subtitle_timing_eval.metrics import cue_tokens, evaluate_cues, evaluate_cues_against_reference_cues, offset_words, summarize_report, weak_boundary
@@ -46,6 +46,23 @@ from subtitle_timing_eval.vtt import parse_vtt_cues, parse_vtt_word_timestamps
 
 
 class AsrParsingTests(unittest.TestCase):
+    def test_parse_sensevoice_funasr_result_uses_word_timestamps_and_language_tags(self):
+        result = {
+            "text": "<|ja|><|NEUTRAL|>こんにちは世界",
+            "words": ["<|ja|>", "こん", "にち", "は", "世界", "<|withitn|>"],
+            "timestamp": [[0, 0], [120, 260], [260, 390], [390, 500], [610, 920], [920, 920]],
+            "sentence_info": [{"text": "こんにちは世界"}],
+        }
+
+        payload = parse_sensevoice_funasr_result(result, fallback_language="auto")
+
+        self.assertEqual(payload["language"], "ja")
+        self.assertEqual(payload["raw_text"], "<|ja|><|NEUTRAL|>こんにちは世界")
+        self.assertEqual([word["text"] for word in payload["words"]], ["こん", "にち", "は", "世界"])
+        self.assertAlmostEqual(payload["words"][0]["start"], 0.12, places=3)
+        self.assertAlmostEqual(payload["words"][-1]["end"], 0.92, places=3)
+        self.assertEqual(payload["diagnostics"]["sentenceInfoCount"], 1)
+
     def test_parse_whisper_cpp_words_uses_token_offsets_and_filters_markers(self):
         root = {
             "result": {"language": "ja"},

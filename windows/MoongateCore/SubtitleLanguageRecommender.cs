@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 
@@ -68,6 +69,16 @@ public static class SubtitleLanguageRecommender
     /// are synthetic per-language candidates in the UI, so they are not source-language evidence.
     /// </summary>
     public const int PlatformAutoCjkPresenceBonus = 90;
+    /// <summary>
+    /// Current output target wins when a real platform/manual subtitle already exists in that
+    /// target. This keeps "I already have Chinese subtitles" from being overridden by source hints.
+    /// </summary>
+    public const int TargetLanguageTrackScore = 260;
+    /// <summary>
+    /// User/global source-language preference. This can make a local-ASR source candidate win over
+    /// unrelated auto captions, while still letting manual target subtitles stay on top.
+    /// </summary>
+    public const int PreferredSourceLanguageScore = 180;
     public const int TitleLanguageHintBonus = 15;
     public const double TitleScriptDominanceRatio = 0.18;
 
@@ -76,14 +87,26 @@ public static class SubtitleLanguageRecommender
         => SubtitleLanguageChoice.Aggregate(choices);
 
     /// <summary>Picks a recommended language from the title + available language groups.</summary>
-    public static Result Recommend(string title, IReadOnlyList<SubtitleLanguageChoice> languages)
+    public static Result Recommend(
+        string title,
+        IReadOnlyList<SubtitleLanguageChoice> languages,
+        string? targetLanguage = null,
+        string? preferredSourceLanguage = null)
     {
         if (languages.Count == 0) return new Result(null, []);
         var titleProfile = ScriptDetector.Of(title);
         var lowerTitle = title.ToLowerInvariant();
+        var normalizedTarget = NormalizedTargetLanguage(targetLanguage);
+        var normalizedPreferredSource = NormalizedPreferredSourceLanguage(preferredSourceLanguage);
+        var targetAwareLanguages = languages
+            .Select(language => PrioritizeTargetTrack(language, normalizedTarget))
+            .ToList();
 
-        var ranked = languages
-            .Select((language, index) => (language, score: Score(language, titleProfile, lowerTitle), index))
+        var ranked = targetAwareLanguages
+            .Select((language, index) => (
+                language,
+                score: Score(language, titleProfile, lowerTitle, normalizedTarget, normalizedPreferredSource),
+                index))
             .OrderByDescending(x => x.score)
             // Tie-break: manual track first, then language code ascending.
             .ThenByDescending(x => x.language.HasManualTrack)
@@ -96,13 +119,64 @@ public static class SubtitleLanguageRecommender
         return new Result(recommended, others);
     }
 
-    internal static int Score(SubtitleLanguageChoice language, ScriptDetector.Profile titleProfile, string lowerTitle)
+    /// <summary>
+    /// Best-effort language lock for local-ASR-only pages. Used only when no platform subtitles
+    /// exist, so strong title hints can prevent Whisper auto-detection from mislabeling Japanese
+    /// audio as English. Weak/ambiguous titles return null and keep auto-detect.
+    /// </summary>
+    public static string? InferredLocalAsrLanguageCode(string title)
+    {
+        var lowerTitle = FoldForLanguageHint(title);
+        var profile = ScriptDetector.Of(title);
+        if (lowerTitle.Contains("japanese")
+            || lowerTitle.Contains("japaner")
+            || lowerTitle.Contains("japansk")
+            || lowerTitle.Contains("japonais")
+            || lowerTitle.Contains("japones")
+            || lowerTitle.Contains("japonesa")
+            || lowerTitle.Contains("japon")
+            || lowerTitle.Contains("giapponese")
+            || title.Contains("日本語")
+            || title.Contains("日语")
+            || title.Contains("日語")
+            || title.Contains("日文")
+            || profile.KanaRatio >= TitleScriptDominanceRatio)
+        {
+            return "ja";
+        }
+        return null;
+    }
+
+    private static string FoldForLanguageHint(string title)
+    {
+        var normalized = title.Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(normalized.Length);
+        foreach (var ch in normalized)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark) continue;
+            builder.Append(char.ToLowerInvariant(ch));
+        }
+        return builder.ToString().Normalize(NormalizationForm.FormC);
+    }
+
+    internal static int Score(
+        SubtitleLanguageChoice language,
+        ScriptDetector.Profile titleProfile,
+        string lowerTitle,
+        string? targetLanguage = null,
+        string? preferredSourceLanguage = null)
     {
         var total = 0;
         // 1) Track availability base score (manual preferred over auto over localASR-only).
         if (language.HasManualTrack) total += ManualTrackScore;
         else if (language.HasAutoTrack) total += AutoTrackScore;
         else total += LocalAsrOnlyScore;
+        if (HasTargetLanguageTrack(language, targetLanguage)) total += TargetLanguageTrackScore;
+        if (preferredSourceLanguage is not null
+            && TranslationLanguage.NormalizedScript(language.LanguageCode) == preferredSourceLanguage)
+        {
+            total += PreferredSourceLanguageScore;
+        }
 
         // 2) Title script alignment.
         var code = language.LanguageCode;
@@ -136,6 +210,54 @@ public static class SubtitleLanguageRecommender
         }
         return total;
     }
+
+    internal static string? NormalizedTargetLanguage(string? targetLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(targetLanguage)) return null;
+        return TranslationLanguage.NormalizedScript(targetLanguage.Trim());
+    }
+
+    internal static string? NormalizedPreferredSourceLanguage(string? preferredSourceLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(preferredSourceLanguage)) return null;
+        var normalized = AppSettings.NormalizePreferredSourceLanguage(preferredSourceLanguage);
+        return normalized == "auto" ? null : normalized;
+    }
+
+    internal static SubtitleLanguageChoice PrioritizeTargetTrack(
+        SubtitleLanguageChoice language,
+        string? targetLanguage)
+    {
+        if (!HasTargetLanguageTrack(language, targetLanguage)) return language;
+        var tracks = language.Tracks
+            .Select((track, index) => (track, index))
+            .OrderByDescending(pair => IsTargetLanguageTrack(pair.track, targetLanguage))
+            .ThenBy(pair => SubtitleLanguageChoice.TrackRank(pair.track.SourceKind))
+            .ThenBy(pair => pair.index)
+            .Select(pair => pair.track)
+            .ToList();
+        var label = tracks.FirstOrDefault(track => track.SourceKind != SubtitleSourceKind.LocalAsr)?.Label
+            ?? tracks.FirstOrDefault()?.Label
+            ?? language.DisplayLabel;
+        return language with
+        {
+            DisplayLabel = label,
+            Tracks = tracks,
+        };
+    }
+
+    internal static bool HasTargetLanguageTrack(
+        SubtitleLanguageChoice language,
+        string? targetLanguage)
+        => language.Tracks.Any(track => IsTargetLanguageTrack(track, targetLanguage));
+
+    internal static bool IsTargetLanguageTrack(
+        SubtitleChoice track,
+        string? targetLanguage)
+        => !string.IsNullOrEmpty(targetLanguage)
+            && track.SourceKind != SubtitleSourceKind.LocalAsr
+            && track.SourceKind != SubtitleSourceKind.PlatformAuto
+            && TranslationLanguage.NormalizedScript(track.LanguageCode) == targetLanguage;
 
     internal static bool IsJapaneseCode(string code) => code == "ja" || code == "jpn";
 

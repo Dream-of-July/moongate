@@ -30,6 +30,11 @@ enum ChineseSubtitleMode: String, CaseIterable, Codable {
     }
 }
 
+struct SourceLanguagePreferenceOption: Identifiable, Hashable {
+    let code: String
+    var id: String { code }
+}
+
 @MainActor
 final class ViewModel: ObservableObject {
 
@@ -79,6 +84,8 @@ final class ViewModel: ObservableObject {
     }
     /// Ready 页语言区是否展开（默认折叠：只显示推荐语言，展开后才显示其他语言与来源细节）。
     @Published var languageSectionExpanded: Bool = false
+    /// Ready 页单视频原声语言偏好。默认跟随全局设置；只影响当前选档页。
+    @Published var readySourceLanguagePreference: String = "auto"
     /// 启动时（ViewModel 实例化前）读取持久化的界面语言，供 App 在 init 注入 Localizer。
     /// 仅一次性磁盘读取（非子进程），可安全用于 @StateObject 初始化。
     static var persistedAppLanguage: String { AppSettings.load(readCredentials: false).appLanguage }
@@ -107,10 +114,14 @@ final class ViewModel: ObservableObject {
     @Published var pendingSettingsPaneID: String?
     /// 首启引导：选择 App 语言与默认译文目标；不强制配置 API。
     @Published var showOnboarding = false
-    /// 非 nil 时弹出站点登录窗（值为站点 host，如 "youtube.com"）
+    /// 非 nil 时弹出站点 Cookie 捕获窗（值为站点 host，如 "youtube.com"）
     @Published var loginSite: String?
-    /// 失败原因是需要登录时记录站点，failed 页据此把主按钮换成「去登录」
+    /// Cookie 捕获窗的起始 URL；nil 时使用该站点默认入口。
+    @Published var loginStartURL: URL?
+    /// 失败原因是需要登录/验证时记录站点，failed 页据此把主按钮换成站点验证入口。
     @Published var failedNeedsLogin: String?
+    /// 失败页触发 Cookie 捕获时优先打开的原始失败 URL。
+    @Published var failedLoginURL: URL?
     /// 失败原因是缺依赖（yt-dlp/ffmpeg 找不到）时，failed 页给「一键安装依赖」入口
     @Published var failedNeedsDependency = false
     /// 一键安装依赖的弹层
@@ -175,6 +186,7 @@ final class ViewModel: ObservableObject {
         let initialSettings = AppSettings.load(readCredentials: false)
         self.settings = initialSettings
         self.primarySubtitleTrackID = nil
+        self.readySourceLanguagePreference = initialSettings.preferredSourceLanguage
         self.engine = engine
         self.queue = queue ?? QueueManager(
             engine: engine,
@@ -422,7 +434,8 @@ final class ViewModel: ObservableObject {
                     var primarySubtitleTrackID: String?
                     let recommendation = SubtitleLanguageRecommender.recommend(
                         title: info.title,
-                        languages: SubtitleLanguageRecommender.aggregate(availableSubtitleChoices(for: info))
+                        languages: SubtitleLanguageRecommender.aggregate(availableSubtitleChoices(for: info)),
+                        targetLanguage: currentSettings.translationTargetLanguage
                     )
                     if mode != .off,
                        let recommended = recommendation.recommended,
@@ -677,17 +690,14 @@ final class ViewModel: ObservableObject {
         var choices = info.subtitles
 
         var seenIDs = Set(choices.map(\.id))
+        let preferredSourceLanguage = effectiveSourceLanguagePreference(for: info)
         if info.subtitles.isEmpty {
-            let localASR = SubtitleChoice(
-                languageCode: "auto",
-                label: CoreL10n.t(L.Ready.localASRAutoDetectLabel),
-                sourceKind: .localASR,
-                provider: "whisper.cpp",
-                variant: "local"
+            appendLocalASRChoice(
+                languageCode: preferredSourceLanguage,
+                label: preferredSourceLanguage == "auto" ? CoreL10n.t(L.Ready.localASRAutoDetectLabel) : nil,
+                to: &choices,
+                seenIDs: &seenIDs
             )
-            if seenIDs.insert(localASR.id).inserted {
-                choices.append(localASR)
-            }
             return choices
         }
 
@@ -696,18 +706,50 @@ final class ViewModel: ObservableObject {
             let languageCode = normalizedLang(subtitle.languageCode)
             guard !languageCode.isEmpty, seenLanguages.insert(languageCode).inserted else { continue }
 
-            let localASR = SubtitleChoice(
+            appendLocalASRChoice(
                 languageCode: languageCode,
                 label: subtitle.label,
-                sourceKind: .localASR,
-                provider: "whisper.cpp",
-                variant: "local"
+                to: &choices,
+                seenIDs: &seenIDs
             )
-            if seenIDs.insert(localASR.id).inserted {
-                choices.append(localASR)
-            }
+        }
+        if preferredSourceLanguage != "auto" {
+            appendLocalASRChoice(
+                languageCode: preferredSourceLanguage,
+                label: TranslationLanguage.sourceDisplayName(for: preferredSourceLanguage),
+                to: &choices,
+                seenIDs: &seenIDs
+            )
         }
         return choices
+    }
+
+    private func appendLocalASRChoice(
+        languageCode: String,
+        label: String?,
+        to choices: inout [SubtitleChoice],
+        seenIDs: inout Set<String>
+    ) {
+        let localASR = SubtitleChoice(
+            languageCode: languageCode,
+            label: TranslationLanguage.sourceDisplayName(for: languageCode)
+                ?? label
+                ?? CoreL10n.t(L.Ready.localASRAutoDetectLabel),
+            sourceKind: .localASR,
+            provider: "whisper.cpp",
+            variant: "local"
+        )
+        if seenIDs.insert(localASR.id).inserted {
+            choices.append(localASR)
+        }
+    }
+
+    func effectiveSourceLanguagePreference(for info: VideoInfo) -> String {
+        let preferred = AppSettings.normalizedPreferredSourceLanguage(readySourceLanguagePreference)
+        if preferred != "auto" {
+            return preferred
+        }
+        return SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: info.title) ?? "auto"
     }
 
     var localASRReadyForDownload: Bool {
@@ -715,6 +757,15 @@ final class ViewModel: ObservableObject {
     }
 
     // MARK: - Language-first ready page
+
+    static let sourceLanguagePreferenceOptions: [SourceLanguagePreferenceOption] = [
+        SourceLanguagePreferenceOption(code: "auto"),
+        SourceLanguagePreferenceOption(code: "ja"),
+        SourceLanguagePreferenceOption(code: "en"),
+        SourceLanguagePreferenceOption(code: "ko"),
+        SourceLanguagePreferenceOption(code: "zh-Hans"),
+        SourceLanguagePreferenceOption(code: "yue"),
+    ]
 
     /// Language groups for the ready page (manual / auto / localASR collapsed per language).
     func availableLanguageChoices(for info: VideoInfo) -> [SubtitleLanguageChoice] {
@@ -724,7 +775,11 @@ final class ViewModel: ObservableObject {
     /// Deterministic recommendation (recommended language + the rest), driven by title + tracks.
     func languageRecommendation(for info: VideoInfo) -> SubtitleLanguageRecommender.Result {
         SubtitleLanguageRecommender.recommend(
-            title: info.title, languages: availableLanguageChoices(for: info))
+            title: info.title,
+            languages: availableLanguageChoices(for: info),
+            targetLanguage: settings.translationTargetLanguage,
+            preferredSourceLanguage: effectiveSourceLanguagePreference(for: info)
+        )
     }
 
     /// The single language shown by default in the ready page main area.
@@ -765,6 +820,7 @@ final class ViewModel: ObservableObject {
     /// （真实字幕优先于自动字幕）；字幕处理方式在字幕恢复之后再设，避免 selectedSubtitleIDs 的
     /// didSet 把它打回 .off。本方法在 analyzing 阶段调用，期间不会触发 persist（持久化只认 .ready）。
     private func restoreDownloadOptions(for info: VideoInfo) {
+        readySourceLanguagePreference = settings.preferredSourceLanguage
         preferHDR = settings.lastPreferHDR
         selectedOutputFormat = settings.lastOutputFormat ?? .original
 
@@ -1200,6 +1256,7 @@ final class ViewModel: ObservableObject {
     private func consumePendingLogin() {
         guard let site = pendingLoginSite else { return }
         pendingLoginSite = nil
+        loginStartURL = nil
         loginSite = site
     }
 
@@ -1223,15 +1280,17 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    /// failed 页点「去登录」。
+    /// failed 页点「打开网页并保存验证信息」。
     func openLoginForFailure() {
         guard let site = failedNeedsLogin else { return }
+        loginStartURL = failedLoginURL
         loginSite = site
     }
 
     /// 登录窗导出 cookies 成功后调用：关窗并自动重试上次失败的操作。
     func loginCompleted() {
         loginSite = nil
+        loginStartURL = nil
         if case .failed = stage, let action = retryAction {
             action()
         }
@@ -1239,6 +1298,7 @@ final class ViewModel: ObservableObject {
 
     func cancelLogin() {
         loginSite = nil
+        loginStartURL = nil
     }
 
     // MARK: - 私有
@@ -1247,8 +1307,13 @@ final class ViewModel: ObservableObject {
         retryAction = retry
         if case MoongateError.loginRequired(let site) = error {
             failedNeedsLogin = site
+            failedLoginURL = nil
+        } else if case MoongateError.siteCookieRequired(let site, let url, _) = error {
+            failedNeedsLogin = site
+            failedLoginURL = URL(string: url)
         } else {
             failedNeedsLogin = nil
+            failedLoginURL = nil
             failedNeedsDependency = false
         }
         if case MoongateError.binaryNotFound = error {

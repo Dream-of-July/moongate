@@ -46,8 +46,8 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     /// <summary>入队 / 重置后请求重新聚焦链接输入框（方便继续粘贴下一条）。</summary>
     public event Action? FocusUrlRequested;
     public event Action? OpenSettingsRequested;
-    /// <summary>请求弹出站点登录窗（参数为站点 host，如 "youtube.com"）。</summary>
-    public event Action<string>? OpenLoginRequested;
+    /// <summary>请求弹出站点验证窗（参数为站点 host 与可选起始 URL）。</summary>
+    public event Action<string, string?>? OpenLoginRequested;
 
     public MainViewModel() : this(new YtDlpEngine(), null) { }
 
@@ -251,6 +251,33 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
 
     // MARK: - 语言优先 Ready 页（推荐语言 + 展开区其他语言）
 
+    public ObservableCollection<SourceLanguageOptionViewModel> SourceLanguageOptions { get; } =
+    [
+        new("auto"),
+        new("ja"),
+        new("en"),
+        new("ko"),
+        new("zh-Hans"),
+        new("yue"),
+    ];
+
+    private SourceLanguageOptionViewModel? _selectedSourceLanguageOption;
+    public SourceLanguageOptionViewModel? SelectedSourceLanguageOption
+    {
+        get => _selectedSourceLanguageOption ??= SourceLanguageOptions[0];
+        set
+        {
+            if (!SetProperty(ref _selectedSourceLanguageOption, value)) return;
+            if (_currentInfo is not { } info) return;
+            RebuildSubtitleOptions(info);
+            RefreshLanguageOptions(info);
+            if (RecommendedLanguageOption?.Language is { } recommended)
+            {
+                SelectLanguage(recommended);
+            }
+        }
+    }
+
     /// <summary>展开区里的其他语言（推荐语言之外）。</summary>
     public ObservableCollection<SubtitleLanguageOptionViewModel> OtherLanguageOptions { get; } = [];
 
@@ -283,7 +310,10 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     private void RefreshLanguageOptions(VideoInfo info)
     {
         var result = SubtitleLanguageRecommender.Recommend(
-            info.Title, SubtitleLanguageRecommender.Aggregate([.. SubtitleOptions.Select(o => o.Choice)]));
+            info.Title,
+            SubtitleLanguageRecommender.Aggregate([.. SubtitleOptions.Select(o => o.Choice)]),
+            Settings.TranslationTargetLanguage,
+            preferredSourceLanguage: EffectiveSourceLanguagePreference(info));
         RecommendedLanguageOption = result.Recommended is { } recommended
             ? new SubtitleLanguageOptionViewModel(this, recommended, isRecommended: true)
             : null;
@@ -660,7 +690,8 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     public string FailedDetail { get => _failedDetail; private set => SetProperty(ref _failedDetail, value); }
 
     private string? _failedNeedsLogin;
-    /// <summary>失败原因是需要登录时记录站点，failed 页据此把主按钮换成「去登录」。</summary>
+    private string? _failedLoginUrl;
+    /// <summary>失败原因是需要登录/验证时记录站点，failed 页据此把主按钮换成站点验证入口。</summary>
     public string? FailedNeedsLogin
     {
         get => _failedNeedsLogin;
@@ -689,7 +720,21 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     private void Fail(Exception error, Action retry)
     {
         _retryAction = retry;
-        FailedNeedsLogin = error is MoongateException { Kind: MoongateErrorKind.LoginRequired } mge ? mge.Detail : null;
+        if (error is MoongateException { Kind: MoongateErrorKind.LoginRequired } login)
+        {
+            FailedNeedsLogin = login.Detail;
+            _failedLoginUrl = null;
+        }
+        else if (error is MoongateException { Kind: MoongateErrorKind.SiteCookieRequired } cookie)
+        {
+            FailedNeedsLogin = cookie.Detail;
+            _failedLoginUrl = cookie.CookieRequestUrl;
+        }
+        else
+        {
+            FailedNeedsLogin = null;
+            _failedLoginUrl = null;
+        }
         SetFailed(error.Message);
     }
 
@@ -795,19 +840,27 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     {
         CurrentInfo = info;
         SelectedFormat = info.Formats.FirstOrDefault();
-        SubtitleOptions.Clear();
         PrimarySubtitleTrackId = null;
-        foreach (var subtitle in AvailableSubtitleChoices(info))
-        {
-            SubtitleOptions.Add(new SubtitleOptionViewModel(this, subtitle));
-        }
-        RaisePropertyChanged(nameof(HasNoSubtitles));
+        SelectedSourceLanguageOption = SourceLanguageOptions.FirstOrDefault(
+            option => option.Code == AppSettings.NormalizePreferredSourceLanguage(Settings.PreferredSourceLanguage))
+            ?? SourceLanguageOptions[0];
+        RebuildSubtitleOptions(info);
         RefreshLanguageOptions(info);
         LanguageSectionExpanded = false;
         RestoreLastDownloadOptions(info);
         ResetSummary();
         SetStage(ParseStage.Ready);
         RaiseChineseDerived();
+    }
+
+    private void RebuildSubtitleOptions(VideoInfo info)
+    {
+        SubtitleOptions.Clear();
+        foreach (var subtitle in AvailableSubtitleChoices(info))
+        {
+            SubtitleOptions.Add(new SubtitleOptionViewModel(this, subtitle));
+        }
+        RaisePropertyChanged(nameof(HasNoSubtitles));
     }
 
     /// <summary>
@@ -817,6 +870,9 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     /// </summary>
     private void RestoreLastDownloadOptions(VideoInfo info)
     {
+        SelectedSourceLanguageOption = SourceLanguageOptions.FirstOrDefault(
+            option => option.Code == AppSettings.NormalizePreferredSourceLanguage(Settings.PreferredSourceLanguage))
+            ?? SourceLanguageOptions[0];
         _preferHdr = Settings.LastPreferHdr && (SelectedFormat?.HdrAvailable ?? false);
         RaisePropertyChanged(nameof(PreferHdr));
         SelectedOutputFormat = OutputFormats.FirstOrDefault(o => o.Format == OutputFormatFromRaw(Settings.LastOutputFormat))
@@ -847,8 +903,7 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
             }
         }
         // 没有命中上次手选/语言 → 用语言优先推荐器选一个推荐语言（确定性，随视频内容变化）。
-        if (!matchedAny && RecommendedLanguageOption?.Language.PreferredTrack is { } recommendedTrack
-            && (recommendedTrack.SourceKind != SubtitleSourceKind.LocalAsr || Queue.HasLocalAsrGenerator))
+        if (!matchedAny && RecommendedLanguageOption?.Language.PreferredTrack is { } recommendedTrack)
         {
             SelectPrimarySubtitle(recommendedTrack);
             matchedAny = true;
@@ -869,18 +924,15 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
     private IReadOnlyList<SubtitleChoice> AvailableSubtitleChoices(VideoInfo info)
     {
         var choices = info.Subtitles.ToList();
-        if (!Queue.HasLocalAsrGenerator) return choices;
-
         var seenIds = choices.Select(choice => choice.Id).ToHashSet(StringComparer.Ordinal);
+        var preferredSourceLanguage = EffectiveSourceLanguagePreference(info);
         if (info.Subtitles.Count == 0)
         {
-            var localAsr = SubtitleChoice.Create(
-                "auto",
-                Loc.S("L.Ready.LocalASRAutoDetect"),
-                SubtitleSourceKind.LocalAsr,
-                provider: "whisper.cpp",
-                variant: "local");
-            if (seenIds.Add(localAsr.Id)) choices.Add(localAsr);
+            AppendLocalAsrChoice(
+                preferredSourceLanguage,
+                preferredSourceLanguage == "auto" ? Loc.S("L.Ready.LocalASRAutoDetect") : null,
+                choices,
+                seenIds);
             return choices;
         }
 
@@ -890,15 +942,45 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
             var languageCode = NormalizedLang(subtitle.LanguageCode);
             if (languageCode.Length == 0 || !seenLanguages.Add(languageCode)) continue;
 
-            var localAsr = SubtitleChoice.Create(
+            AppendLocalAsrChoice(
                 languageCode,
                 subtitle.Label,
-                SubtitleSourceKind.LocalAsr,
-                provider: "whisper.cpp",
-                variant: "local");
-            if (seenIds.Add(localAsr.Id)) choices.Add(localAsr);
+                choices,
+                seenIds);
+        }
+        if (preferredSourceLanguage != "auto")
+        {
+            AppendLocalAsrChoice(
+                preferredSourceLanguage,
+                TranslationLanguage.SourceDisplayName(preferredSourceLanguage),
+                choices,
+                seenIds);
         }
         return choices;
+    }
+
+    private static void AppendLocalAsrChoice(
+        string languageCode,
+        string? label,
+        List<SubtitleChoice> choices,
+        HashSet<string> seenIds)
+    {
+        var localAsr = SubtitleChoice.Create(
+            languageCode,
+            TranslationLanguage.SourceDisplayName(languageCode)
+                ?? label
+                ?? Loc.S("L.Ready.LocalASRAutoDetect"),
+            SubtitleSourceKind.LocalAsr,
+            provider: "whisper.cpp",
+            variant: "local");
+        if (seenIds.Add(localAsr.Id)) choices.Add(localAsr);
+    }
+
+    private string EffectiveSourceLanguagePreference(VideoInfo info)
+    {
+        var selected = AppSettings.NormalizePreferredSourceLanguage(SelectedSourceLanguageOption?.Code ?? "auto");
+        if (selected != "auto") return selected;
+        return SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(info.Title) ?? "auto";
     }
 
     private static string ChineseModeRaw(ChineseSubtitleMode mode) => mode switch
@@ -1094,7 +1176,9 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
                 string? primarySubtitleTrackId = null;
                 string? preferredSubtitleLanguageCode = null;
                 var recommendation = SubtitleLanguageRecommender.Recommend(
-                    info.Title, SubtitleLanguageRecommender.Aggregate(AvailableSubtitleChoices(info)));
+                    info.Title,
+                    SubtitleLanguageRecommender.Aggregate(AvailableSubtitleChoices(info)),
+                    settings.TranslationTargetLanguage);
                 if (mode != ChineseSubtitleMode.Off)
                 {
                     if (recommendation.Recommended is { } recommended
@@ -1182,6 +1266,11 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
             return;
         }
         var primary = SelectedPrimarySubtitleOption;
+        if (primary?.Choice.SourceKind == SubtitleSourceKind.LocalAsr && !Queue.HasLocalAsrGenerator)
+        {
+            OpenLocalAsrSettings();
+            return;
+        }
         List<SubtitleOptionViewModel> chosen = primary is null ? [] : [primary];
         // 会产出多个文件（字幕 / 翻译 / 烧录件）时按视频建独立文件夹；单视频直接放 Downloads。
         var multiFile = chosen.Count > 0 || _chineseMode != ChineseSubtitleMode.Off;
@@ -1262,10 +1351,10 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
 
     // MARK: - 行为：站点登录
 
-    /// <summary>failed 页点「去登录」。</summary>
+    /// <summary>failed 页点「打开网页并保存验证信息」。</summary>
     public void OpenLoginForFailure()
     {
-        if (_failedNeedsLogin is { } site) OpenLoginRequested?.Invoke(site);
+        if (_failedNeedsLogin is { } site) OpenLoginRequested?.Invoke(site, _failedLoginUrl);
     }
 
     /// <summary>登录窗导出 cookies 成功后调用：自动重试上次失败的操作。</summary>
@@ -1406,6 +1495,10 @@ public sealed class MainViewModel : ObservableObject, IQueueCompletionNotifier
         RaisePropertyChanged(nameof(ChoosingTitle));
         RaiseChineseDerived();
         RefreshQueueSummary();
+        foreach (var option in SourceLanguageOptions)
+        {
+            option.RefreshLabel();
+        }
         foreach (var row in QueueRows)
         {
             row.Refresh(Queue.Item(row.Id));
@@ -1550,6 +1643,17 @@ public sealed class SubtitleOptionViewModel : ObservableObject
     }
 }
 
+public sealed class SourceLanguageOptionViewModel(string code) : ObservableObject
+{
+    public string Code { get; } = code;
+
+    public string Label => Code == "auto"
+        ? Loc.S("L.Ready.SourceLanguageAuto")
+        : TranslationLanguage.SourceDisplayName(Code) ?? Code;
+
+    internal void RefreshLabel() => RaisePropertyChanged(nameof(Label));
+}
+
 /// <summary>
 /// 语言优先 Ready 页里的一行语言（聚合了该语言的所有技术轨道）。选语言而不是选技术源。
 /// 推荐行显示「推荐」徽标；展开区里非推荐行按来源显示 auto / 本地识别徽标。
@@ -1562,9 +1666,9 @@ public sealed class SubtitleLanguageOptionViewModel : ObservableObject
     public string DisplayLabel { get; }
     public bool IsRecommended { get; }
 
-    /// <summary>展开区来源徽标：人工字幕不显示徽标；仅自动显示 auto；仅本地识别显示本地识别。</summary>
-    public bool ShowAutoBadge => !IsRecommended && !Language.HasManualTrack && Language.HasAutoTrack;
-    public bool ShowLocalAsrBadge => !IsRecommended && !Language.HasManualTrack && !Language.HasAutoTrack && Language.SupportsLocalAsr;
+    /// <summary>来源徽标：人工字幕不显示徽标；自动显示 auto；仅本地识别显示本地识别。</summary>
+    public bool ShowAutoBadge => !Language.HasManualTrack && Language.HasAutoTrack;
+    public bool ShowLocalAsrBadge => !Language.HasManualTrack && !Language.HasAutoTrack && Language.SupportsLocalAsr;
 
     /// <summary>local-ASR-only 语言且本地识别未就绪：显示配置入口而非直接选中。</summary>
     public bool NeedsLocalAsrConfig =>

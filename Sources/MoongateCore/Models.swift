@@ -11,6 +11,8 @@ public enum MoongateError: LocalizedError, Sendable {
     case downloadFailed(String)
     /// 站点风控/会员限制，需要用户在 App 内登录该站点后重试。关联值为站点 host（如 "youtube.com"）。
     case loginRequired(String)
+    /// 站点需要用户在内置网页完成登录、验证或风控确认后，保存 Cookie 再重试。
+    case siteCookieRequired(site: String, url: String, reason: String)
     case translateFailed(String)
     case burnFailed(String)
     case cancelled
@@ -29,6 +31,12 @@ public enum MoongateError: LocalizedError, Sendable {
             return CoreL10n.t(L.Core.errorDownloadFailed, reason)
         case .loginRequired(let site):
             return CoreL10n.t(L.Core.errorLoginRequired, site)
+        case .siteCookieRequired(let site, _, let reason):
+            return CoreL10n.text(
+                en: "\(site) needs browser verification or sign-in before Moongate can access the video. Open the page here, save the site cookies, then Moongate will retry.\n\(reason)",
+                zhHans: "\(site) 需要先完成网页登录或验证，月之门才能访问真实视频页面。请打开页面并保存站点验证信息，随后会自动重试。\n\(reason)",
+                zhHant: "\(site) 需要先完成網頁登入或驗證，月之門才能存取真實影片頁面。請打開頁面並儲存站點驗證資訊，隨後會自動重試。\n\(reason)"
+            )
         case .translateFailed(let reason):
             return CoreL10n.t(L.Core.errorTranslateFailed, reason)
         case .burnFailed(let reason):

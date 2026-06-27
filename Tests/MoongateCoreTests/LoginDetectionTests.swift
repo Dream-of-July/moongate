@@ -1,28 +1,26 @@
 import XCTest
 @testable import MoongateCore
 
-/// 验证「未登录导致失败」会被识别为 .loginRequired（failed 页据此显示「去登录」按钮）。
+/// 验证「需要登录/验证导致失败」会被识别为 .siteCookieRequired（failed 页据此打开原网页捕获 Cookie）。
 final class LoginDetectionTests: XCTestCase {
 
-    private func isLoginRequired(_ error: MoongateError?) -> Bool {
-        if case .loginRequired = error { return true }
+    private func isSiteCookieRequired(_ error: MoongateError?) -> Bool {
+        if case .siteCookieRequired = error { return true }
         return false
     }
 
     func testYouTubeSignInPromptIsRecognizedAsLoginIssue() {
-        // YouTube「Sign in to confirm」：未登录→loginRequired；已登录→重新登录提示。
-        // 本机可能已有 cookies，两种都算「识别为登录相关」，不应是普通失败。
         let error = YtDlpEngine._testLoginRequired(
             stderr: "ERROR: [youtube] abc: Sign in to confirm you're not a bot.",
             url: "https://www.youtube.com/watch?v=abc"
         )
         switch error {
-        case .loginRequired:
-            break
-        case .downloadFailed(let msg):
-            XCTAssertTrue(msg.contains("登录"), "已登录场景也应提示重新登录，而非普通失败")
+        case .siteCookieRequired(let site, let url, let reason):
+            XCTAssertEqual(site, "youtube.com")
+            XCTAssertEqual(url, "https://www.youtube.com/watch?v=abc")
+            XCTAssertTrue(reason.contains("YouTube"))
         default:
-            XCTFail("YouTube Sign in 提示应被识别为登录相关，实际：\(String(describing: error))")
+            XCTFail("YouTube Sign in 提示应被识别为站点验证，实际：\(String(describing: error))")
         }
     }
 
@@ -31,9 +29,10 @@ final class LoginDetectionTests: XCTestCase {
             stderr: "ERROR: [BiliBili] BV1: 该视频需要登录大会员账号才能观看",
             url: "https://www.bilibili.com/video/BV1"
         )
-        XCTAssertTrue(isLoginRequired(error))
-        if case .loginRequired(let site) = error {
+        XCTAssertTrue(isSiteCookieRequired(error))
+        if case .siteCookieRequired(let site, let url, _) = error {
             XCTAssertEqual(site, "bilibili.com")
+            XCTAssertEqual(url, "https://www.bilibili.com/video/BV1")
         }
     }
 
@@ -42,7 +41,21 @@ final class LoginDetectionTests: XCTestCase {
             stderr: "ERROR: This video requires login. Use --cookies to provide account cookies.",
             url: "https://example.com/v/1"
         )
-        XCTAssertTrue(isLoginRequired(error))
+        XCTAssertTrue(isSiteCookieRequired(error))
+    }
+
+    func testGenericWebpage404OffersSiteCookieVerification() {
+        let error = YtDlpEngine._testLoginRequired(
+            stderr: "ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found (caused by <HTTPError 404: Not Found>)",
+            url: "https://missav.live/cn/hublk-074"
+        )
+        if case .siteCookieRequired(let site, let url, let reason) = error {
+            XCTAssertEqual(site, "missav.live")
+            XCTAssertEqual(url, "https://missav.live/cn/hublk-074")
+            XCTAssertTrue(reason.contains("浏览器验证"))
+        } else {
+            XCTFail("generic webpage 404 should offer site cookie verification, actual: \(String(describing: error))")
+        }
     }
 
     func testBilibili412WithoutSavedCookiesPromptsLogin() {
@@ -53,8 +66,8 @@ final class LoginDetectionTests: XCTestCase {
             url: "https://www.bilibili.com/video/BV1",
             hasCookies: false
         )
-        XCTAssertTrue(isLoginRequired(loginError))
-        if case .loginRequired(let site) = loginError {
+        XCTAssertTrue(isSiteCookieRequired(loginError))
+        if case .siteCookieRequired(let site, _, _) = loginError {
             XCTAssertEqual(site, "bilibili.com")
         }
     }
@@ -66,7 +79,7 @@ final class LoginDetectionTests: XCTestCase {
             url: "https://www.bilibili.com/video/BV1",
             hasCookies: true
         )
-        XCTAssertFalse(isLoginRequired(loginError))
+        XCTAssertFalse(isSiteCookieRequired(loginError))
 
         let riskMessage = YtDlpEngine._testRiskControlMessage(stderr: stderr, host: "www.bilibili.com")
         XCTAssertNotNil(riskMessage)
@@ -75,8 +88,33 @@ final class LoginDetectionTests: XCTestCase {
 
     func testPlainNetworkErrorIsNeitherLoginNorRisk() {
         let stderr = "ERROR: Unable to download webpage: <urlopen error timed out>"
-        XCTAssertFalse(isLoginRequired(YtDlpEngine._testLoginRequired(stderr: stderr, url: "https://www.bilibili.com/video/BV1")))
+        XCTAssertFalse(isSiteCookieRequired(YtDlpEngine._testLoginRequired(stderr: stderr, url: "https://www.bilibili.com/video/BV1")))
         XCTAssertNil(YtDlpEngine._testRiskControlMessage(stderr: stderr, host: "www.bilibili.com"))
+    }
+
+    func testPageSnifferRecognizesCloudflareChallenge() {
+        XCTAssertTrue(PageSniffer._testIsCloudflareChallenge(statusCode: 403, headerValue: "challenge"))
+        XCTAssertTrue(PageSniffer._testIsCloudflareChallenge(statusCode: 503, headerValue: "Challenge"))
+        XCTAssertFalse(PageSniffer._testIsCloudflareChallenge(statusCode: 403, headerValue: nil))
+        XCTAssertFalse(PageSniffer._testIsCloudflareChallenge(statusCode: 500, headerValue: "challenge"))
+        XCTAssertTrue(PageSniffer.cloudflareChallengeMessage.contains("Cloudflare"))
+
+        let error = PageSniffer._testCloudflareChallengeError(for: URL(string: "https://missav.live/cn/hublk-074")!)
+        if case .siteCookieRequired(let site, let url, let reason) = error {
+            XCTAssertEqual(site, "missav.live")
+            XCTAssertEqual(url, "https://missav.live/cn/hublk-074")
+            XCTAssertTrue(reason.contains("Cloudflare"))
+        } else {
+            XCTFail("Cloudflare challenge should map to siteCookieRequired")
+        }
+    }
+
+    func testDynamicCookieFileUsesHostScopedJar() {
+        let known = YtDlpEngine._testCookieFile(for: "https://www.youtube.com/watch?v=abc")
+        XCTAssertEqual(known?.lastPathComponent, "youtube.txt")
+
+        let dynamic = YtDlpEngine._testCookieFile(for: "https://missav.live/cn/hublk-074")
+        XCTAssertEqual(dynamic?.lastPathComponent, "site-missav.live.txt")
     }
 
     func testNativeExtractorHostsIncludeShortVideoSites() {

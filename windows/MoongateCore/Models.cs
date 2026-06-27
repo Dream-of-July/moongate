@@ -12,6 +12,8 @@ public enum MoongateErrorKind
     DownloadFailed,
     /// <summary>站点风控/会员限制，需要用户在 App 内登录该站点后重试。Detail 为站点 host（如 "youtube.com"）。</summary>
     LoginRequired,
+    /// <summary>站点需要用户在网页完成登录、验证或风控确认后保存 Cookie 再重试。</summary>
+    SiteCookieRequired,
     TranslateFailed,
     BurnFailed,
     Cancelled,
@@ -26,11 +28,17 @@ public sealed class MoongateException : Exception
     public MoongateErrorKind Kind { get; }
     /// <summary>原因文本或站点 host（LoginRequired 时）。</summary>
     public string Detail { get; }
+    public string? CookieRequestUrl { get; }
+    public string? CookieRequestReason { get; }
 
-    private MoongateException(MoongateErrorKind kind, string detail, string message) : base(message)
+    private MoongateException(
+        MoongateErrorKind kind, string detail, string message,
+        string? cookieRequestUrl = null, string? cookieRequestReason = null) : base(message)
     {
         Kind = kind;
         Detail = detail;
+        CookieRequestUrl = cookieRequestUrl;
+        CookieRequestReason = cookieRequestReason;
     }
 
     public static MoongateException BinaryNotFound(string name) => new(
@@ -62,6 +70,14 @@ public sealed class MoongateException : Exception
         L10n.T($"{site} 需要登录后才能下载。点击「去登录」，在弹出的页面里登录账号后重试。",
             $"{site} 需要登入後才能下載。點擊「去登入」，在彈出的頁面裡登入帳號後重試。",
             $"{site} requires sign-in before downloading. Click \"Sign in\", log in on the page that opens, then retry."));
+
+    public static MoongateException SiteCookieRequired(string site, string url, string reason) => new(
+        MoongateErrorKind.SiteCookieRequired, site,
+        L10n.T($"{site} 需要先完成网页登录或验证，月之门才能访问真实视频页面。请打开页面并保存站点验证信息，随后会自动重试。\n{reason}",
+            $"{site} 需要先完成網頁登入或驗證，月之門才能存取真實影片頁面。請打開頁面並儲存站點驗證資訊，隨後會自動重試。\n{reason}",
+            $"{site} needs browser verification or sign-in before Moongate can access the video. Open the page here, save the site cookies, then Moongate will retry.\n{reason}"),
+        cookieRequestUrl: url,
+        cookieRequestReason: reason);
 
     public static MoongateException TranslateFailed(string reason) => new(
         MoongateErrorKind.TranslateFailed, reason,

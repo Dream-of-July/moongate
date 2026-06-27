@@ -502,7 +502,7 @@ public sealed class QueueManager
 
     private static TaskWorkPlan WorkPlanFor(DownloadRequest request, ChineseSubtitleMode mode)
     {
-        var needsLocalAsr = request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+        var needsLocalAsr = ShouldPrepareLocalAsrSource(request);
         // Weights approximate real wall-clock so the bar tracks time (download/transcription/
         // translation/burn are all multi-minute). Mirrors the Swift QueueManager.workPlan.
         return new TaskWorkPlan(
@@ -519,6 +519,16 @@ public sealed class QueueManager
             transcodeUnits: 2,
             translateUnits: 6,
             burnUnits: 4);
+    }
+
+    private static bool ShouldPrepareLocalAsrSource(DownloadRequest request)
+    {
+        if (request.PrimarySubtitleTrack is { } primarySubtitleTrack)
+        {
+            return primarySubtitleTrack.SourceKind == SubtitleSourceKind.LocalAsr;
+        }
+        var hasNonLocalTrack = request.RequestedSubtitleTracks.Any(track => track.SourceKind != SubtitleSourceKind.LocalAsr);
+        return !hasNonLocalTrack && request.RequestedSubtitleTracks.Any(track => track.SourceKind == SubtitleSourceKind.LocalAsr);
     }
 
     // MARK: - 入队
@@ -1475,13 +1485,17 @@ public sealed class QueueManager
 
     private static DownloadRequest? LocalAsrRetryRequest(DownloadRequest request)
     {
-        var source = request.RequestedSubtitleTracks.FirstOrDefault(track => track.SourceKind != SubtitleSourceKind.LocalAsr);
-        if (source is null) return null;
-        var languageCode = source.LanguageCode.Trim();
-        if (languageCode.Length == 0) return null;
+        var source = request.RequestedSubtitleTracks.FirstOrDefault(track => track.SourceKind != SubtitleSourceKind.LocalAsr)
+            ?? request.PrimarySubtitleTrack
+            ?? request.RequestedSubtitleTracks.FirstOrDefault();
+        var languageCode = source?.LanguageCode.Trim() ?? "";
+        var inferredLanguageCode = request.PreferredTitle is null
+            ? null
+            : SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(request.PreferredTitle);
+        var localAsrLanguageCode = languageCode.Length == 0 ? inferredLanguageCode ?? "auto" : languageCode;
         var localAsrTrack = SubtitleChoice.Create(
-            languageCode,
-            source.Label,
+            localAsrLanguageCode,
+            source?.Label ?? L10n.T("自动检测音频语言", "自動偵測音訊語言", "Auto-detect audio language"),
             SubtitleSourceKind.LocalAsr,
             provider: "whisper.cpp",
             variant: "local");
@@ -1615,8 +1629,9 @@ public sealed class QueueManager
                 },
                 null);
         }
-        var pickedIsAuto = ExtensionOf(pickedSource) == "vtt"
-            || primarySubtitleTrack?.SourceKind == SubtitleSourceKind.PlatformAuto;
+        var pickedIsAuto = primarySubtitleTrack is not null
+            ? primarySubtitleTrack.SourceKind == SubtitleSourceKind.PlatformAuto
+            : ExtensionOf(pickedSource) == "vtt";
         if (!pickedIsAuto)
         {
             // Manual / official subtitle: trusted, no gate.
@@ -1723,7 +1738,7 @@ public sealed class QueueManager
         LocalAsrConfidenceSummary? confidence)
     {
         var fallback = fallbackReasons is null ? null : FallbackNote(fallbackReasons);
-        var lowConfidence = confidence is { IsLowConfidence: true } ? LowConfidenceLocalAsrNote() : null;
+        var lowConfidence = confidence is { IsLowQuality: true } ? LowConfidenceLocalAsrNote() : null;
         return (fallback, lowConfidence) switch
         {
             ({ } reason, { } caveat) => $"{reason} · {caveat}",
@@ -1769,7 +1784,8 @@ public sealed class QueueManager
     {
         var languageCode = LocalAsrLanguageCode(request);
         if (languageCode is null) return files;
-        if (ExistingLocalAsrSubtitle(files, languageCode) is { } existing)
+        if (ExistingLocalAsrSubtitle(files, languageCode) is { } existing
+            && ExistingLocalAsrSubtitleIsUsable(existing, languageCode, request))
         {
             var reusedFiles = files.ToList();
             if (!reusedFiles.Contains(existing)) reusedFiles.Add(existing);
@@ -1795,6 +1811,10 @@ public sealed class QueueManager
             progress => ApplyAsrProgress(id, generation, progress),
             ct).ConfigureAwait(false);
         var sourceSrt = generated.Url;
+        if (generated.Confidence?.HasSevereQualityBlocker == true)
+        {
+            throw MoongateException.DownloadFailed(SevereLocalAsrQualityMessage());
+        }
         if (GenerationOf(id) != generation) return files;
 
         CompleteProgressPhase(id, generation, QueueProgressPhase.AudioExtract);
@@ -1814,6 +1834,39 @@ public sealed class QueueManager
         });
         return nextFiles;
     }
+
+    private static bool ExistingLocalAsrSubtitleIsUsable(
+        string subtitle,
+        string languageCode,
+        DownloadRequest request)
+    {
+        string raw;
+        try
+        {
+            raw = File.ReadAllText(subtitle);
+        }
+        catch
+        {
+            return false;
+        }
+        var detectedLanguageCode = LangCodeOfSubtitle(subtitle) ?? languageCode;
+        var languageHintCode = request.PreferredTitle is null
+            ? null
+            : SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(request.PreferredTitle);
+        var summary = LocalAsrConfidence.AssessSubtitle(
+            raw,
+            Path.GetFileName(subtitle),
+            detectedLanguageCode,
+            languageCode,
+            languageHintCode);
+        return !summary.HasSevereQualityBlocker;
+    }
+
+    private static string SevereLocalAsrQualityMessage() =>
+        L10n.T(
+            "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
+            "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。",
+            "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.");
 
     private void ApplyAsrProgress(Guid id, int generation, AsrProgress progress)
     {
@@ -1835,10 +1888,13 @@ public sealed class QueueManager
 
     private static string? LocalAsrLanguageCode(DownloadRequest request)
     {
-        if (request.PrimarySubtitleTrack?.SourceKind == SubtitleSourceKind.LocalAsr)
+        if (request.PrimarySubtitleTrack is { } primarySubtitleTrack)
         {
-            return request.PrimarySubtitleTrack?.LanguageCode;
+            return primarySubtitleTrack.SourceKind == SubtitleSourceKind.LocalAsr
+                ? primarySubtitleTrack.LanguageCode
+                : null;
         }
+        if (!ShouldPrepareLocalAsrSource(request)) return null;
         return request.RequestedSubtitleTracks
             .FirstOrDefault(track => track.SourceKind == SubtitleSourceKind.LocalAsr)?
             .LanguageCode;

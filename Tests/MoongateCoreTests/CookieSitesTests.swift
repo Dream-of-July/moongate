@@ -45,6 +45,45 @@ final class CookieSitesTests: XCTestCase {
         XCTAssertEqual(bilibili.first?.name, "SESSDATA")
     }
 
+    func testDynamicHostFilteringUsesOnlyRelatedDomains() {
+        let mixed = [
+            cookie(domain: ".missav.live", name: "cf_clearance"),
+            cookie(domain: "cdn.missav.live", name: "cdn"),
+            cookie(domain: ".example.com", name: "other"),
+        ]
+
+        let filtered = CookieSites.filterToHost(mixed, host: "missav.live")
+        XCTAssertEqual(Set(filtered.map(\.name)), ["cf_clearance", "cdn"])
+        XCTAssertEqual(CookieSites.dynamicKey(forHost: "https://missav.live/cn/hublk-074"), "site-missav.live")
+        XCTAssertTrue(CookieSites.domainMatches(host: "cn.missav.live", cookieDomain: ".missav.live"))
+        XCTAssertFalse(CookieSites.domainMatches(host: "missav.live", cookieDomain: ".evilmissav.live"))
+    }
+
+    func testNetscapeCookieHeaderFiltersByUrlDomainPathAndScheme() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-cookie-header-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let file = dir.appendingPathComponent("site-missav.live.txt")
+        try [
+            "# Netscape HTTP Cookie File",
+            ".missav.live\tTRUE\t/\tTRUE\t9999999999\tcf_clearance\tok",
+            ".missav.live\tTRUE\t/cn\tFALSE\t9999999999\tlang\tzh",
+            ".example.com\tTRUE\t/\tFALSE\t9999999999\tother\tbad",
+        ].joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let header = NetscapeCookieFile.cookieHeader(
+            for: URL(string: "https://missav.live/cn/hublk-074")!,
+            from: file
+        )
+        XCTAssertEqual(header, "lang=zh; cf_clearance=ok")
+        XCTAssertNil(NetscapeCookieFile.cookieHeader(
+            for: URL(string: "http://missav.live/")!,
+            from: file
+        ))
+    }
+
     func testContainsAuthCookieRequiresKnownAuthCookieOnAllowedDomain() {
         XCTAssertFalse(CookieSites.containsAuthCookie(
             CookieSites.youtube, [cookie(domain: ".youtube.com", name: "VISITOR_INFO1_LIVE")]))

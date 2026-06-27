@@ -56,10 +56,12 @@
     <sys:String x:Key="L.Ready.FormatSection">格式</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSection">字幕</sys:String>
     <sys:String x:Key="L.Ready.SubtitleSourceSection">字幕来源</sys:String>
-    <sys:String x:Key="L.Ready.SubtitleLanguageSection">字幕语言</sys:String>
+    <sys:String x:Key="L.Ready.SubtitleLanguageSection">源字幕/原声语言</sys:String>
     <sys:String x:Key="L.Ready.RecommendedBadge">推荐</sys:String>
-    <sys:String x:Key="L.Ready.AutoSourceExplanation">下载后自动选用质量最高的字幕来源</sys:String>
+    <sys:String x:Key="L.Ready.AutoSourceExplanation">按原声语言和字幕来源选择；自动字幕不会优先于更可靠的源语言</sys:String>
     <sys:String x:Key="L.Ready.MoreLanguages">更多语言</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguageAuto">自动</sys:String>
+    <sys:String x:Key="L.Ready.SourceLanguagePickerAccessibility">原声语言</sys:String>
     <sys:String x:Key="L.Ready.SubtitleOutputSection">字幕输出</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitles">这个视频没有字幕</sys:String>
     <sys:String x:Key="L.Ready.NoSubtitleSource">不需要字幕</sys:String>
@@ -101,7 +103,7 @@
     <sys:String x:Key="L.Hint.ChineseSourceUse">该字幕已是目标语言，将直接使用（不翻译）</sys:String>
 
     <!-- 失败页 -->
-    <sys:String x:Key="L.Failed.GoLogin">去登录</sys:String>
+    <sys:String x:Key="L.Failed.GoLogin">打开网页并保存验证信息</sys:String>
     <sys:String x:Key="L.Failed.Restart">重新开始</sys:String>
     <sys:String x:Key="L.Failed.BackToList">返回列表</sys:String>
 
@@ -185,8 +187,9 @@
     <sys:String x:Key="L.Settings.General">通用</sys:String>
     <sys:String x:Key="L.Settings.Language">界面语言</sys:String>
     <sys:String x:Key="L.Settings.TargetLanguage">翻译目标语言</sys:String>
+    <sys:String x:Key="L.Settings.DefaultSourceLanguage">默认原声语言</sys:String>
     <sys:String x:Key="L.Settings.LangAuto">跟随系统</sys:String>
-    <sys:String x:Key="L.Settings.LangHint">切换语言立即生效；进行中任务的状态文案在下次刷新时切换。</sys:String>
+    <sys:String x:Key="L.Settings.LangHint">切换语言立即生效；默认原声语言用于不清晰的视频，选档页可临时改。</sys:String>
     <sys:String x:Key="L.Settings.LocalASRSection">本地语音识别</sys:String>
     <sys:String x:Key="L.Settings.LocalASREnabled">允许调用本地 whisper.cpp 识别</sys:String>
     <sys:String x:Key="L.Settings.LocalASRHelp">当平台字幕质量较差时自动补充识别，速度更慢，但部分语言/专名可能更好。Moongate 不会自动下载模型。</sys:String>
@@ -332,17 +335,18 @@
     <sys:String x:Key="L.Update.KeepTasks">继续任务</sys:String>
 
     <!-- 站点登录窗 -->
-    <sys:String x:Key="L.Login.Title">站点登录</sys:String>
-    <sys:String x:Key="L.Login.HeadlineFmt">登录 {0}</sys:String>
-    <sys:String x:Key="L.Login.Instruction">在下方页面完成登录，然后点右上角「完成登录」</sys:String>
-    <sys:String x:Key="L.Login.Finish">完成登录</sys:String>
+    <sys:String x:Key="L.Login.Title">站点验证</sys:String>
+    <sys:String x:Key="L.Login.HeadlineFmt">验证 {0}</sys:String>
+    <sys:String x:Key="L.Login.Instruction">在下方页面完成登录或网页验证，然后保存站点验证信息</sys:String>
+    <sys:String x:Key="L.Login.Finish">保存验证信息</sys:String>
     <sys:String x:Key="L.Login.LoadingPage">正在加载登录页…</sys:String>
     <sys:String x:Key="L.Login.PageLoadFailed">页面加载失败，请检查网络后重试</sys:String>
     <sys:String x:Key="L.Login.NotReady">登录页尚未加载完成</sys:String>
     <sys:String x:Key="L.Login.NotSignedInConfirm">未检测到登录状态，仍要保存吗？</sys:String>
     <sys:String x:Key="L.Login.NotSignedInDetail">没有发现该站点的认证 Cookie，可能还没登录成功。建议在页面里完成登录后再保存。</sys:String>
     <sys:String x:Key="L.Login.SaveAnyway">仍然保存</sys:String>
-    <sys:String x:Key="L.Login.SaveFailedFmt">保存登录信息失败：{0}</sys:String>
+    <sys:String x:Key="L.Login.SaveFailedFmt">保存验证信息失败：{0}</sys:String>
+    <sys:String x:Key="L.Login.NoUsableCookiesForPage">当前网页没有产生可用于这个地址的验证信息，请在页面内完成验证后再保存。</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingTitle">缺少 WebView2 运行时</sys:String>
     <sys:String x:Key="L.Login.WebView2MissingBody">这台电脑还没有安装 WebView2 运行时，登录窗口需要它才能显示网页。&#x0a;请前往 https://developer.microsoft.com/microsoft-edge/webview2/ 下载安装，然后重新打开登录窗口。</sys:String>
     <sys:String x:Key="L.Login.WebView2Install">安装 WebView2 运行时</sys:String>

@@ -399,7 +399,7 @@ final class QueueManager: ObservableObject {
     }
 
     private static func workPlan(for request: DownloadRequest, mode: ChineseSubtitleMode) -> TaskWorkPlan {
-        let needsLocalASR = request.requestedSubtitleTracks.contains { $0.sourceKind == .localASR }
+        let needsLocalASR = shouldPrepareLocalASRSource(for: request)
         // Weights approximate real wall-clock so the bar tracks time: download, transcription,
         // translation and burn are all multi-minute phases. (Previously speechRecognition=12 vs
         // translate=1 made the bar hit ~87% during transcription, then crawl through the slow
@@ -420,6 +420,14 @@ final class QueueManager: ObservableObject {
             translateUnits: 6,
             burnUnits: 4
         )
+    }
+
+    private static func shouldPrepareLocalASRSource(for request: DownloadRequest) -> Bool {
+        if let primarySubtitleTrack = request.primarySubtitleTrack {
+            return primarySubtitleTrack.sourceKind == .localASR
+        }
+        let hasNonLocalTrack = request.requestedSubtitleTracks.contains { $0.sourceKind != .localASR }
+        return !hasNonLocalTrack && request.requestedSubtitleTracks.contains { $0.sourceKind == .localASR }
     }
 
     // MARK: - 入队
@@ -1272,8 +1280,11 @@ final class QueueManager: ObservableObject {
             ?? request.primarySubtitleTrack
             ?? request.requestedSubtitleTracks.first
         let languageCode = source?.languageCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let inferredLanguageCode = request.preferredTitle
+            .flatMap { SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: $0) }
+        let localASRLanguageCode = languageCode.isEmpty ? (inferredLanguageCode ?? "auto") : languageCode
         let localASRTrack = SubtitleChoice(
-            languageCode: languageCode.isEmpty ? "auto" : languageCode,
+            languageCode: localASRLanguageCode,
             label: source?.label ?? CoreL10n.t(L.Ready.localASRAutoDetectLabel),
             sourceKind: .localASR,
             provider: "whisper.cpp",
@@ -1413,8 +1424,12 @@ final class QueueManager: ObservableObject {
                     candidateReports: arbitrationReports()),
                 note: nil)
         }
-        let pickedIsAuto = pickedSource.pathExtension.lowercased() == "vtt"
-            || primarySubtitleTrack?.sourceKind == .platformAuto
+        let pickedIsAuto: Bool
+        if let primarySubtitleTrack {
+            pickedIsAuto = primarySubtitleTrack.sourceKind == .platformAuto
+        } else {
+            pickedIsAuto = pickedSource.pathExtension.lowercased() == "vtt"
+        }
         guard pickedIsAuto else {
             // Manual / official subtitle: trusted, no gate.
             return SubtitleSourceResolution(
@@ -1529,7 +1544,7 @@ final class QueueManager: ObservableObject {
         confidence: LocalASRConfidenceSummary?
     ) -> String? {
         let fallback = fallbackReasons.map { fallbackNote(for: $0) }
-        let lowConfidence = confidence?.isLowConfidence == true
+        let lowConfidence = confidence?.isLowQuality == true
             ? CoreL10n.t(L.Queue.subtitleSourceLowConfidenceLocalASR) : nil
         switch (fallback, lowConfidence) {
         case let (reason?, caveat?): return "\(reason) · \(caveat)"
@@ -1549,7 +1564,8 @@ final class QueueManager: ObservableObject {
         guard let languageCode = Self.localASRLanguageCode(in: request) else {
             return files
         }
-        if let existing = Self.existingLocalASRSubtitle(in: files, languageCode: languageCode) {
+        if let existing = Self.existingLocalASRSubtitle(in: files, languageCode: languageCode),
+           Self.existingLocalASRSubtitleIsUsable(existing, languageCode: languageCode, request: request) {
             var nextFiles = files
             if !nextFiles.contains(existing) { nextFiles.append(existing) }
             return nextFiles
@@ -1577,6 +1593,9 @@ final class QueueManager: ObservableObject {
             }
         }
         let sourceSRT = generated.url
+        if generated.confidence?.hasSevereQualityBlocker == true {
+            throw MoongateError.downloadFailed(Self.severeLocalASRQualityMessage())
+        }
         guard item(id)?.generation == generation else { return files }
         completeProgressPhase(id, generation: generation, phase: .audioExtract)
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
@@ -1593,6 +1612,33 @@ final class QueueManager: ObservableObject {
             if let lowConfidenceNote { $0.subtitleSourceNote = lowConfidenceNote }
         }
         return nextFiles
+    }
+
+    private static func existingLocalASRSubtitleIsUsable(
+        _ subtitle: URL,
+        languageCode: String,
+        request: DownloadRequest
+    ) -> Bool {
+        guard let raw = try? String(contentsOf: subtitle, encoding: .utf8) else { return false }
+        let detectedLanguageCode = langCode(ofSubtitle: subtitle) ?? languageCode
+        let languageHintCode = request.preferredTitle
+            .flatMap { SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: $0) }
+        let summary = LocalASRConfidence.assessSubtitle(
+            raw: raw,
+            fileName: subtitle.lastPathComponent,
+            languageCode: detectedLanguageCode,
+            requestedLanguageCode: languageCode,
+            languageHintCode: languageHintCode
+        )
+        return !summary.hasSevereQualityBlocker
+    }
+
+    private static func severeLocalASRQualityMessage() -> String {
+        CoreL10n.text(
+            en: "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.",
+            zhHans: "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
+            zhHant: "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。"
+        )
     }
 
     private func applyASRProgress(id: UUID, generation: Int, _ progress: ASRProgress) {
@@ -1618,9 +1664,10 @@ final class QueueManager: ObservableObject {
     }
 
     private static func localASRLanguageCode(in request: DownloadRequest) -> String? {
-        if request.primarySubtitleTrack?.sourceKind == .localASR {
-            return request.primarySubtitleTrack?.languageCode
+        if let primarySubtitleTrack = request.primarySubtitleTrack {
+            return primarySubtitleTrack.sourceKind == .localASR ? primarySubtitleTrack.languageCode : nil
         }
+        guard shouldPrepareLocalASRSource(for: request) else { return nil }
         return request.requestedSubtitleTracks
             .first(where: { $0.sourceKind == .localASR })?
             .languageCode

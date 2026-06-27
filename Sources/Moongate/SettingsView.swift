@@ -241,10 +241,22 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.langHant)).tag("zh-Hant")
                 Text(localizer.t(L.Settings.langEn)).tag("en")
             }
+            Picker(localizer.t(L.Settings.defaultSourceLanguage), selection: $draft.preferredSourceLanguage) {
+                ForEach(ViewModel.sourceLanguagePreferenceOptions) { option in
+                    Text(preferredSourceLanguageLabel(option.code)).tag(option.code)
+                }
+            }
             Text(localizer.t(L.Settings.languageHelp))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func preferredSourceLanguageLabel(_ code: String) -> String {
+        if code == "auto" {
+            return localizer.t(L.Ready.sourceLanguageAuto)
+        }
+        return TranslationLanguage.sourceDisplayName(for: code) ?? code
     }
 
     // MARK: - 本地语音识别
@@ -2193,11 +2205,10 @@ struct SettingsView: View {
         }
     }
 
-    /// 登录状态行的数据源：任一站点 cookie 文件存在即视为已登录，时间取最新。
+    /// 登录状态行的数据源：任一 cookie jar 存在即视为已有验证信息，时间取最新。
     private func refreshLoginStatus() {
-        let dates = CookieSites.all.compactMap { site -> Date? in
-            let path = AppSettings.siteCookieFileURL(site.key).path
-            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let dates = cookieJarFileURLs().compactMap { url -> Date? in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             return attributes?[.modificationDate] as? Date
         }
         cookieDate = dates.max()
@@ -2219,8 +2230,8 @@ struct SettingsView: View {
     private func clearAllLogins() {
         clearFeedback = nil
         // 清掉所有按站点隔离的 cookie 文件，外加可能残留的旧版全局文件。
-        for site in CookieSites.all {
-            NetscapeCookieFile.clear(at: AppSettings.siteCookieFileURL(site.key))
+        for url in cookieJarFileURLs() {
+            NetscapeCookieFile.clear(at: url)
         }
         NetscapeCookieFile.clear(at: AppSettings.cookieFileURL)
         WKWebsiteDataStore.default().removeData(
@@ -2231,6 +2242,17 @@ struct SettingsView: View {
             clearFeedback = localizer.t(L.Settings.cleared)
             refreshLoginStatus()
         }
+    }
+
+    private func cookieJarFileURLs() -> [URL] {
+        let fm = FileManager.default
+        let dynamic = (try? fm.contentsOfDirectory(
+            at: AppSettings.cookieDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { $0.pathExtension == "txt" } ?? []
+        let known = CookieSites.all.map { AppSettings.siteCookieFileURL($0.key) }
+        return Array(Set(dynamic + known)).filter { fm.fileExists(atPath: $0.path) }
     }
 }
 

@@ -66,6 +66,80 @@ public class SubtitleLanguageRecommenderTests
     }
 
     [Fact]
+    public void TargetLanguageSubtitleWinsWhenAlreadyAvailable()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[]
+        {
+            Auto("ja"), Manual("en"), Manual("zh-Hans"),
+            LocalAsr("ja"), LocalAsr("en"), LocalAsr("zh-Hans"),
+        });
+        var result = SubtitleLanguageRecommender.Recommend(
+            "YOASOBI - 群青 (Gunjou)",
+            groups,
+            targetLanguage: "zh-Hans");
+        Assert.Equal("zh", result.Recommended?.LanguageCode);
+        Assert.Equal("zh-Hans", result.Recommended?.PreferredTrack?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.Manual, result.Recommended?.PreferredTrack?.SourceKind);
+    }
+
+    [Fact]
+    public void PreferredSourceLanguageAddsLocalAsrRecommendationWhenOnlyEnglishAutoCaptionsExist()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[] { Auto("en"), LocalAsr("ja", "日语") });
+        var result = SubtitleLanguageRecommender.Recommend(
+            "iN5Mxw5vAy4",
+            groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja");
+
+        Assert.Equal("ja", result.Recommended?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.LocalAsr, result.Recommended?.PreferredTrack?.SourceKind);
+    }
+
+    [Fact]
+    public void AutomaticTargetSubtitleDoesNotWinOverPreferredSourceLanguage()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[] { Auto("zh-Hans"), Auto("en"), LocalAsr("ja", "日语") });
+        var result = SubtitleLanguageRecommender.Recommend(
+            "【公式】TVアニメ 第55話",
+            groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja");
+
+        Assert.Equal("ja", result.Recommended?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.LocalAsr, result.Recommended?.PreferredTrack?.SourceKind);
+    }
+
+    [Fact]
+    public void ManualTargetSubtitleStillWinsOverPreferredSourceLanguage()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[] { Manual("zh-Hans"), Auto("en"), LocalAsr("ja", "日语") });
+        var result = SubtitleLanguageRecommender.Recommend(
+            "【公式】TVアニメ 第55話",
+            groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja");
+
+        Assert.Equal("zh", result.Recommended?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.Manual, result.Recommended?.PreferredTrack?.SourceKind);
+    }
+
+    [Fact]
+    public void LocalAsrFallbackInfersJapaneseFromStrongTitleHint()
+    {
+        Assert.Equal(
+            "ja",
+            SubtitleLanguageRecommender.InferredLocalAsrLanguageCode(
+                "Sakuno, a Japanese performer who speaks softly"));
+        Assert.Equal("ja", SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("日本語インタビュー"));
+        Assert.Equal("ja", SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("日语对白片段"));
+        Assert.Equal("ja", SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("[Amatør] lille japaner med store bryster"));
+        Assert.Equal("ja", SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("Japonés entrevista privada"));
+        Assert.Equal("ja", SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("japonais conversation"));
+        Assert.Null(SubtitleLanguageRecommender.InferredLocalAsrLanguageCode("The Future of AI"));
+    }
+
+    [Fact]
     public void KoreanMvRecommendsKoreanWhenManualEnglishTranslationExists()
     {
         var groups = SubtitleLanguageChoice.Aggregate(new[] { Auto("ko"), Manual("en"), LocalAsr("ko"), LocalAsr("en") });
@@ -129,6 +203,8 @@ public class SubtitleLanguageRecommenderTests
         Assert.Equal(SubtitleLanguageRecommender.LatinScriptBonus, section.GetProperty("latinScriptBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.CjkPresenceBonus, section.GetProperty("cjkPresenceBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.PlatformAutoCjkPresenceBonus, section.GetProperty("platformAutoCJKPresenceBonus").GetInt32());
+        Assert.Equal(SubtitleLanguageRecommender.TargetLanguageTrackScore, section.GetProperty("targetLanguageTrackScore").GetInt32());
+        Assert.Equal(SubtitleLanguageRecommender.PreferredSourceLanguageScore, section.GetProperty("preferredSourceLanguageScore").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.TitleLanguageHintBonus, section.GetProperty("titleLanguageHintBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.TitleScriptDominanceRatio, section.GetProperty("titleScriptDominanceRatio").GetDouble());
     }

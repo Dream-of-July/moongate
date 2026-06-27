@@ -5,12 +5,14 @@ import WebKit
 import MoongateCore
 #endif
 
-/// 站点登录 sheet：内嵌 WKWebView 让用户登录，点「保存登录信息」后把
+/// 站点验证 sheet：内嵌 WKWebView 让用户登录/验证，点「保存验证信息」后把
 /// WKWebsiteDataStore.default() 的 cookies 导出为 Netscape 格式供 yt-dlp 使用。
 /// 使用持久化的 default 数据存储，登录状态跨 App 重启保留。
 struct LoginSheet: View {
     /// 站点 host，如 "youtube.com"
     let site: String
+    /// nil 时使用已知站点默认入口；失败页打开时传入原始失败 URL。
+    let startURL: URL?
     /// cookies 写入成功后调用（由调用方关窗并触发重试）
     let onComplete: () -> Void
     let onCancel: () -> Void
@@ -31,7 +33,7 @@ struct LoginSheet: View {
             topBar
             Divider()
             LoginWebView(
-                startURL: Self.startURL(for: site),
+                startURL: resolvedStartURL,
                 loadErrorMessage: localizer.t(L.Login.loadFailed),
                 currentURL: $currentURL,
                 loadError: $loadErrorText,
@@ -173,6 +175,10 @@ struct LoginSheet: View {
         return URL(string: currentURL)
     }
 
+    private var resolvedStartURL: URL {
+        startURL ?? Self.startURL(for: site)
+    }
+
     private var displayedCurrentURL: String {
         Self.displayHost(from: currentURL)
     }
@@ -208,7 +214,7 @@ struct LoginSheet: View {
     }
 
     private func openCurrentPageInBrowser() {
-        let url = currentPageURL ?? Self.startURL(for: site)
+        let url = currentPageURL ?? resolvedStartURL
         NSWorkspace.shared.open(url)
     }
 
@@ -222,18 +228,10 @@ struct LoginSheet: View {
     }
 
     private static func containsSiteCookie(in cookies: [HTTPCookie], matching site: String) -> Bool {
-        let targetHost = normalizedCookieHost(site)
-        guard !targetHost.isEmpty else { return false }
-        return cookies.contains { cookie in
-            let domain = normalizedCookieHost(cookie.domain)
-            return domain == targetHost || domain.hasSuffix(".\(targetHost)")
+        if let cookieSite = CookieSites.forLoginSite(site) {
+            return !CookieSites.filterToSite(cookies, cookieSite).isEmpty
         }
-    }
-
-    private static func normalizedCookieHost(_ value: String) -> String {
-        let rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parsedHost = URL(string: rawValue)?.host ?? rawValue
-        return parsedHost.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return !CookieSites.filterToHost(cookies, host: site).isEmpty
     }
 
     private func exportCookies() {
@@ -241,22 +239,50 @@ struct LoginSheet: View {
         errorText = nil
         // 按站点隔离：只导出本站点允许域的 cookie，写入该站点专属文件，
         // 绝不把其它站点（如同时登录过的 Bilibili/Google 其它服务）的会话一并导出。
-        guard let cookieSite = CookieSites.forLoginSite(site) else {
+        guard let destination = Self.cookieExportDestination(for: site) else {
             finishExport(localizer.t(L.Login.exportFailed, site))
             return
         }
-        let fileURL = AppSettings.siteCookieFileURL(cookieSite.key)
         // httpCookieStore 要求主线程使用，回调也在主队列。
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
             var failureText: String?
             do {
-                let filtered = CookieSites.filterToSite(cookies, cookieSite)
-                try NetscapeCookieFile.write(cookies: filtered, to: fileURL)
+                let filtered = destination.filter(cookies)
+                guard !filtered.isEmpty else {
+                    failureText = localizer.t(L.Login.exportFailed, site)
+                    finishExport(failureText)
+                    return
+                }
+                try NetscapeCookieFile.write(cookies: filtered, to: destination.fileURL)
+                guard NetscapeCookieFile.cookieHeader(for: resolvedStartURL, from: destination.fileURL) != nil else {
+                    failureText = localizer.t(L.Login.noUsableCookiesForPage)
+                    finishExport(failureText)
+                    return
+                }
             } catch {
                 failureText = localizer.t(L.Login.exportFailed, error.localizedDescription)
             }
             finishExport(failureText)
         }
+    }
+
+    private struct CookieExportDestination {
+        let fileURL: URL
+        let filter: ([HTTPCookie]) -> [HTTPCookie]
+    }
+
+    private static func cookieExportDestination(for site: String) -> CookieExportDestination? {
+        if let cookieSite = CookieSites.forLoginSite(site) {
+            return CookieExportDestination(
+                fileURL: AppSettings.siteCookieFileURL(cookieSite.key),
+                filter: { CookieSites.filterToSite($0, cookieSite) }
+            )
+        }
+        guard let key = CookieSites.dynamicKey(forHost: site) else { return nil }
+        return CookieExportDestination(
+            fileURL: AppSettings.siteCookieFileURL(key),
+            filter: { CookieSites.filterToHost($0, host: site) }
+        )
     }
 
     private func finishExport(_ failureText: String?) {

@@ -118,6 +118,8 @@ public sealed record AppSettings
     public string AppLanguage { get; init; } = "auto";
     /// <summary>字幕翻译目标语言："zh-Hans" / "zh-Hant" / "en"。默认 zh-Hans 以保证老用户升级后行为不变。</summary>
     public string TranslationTargetLanguage { get; init; } = "zh-Hans";
+    /// <summary>默认原声/源字幕语言："auto" / "ja" / "en" / "ko" / "zh-Hans" / "zh-Hant" / "yue"。</summary>
+    public string PreferredSourceLanguage { get; init; } = "auto";
     /// <summary>首启引导是否已完成。</summary>
     public bool OnboardingCompleted { get; init; }
     /// <summary>开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。</summary>
@@ -304,6 +306,17 @@ public sealed record AppSettings
 
     private static string SingleLineField(string value) => value.Trim();
 
+    public static string NormalizePreferredSourceLanguage(string value)
+    {
+        var trimmed = SingleLineField(value);
+        if (trimmed.Length == 0 || string.Equals(trimmed, "auto", StringComparison.OrdinalIgnoreCase))
+            return "auto";
+        var normalized = TranslationLanguage.NormalizedScript(trimmed);
+        return normalized is "ja" or "en" or "ko" or "zh-Hans" or "zh-Hant" or "yue"
+            ? normalized
+            : "auto";
+    }
+
     /// <summary>容错解析：缺字段按默认，非法值回退默认，并发数读入时夹回合法区间。</summary>
     public static AppSettings FromJson(string json)
     {
@@ -362,6 +375,8 @@ public sealed record AppSettings
             "en" => "en",
             _ => "zh-Hans",
         };
+        var preferredSourceLanguage = NormalizePreferredSourceLanguage(
+            StringField(root, "preferredSourceLanguage") ?? "auto");
         // 首启引导是否完成：缺键/非 true 一律 false
         var onboardingCompleted = root.TryGetProperty("onboardingCompleted", out var obc)
             && obc.ValueKind == JsonValueKind.True;
@@ -430,6 +445,7 @@ public sealed record AppSettings
             BurnAlwaysH264 = burnAlwaysH264,
             AppLanguage = appLanguage,
             TranslationTargetLanguage = translationTargetLanguage,
+            PreferredSourceLanguage = preferredSourceLanguage,
             OnboardingCompleted = onboardingCompleted,
             SmartTranslationPromptsEnabled = smartTranslationPromptsEnabled,
             LocalAsrEnabled = localAsrEnabled,
@@ -477,6 +493,7 @@ public sealed record AppSettings
             ["burnAlwaysH264"] = BurnAlwaysH264,
             ["appLanguage"] = AppLanguage,
             ["translationTargetLanguage"] = TranslationTargetLanguage,
+            ["preferredSourceLanguage"] = NormalizePreferredSourceLanguage(PreferredSourceLanguage),
             ["onboardingCompleted"] = OnboardingCompleted,
             ["smartTranslationPromptsEnabled"] = SmartTranslationPromptsEnabled,
             ["localASREnabled"] = LocalAsrEnabled,

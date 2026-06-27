@@ -66,6 +66,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var appLanguage: String
     /// 字幕翻译目标语言。"zh-Hans" / "zh-Hant" / "en"。默认 zh-Hans 以保证老用户升级后行为不变。
     public var translationTargetLanguage: String
+    /// 默认原声/源字幕语言。"auto"=按标题和平台字幕判断；也可锁定 ja/en/ko/zh-Hans/zh-Hant/yue。
+    public var preferredSourceLanguage: String
     /// 首启引导是否已完成。
     public var onboardingCompleted: Bool
     /// 开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。
@@ -89,6 +91,18 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     private static func normalizedSingleLineField(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public static func normalizedPreferredSourceLanguage(_ value: String) -> String {
+        let trimmed = normalizedSingleLineField(value)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "auto" else { return "auto" }
+        let normalized = TranslationLanguage.normalizedScript(trimmed)
+        switch normalized {
+        case "ja", "en", "ko", "zh-Hans", "zh-Hant", "yue":
+            return normalized
+        default:
+            return "auto"
+        }
     }
 
     public init(
@@ -120,6 +134,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         lastPreferHDR: Bool = false,
         appLanguage: String = "auto",
         translationTargetLanguage: String = "zh-Hans",
+        preferredSourceLanguage: String = "auto",
         onboardingCompleted: Bool = false,
         smartTranslationPromptsEnabled: Bool = false,
         localASREnabled: Bool = false,
@@ -163,6 +178,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.lastPreferHDR = lastPreferHDR
         self.appLanguage = appLanguage
         self.translationTargetLanguage = translationTargetLanguage
+        self.preferredSourceLanguage = Self.normalizedPreferredSourceLanguage(preferredSourceLanguage)
         self.onboardingCompleted = onboardingCompleted
         self.smartTranslationPromptsEnabled = smartTranslationPromptsEnabled
         self.localASREnabled = localASREnabled
@@ -213,7 +229,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
         case lastSubtitleMode, lastSubtitleLangs, lastPrimarySubtitleTrackID, lastOutputFormat, lastPreferHDR
-        case appLanguage, translationTargetLanguage, onboardingCompleted, smartTranslationPromptsEnabled
+        case appLanguage, translationTargetLanguage, preferredSourceLanguage, onboardingCompleted, smartTranslationPromptsEnabled
         case localASREnabled, localASRRuntimePath, localASRModelPath, localASRModelID
         case completionNotificationsEnabled, completionSoundEnabled
     }
@@ -290,6 +306,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // 翻译目标默认 zh-Hans，保证老用户升级后翻译行为完全不变。
         appLanguage = try c.decodeIfPresent(String.self, forKey: .appLanguage) ?? "auto"
         translationTargetLanguage = try c.decodeIfPresent(String.self, forKey: .translationTargetLanguage) ?? "zh-Hans"
+        preferredSourceLanguage = Self.normalizedPreferredSourceLanguage(
+            try c.decodeIfPresent(String.self, forKey: .preferredSourceLanguage) ?? "auto"
+        )
         onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
         smartTranslationPromptsEnabled = try c.decodeIfPresent(Bool.self, forKey: .smartTranslationPromptsEnabled) ?? false
         localASREnabled = try c.decodeIfPresent(Bool.self, forKey: .localASREnabled) ?? false
@@ -347,6 +366,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(lastPreferHDR, forKey: .lastPreferHDR)
         try c.encode(appLanguage, forKey: .appLanguage)
         try c.encode(translationTargetLanguage, forKey: .translationTargetLanguage)
+        try c.encode(Self.normalizedPreferredSourceLanguage(preferredSourceLanguage), forKey: .preferredSourceLanguage)
         try c.encode(onboardingCompleted, forKey: .onboardingCompleted)
         try c.encode(smartTranslationPromptsEnabled, forKey: .smartTranslationPromptsEnabled)
         try c.encode(localASREnabled, forKey: .localASREnabled)

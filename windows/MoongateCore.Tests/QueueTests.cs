@@ -1027,6 +1027,60 @@ public class QueueManagerTests
     }
 
     [Fact]
+    public async Task ManualVttPrimaryDoesNotRunLocalAsrEvenWhenFallbackTrackExists()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-manual-vtt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var manualVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+            var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+            for (var i = 0; i < 20; i++)
+            {
+                var start = TimeSpan.FromSeconds(i * 2);
+                var end = TimeSpan.FromSeconds(i * 2 + 1.5);
+                sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n［音楽］\n\n");
+            }
+            File.WriteAllText(manualVtt, sb.ToString());
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var manual = SubtitleChoice.Create("ja", "Japanese", SubtitleSourceKind.Manual, provider: "yt-dlp", variant: "manual");
+            var localAsr = SubtitleChoice.Create(
+                "ja",
+                "Japanese local ASR",
+                SubtitleSourceKind.LocalAsr,
+                provider: "whisper.cpp",
+                variant: "local");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [manual, localAsr], primarySubtitleTrackId: manual.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, manualVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(0, asr.CallCount);
+            Assert.Equal(manualVtt, translator.LastInput);
+            Assert.Equal(SubtitleSourceKind.Manual, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.False(item.ResolvedSubtitleSource?.UsedLocalAsrFallback ?? false);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RetryWithLocalAsr_ReusesDownloadedVideoAndReplacesSubtitleSource()
     {
         var engine = new FakeEngine();

@@ -58,6 +58,92 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(result.recommended?.languageCode, "ja")
     }
 
+    func testTargetLanguageSubtitleWinsWhenAlreadyAvailable() {
+        let groups = SubtitleLanguageChoice.aggregate([
+            auto("ja"), manual("en"), manual("zh-Hans"),
+            localASR("ja"), localASR("en"), localASR("zh-Hans")
+        ])
+        let result = SubtitleLanguageRecommender.recommend(
+            title: "YOASOBI - 群青 (Gunjou)",
+            languages: groups,
+            targetLanguage: "zh-Hans"
+        )
+        XCTAssertEqual(result.recommended?.languageCode, "zh")
+        XCTAssertEqual(result.recommended?.preferredTrack?.languageCode, "zh-Hans")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .manual)
+    }
+
+    func testPreferredSourceLanguageAddsLocalASRRecommendationWhenOnlyEnglishAutoCaptionsExist() {
+        let groups = SubtitleLanguageChoice.aggregate([auto("en"), localASR("ja", label: "日语")])
+        let result = SubtitleLanguageRecommender.recommend(
+            title: "iN5Mxw5vAy4",
+            languages: groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja"
+        )
+
+        XCTAssertEqual(result.recommended?.languageCode, "ja")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .localASR)
+    }
+
+    func testAutomaticTargetSubtitleDoesNotWinOverPreferredSourceLanguage() {
+        let groups = SubtitleLanguageChoice.aggregate([auto("zh-Hans"), auto("en"), localASR("ja", label: "日语")])
+        let result = SubtitleLanguageRecommender.recommend(
+            title: "【公式】TVアニメ 第55話",
+            languages: groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja"
+        )
+
+        XCTAssertEqual(result.recommended?.languageCode, "ja")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .localASR)
+    }
+
+    func testManualTargetSubtitleStillWinsOverPreferredSourceLanguage() {
+        let groups = SubtitleLanguageChoice.aggregate([manual("zh-Hans"), auto("en"), localASR("ja", label: "日语")])
+        let result = SubtitleLanguageRecommender.recommend(
+            title: "【公式】TVアニメ 第55話",
+            languages: groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: "ja"
+        )
+
+        XCTAssertEqual(result.recommended?.languageCode, "zh")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .manual)
+    }
+
+    func testLocalASRFallbackInfersJapaneseFromStrongTitleHint() {
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(
+                title: "Sakuno, a Japanese performer who speaks softly"
+            ),
+            "ja"
+        )
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: "日本語インタビュー"),
+            "ja"
+        )
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: "日语对白片段"),
+            "ja"
+        )
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(
+                title: "[Amatør] lille japaner med store bryster"
+            ),
+            "ja"
+        )
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: "Japonés entrevista privada"),
+            "ja"
+        )
+        XCTAssertEqual(
+            SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: "japonais conversation"),
+            "ja"
+        )
+        XCTAssertNil(SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: "The Future of AI"))
+    }
+
     func testKoreanMVRecommendsKoreanWhenManualEnglishTranslationExists() {
         let groups = SubtitleLanguageChoice.aggregate([auto("ko"), manual("en"), localASR("ko"), localASR("en")])
         let result = SubtitleLanguageRecommender.recommend(title: "아이유 (IU) - 좋은 날 MV", languages: groups)
@@ -119,6 +205,8 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(SubtitleLanguageRecommender.latinScriptBonus, try intValue("latinScriptBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.cjkPresenceBonus, try intValue("cjkPresenceBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.platformAutoCJKPresenceBonus, try intValue("platformAutoCJKPresenceBonus"))
+        XCTAssertEqual(SubtitleLanguageRecommender.targetLanguageTrackScore, try intValue("targetLanguageTrackScore"))
+        XCTAssertEqual(SubtitleLanguageRecommender.preferredSourceLanguageScore, try intValue("preferredSourceLanguageScore"))
         XCTAssertEqual(SubtitleLanguageRecommender.titleLanguageHintBonus, try intValue("titleLanguageHintBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.titleScriptDominanceRatio, try doubleValue("titleScriptDominanceRatio"))
     }

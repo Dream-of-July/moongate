@@ -1264,6 +1264,7 @@ final class TranslationSettingsTests: XCTestCase {
         var original = AppSettings()
         original.appLanguage = "zh-Hant"
         original.translationTargetLanguage = "en"
+        original.preferredSourceLanguage = "ja"
         original.onboardingCompleted = true
 
         let data = try JSONEncoder().encode(original)
@@ -1271,6 +1272,7 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertEqual(decoded.appLanguage, "zh-Hant")
         XCTAssertEqual(decoded.translationTargetLanguage, "en")
+        XCTAssertEqual(decoded.preferredSourceLanguage, "ja")
         XCTAssertTrue(decoded.onboardingCompleted)
     }
 
@@ -1291,7 +1293,18 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(decoded.translationAuthToken, "TEST_SECRET_VALUE_DO_NOT_STORE", "升级不得清空已保存凭证")
         XCTAssertEqual(decoded.appLanguage, "auto")
         XCTAssertEqual(decoded.translationTargetLanguage, "zh-Hans")
+        XCTAssertEqual(decoded.preferredSourceLanguage, "auto")
         XCTAssertFalse(decoded.onboardingCompleted)
+    }
+
+    func testPreferredSourceLanguageNormalizesUnsupportedValuesToAuto() throws {
+        let decoded = try JSONDecoder().decode(
+            AppSettings.self,
+            from: Data(#"{"preferredSourceLanguage":"klingon"}"#.utf8)
+        )
+
+        XCTAssertEqual(AppSettings().preferredSourceLanguage, "auto")
+        XCTAssertEqual(decoded.preferredSourceLanguage, "auto")
     }
 
     func testMakeTranslationContextUsesConfiguredTargetLanguage() {

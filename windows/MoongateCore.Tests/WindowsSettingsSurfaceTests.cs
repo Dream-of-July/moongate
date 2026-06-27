@@ -54,6 +54,23 @@ public class WindowsSettingsSurfaceTests
     }
 
     [Fact]
+    public void WindowsLoginCookieExportVerifiesJarMatchesStartUrlBeforeRetrying()
+    {
+        var source = Read("windows", "MoongateApp", "LoginWindow.xaml.cs");
+        var zh = Read("windows", "MoongateApp", "Strings.zh.xaml");
+        var zhHant = Read("windows", "MoongateApp", "Strings.zh-Hant.xaml");
+        var en = Read("windows", "MoongateApp", "Strings.en.xaml");
+
+        Assert.Contains("NetscapeCookieFile.CookieHeaderFor(new Uri(StartUrl(_site, _startUrl)), path)", source);
+        Assert.Contains("L.Login.NoUsableCookiesForPage", source);
+        Assert.Contains("throw new InvalidOperationException(Loc.S(\"L.Login.NoUsableCookiesForPage\"))", source);
+        foreach (var resource in new[] { zh, zhHant, en })
+        {
+            Assert.Contains("x:Key=\"L.Login.NoUsableCookiesForPage\"", resource);
+        }
+    }
+
+    [Fact]
     public void WindowsFirstRunOnboardingPersistsLanguagesAndOffersApiEditor()
     {
         var mainWindowCode = Read("windows", "MoongateApp", "MainWindow.xaml.cs");
@@ -710,12 +727,16 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("L.Ready.RecommendedBadge", xaml);
         Assert.Contains("L.Ready.AutoSourceExplanation", xaml);
         Assert.Contains("L.Ready.MoreLanguages", xaml);
+        Assert.Contains("SourceLanguageOptions", xaml);
+        Assert.Contains("SelectedSourceLanguageOption", xaml);
         Assert.Contains("RecommendedLanguageOption", xaml);
         Assert.Contains("OtherLanguageOptions", xaml);
         Assert.Contains("LanguageSectionExpanded", xaml);
         // ViewModel 语言优先 API + 仍保留主源 trackId 兼容路径。
         Assert.Contains("public string? PrimarySubtitleTrackId", viewModel);
         Assert.Contains("SubtitleLanguageRecommender.Recommend(", viewModel);
+        Assert.Contains("preferredSourceLanguage: EffectiveSourceLanguagePreference(info)", viewModel);
+        Assert.Contains("AppendLocalAsrChoice", viewModel);
         Assert.Contains("public void SelectLanguage(SubtitleLanguageChoice language)", viewModel);
         Assert.Contains("PrimarySubtitleTrackId = primary?.Id", viewModel);
         Assert.Contains("AvailableSubtitleChoices(info)", viewModel);
@@ -728,6 +749,8 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Ready.NoSubtitleSource\"", resource);
             Assert.Contains("x:Key=\"L.Ready.RecommendedBadge\"", resource);
             Assert.Contains("x:Key=\"L.Ready.MoreLanguages\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SourceLanguageAuto\"", resource);
+            Assert.Contains("x:Key=\"L.Ready.SourceLanguagePickerAccessibility\"", resource);
         }
     }
 

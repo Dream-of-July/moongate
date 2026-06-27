@@ -16,6 +16,7 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
     /// <summary>按捕获的请求生成响应；默认 200 空对象。</summary>
     public Func<CapturedRequest, HttpResponseMessage> Responder { get; set; } =
         _ => Json(200, "{}");
+    public Func<CapturedRequest, CancellationToken, Task<HttpResponseMessage>>? AsyncResponder { get; set; }
 
     public static HttpResponseMessage Json(int status, string body) => new((HttpStatusCode)status)
     {
@@ -35,6 +36,10 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
         }
         var captured = new CapturedRequest(request.Method, request.RequestUri!, headers, body);
         lock (_lock) Requests.Add(captured);
+        if (AsyncResponder is { } asyncResponder)
+        {
+            return await asyncResponder(captured, cancellationToken);
+        }
         return Responder(captured);
     }
 }
@@ -1172,6 +1177,43 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ResegmentForReadability_LongInputChunks_RunConcurrently()
+    {
+        var cues = NumberedWordCues(cueCount: 75, tokensPerCue: 3);
+        var active = 0;
+        var maxActive = 0;
+        var handler = new FakeHttpHandler
+        {
+            AsyncResponder = async (captured, ct) =>
+            {
+                var current = Interlocked.Increment(ref active);
+                int observed;
+                do
+                {
+                    observed = Volatile.Read(ref maxActive);
+                    if (current <= observed) break;
+                } while (Interlocked.CompareExchange(ref maxActive, current, observed) != observed);
+                try
+                {
+                    await Task.Delay(50, ct);
+                    var transcript = SegmentationTranscript(captured.Body);
+                    return FakeHttpHandler.Json(200, AnthropicReply($"1|{transcript}."));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref active);
+                }
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(cues, CancellationToken.None);
+
+        Assert.True(maxActive > 1, $"expected concurrent resegment chunk requests, saw maxActive={maxActive}");
+        Assert.True(output.Count > 0);
+    }
+
+    [Fact]
     public async Task ResegmentForReadability_OutputLimitHalvesChunkAndRetries()
     {
         var cues = NumberedWordCues(cueCount: 8, tokensPerCue: 4);
@@ -1354,6 +1396,35 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ResegmentForReadability_CjkLongSegment_PrefersSafePhraseBoundary()
+    {
+        string[] parts = ["感じた", "まま", "手を", "伸ばせば", "伸ばすほど", "青くなる"];
+        var cues = parts.Select((text, i) => new SubtitleCue(
+            i + 1,
+            SrtTools.SecondsToSrtTime(i * 1.5),
+            SrtTools.SecondsToSrtTime(i * 1.5 + 1.5),
+            text)).ToList();
+        var joined = string.Concat(parts);
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply($"1|{joined}")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.ResegmentForReadabilityAsync(
+            cues,
+            TranslationPromptPreset.SongLyrics,
+            CancellationToken.None);
+
+        Assert.True(output.Count > 1);
+        Assert.False(output[0].Text.EndsWith("伸ばせ", StringComparison.Ordinal),
+            "must not split 伸ばせば into 伸ばせ / ば");
+        Assert.False(output[1].Text.StartsWith("ば", StringComparison.Ordinal),
+            "next line must not start with the inflection fragment ば");
+        Assert.Equal(joined, string.Concat(output.Select(c => c.Text)));
+    }
+
+    [Fact]
     public async Task ResegmentForReadability_SongLyricsPreset_UsesLyricsLinePrompt()
     {
         var handler = new FakeHttpHandler
@@ -1445,6 +1516,47 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal(JapaneseAsrCues().Select(c => c.Text), unchangedSource.Select(c => c.Text));
         var result = SrtTools.ParseSrt(File.ReadAllText(output));
         Assert.Equal(4, result.Count);
+    }
+
+    [Fact]
+    public async Task Translate_PunctuatedLocalAsrMusicSource_ResegmentsWithoutSmart()
+    {
+        List<SubtitleCue> input =
+        [
+            new SubtitleCue(1, "00:00:00,000", "00:00:01,000", "感じたまま。"),
+            new SubtitleCue(2, "00:00:01,000", "00:00:02,000", "手を"),
+            new SubtitleCue(3, "00:00:02,000", "00:00:03,000", "伸ばせば"),
+            new SubtitleCue(4, "00:00:03,000", "00:00:04,000", "伸ばすほど。"),
+            new SubtitleCue(5, "00:00:04,000", "00:00:05,000", "青い"),
+            new SubtitleCue(6, "00:00:05,000", "00:00:06,000", "世界が"),
+            new SubtitleCue(7, "00:00:06,000", "00:00:07,000", "広がる"),
+            new SubtitleCue(8, "00:00:07,000", "00:00:08,000", "怖くて"),
+            new SubtitleCue(9, "00:00:08,000", "00:00:09,000", "仕方ない"),
+            new SubtitleCue(10, "00:00:09,000", "00:00:10,000", "けど"),
+        ];
+        Assert.False(ConfiguredTranslator.LooksLikeAutoCaption(input));
+        var srt = WriteSrt("YOASOBI Official Music Video.local-asr.ja.srt", input);
+        var segmentCalls = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = captured =>
+            {
+                if (RequestSystem(captured.Body).Contains("待断句文本", StringComparison.Ordinal))
+                {
+                    segmentCalls++;
+                    return FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|感じたまま。手を伸ばせば\n2|伸ばすほど。青い世界が広がる\n3|怖くて仕方ないけど"));
+                }
+                return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        Assert.True(segmentCalls > 0);
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(3, result.Count);
     }
 
     [Fact]

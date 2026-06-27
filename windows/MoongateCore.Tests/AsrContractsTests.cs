@@ -23,6 +23,14 @@ public class AsrContractsTests
                 new AsrWord { Text = "明ける", StartSeconds = 0.8, EndSeconds = 1.5, Probability = 0.76 },
             ],
             SourceModelId = "whisper.cpp:small-q5_1",
+            BackendKind = AsrBackendKind.WhisperCpp,
+            Segments =
+            [
+                new AsrSegment { Text = "梅雨が明ける", StartSeconds = 0, EndSeconds = 1.5 },
+            ],
+            RawText = "梅雨が明ける",
+            BackendDiagnostics = new Dictionary<string, string> { ["dtw"] = "enabled" },
+            QualitySummary = new LocalAsrConfidenceSummary(3, 0.84, 0, false),
             CreatedAt = createdAt,
         };
         var model = new AsrModelInfo
@@ -50,7 +58,12 @@ public class AsrContractsTests
 
         var transcriptJson = JsonSerializer.Serialize(transcript, options);
         Assert.Contains("\"sourceModelId\"", transcriptJson, StringComparison.Ordinal);
+        Assert.Contains("\"backendKind\":\"whisperCpp\"", transcriptJson, StringComparison.Ordinal);
         Assert.DoesNotContain("SourceModelId", transcriptJson, StringComparison.Ordinal);
+        using (var transcriptDoc = JsonDocument.Parse(transcriptJson))
+        {
+            Assert.Equal("梅雨が明ける", transcriptDoc.RootElement.GetProperty("rawText").GetString());
+        }
         AssertTranscriptEqual(transcript, JsonSerializer.Deserialize<AsrTranscript>(transcriptJson, options));
         var manifest = new AsrModelManifest { Models = [model] };
         var decodedManifest = JsonSerializer.Deserialize<AsrModelManifest>(
@@ -67,6 +80,31 @@ public class AsrContractsTests
             TotalUnits = 2,
         }, options);
         Assert.Contains("\"phase\":\"speechRecognition\"", progressJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TranscriptDecodesLegacyPayloadWithBackendDefaults()
+    {
+        var transcript = JsonSerializer.Deserialize<AsrTranscript>(
+            """
+            {
+              "id": "legacy",
+              "languageCode": "ja",
+              "words": [
+                { "text": "雨", "startSeconds": 0.0, "endSeconds": 0.3 }
+              ],
+              "sourceModelId": "whisper.cpp:small-q5_1",
+              "createdAt": "2026-06-27T00:00:00Z"
+            }
+            """,
+            AsrJson.Options);
+
+        Assert.NotNull(transcript);
+        Assert.Equal(AsrBackendKind.WhisperCpp, transcript!.BackendKind);
+        Assert.Empty(transcript.Segments);
+        Assert.Null(transcript.RawText);
+        Assert.Empty(transcript.BackendDiagnostics);
+        Assert.Null(transcript.QualitySummary);
     }
 
     [Fact]
@@ -786,6 +824,151 @@ public class AsrContractsTests
         Assert.False(LocalAsrConfidence.Assess(Words(0.2, 10)).IsLowConfidence);            // too few words
         var borderline = Words(0.4, 3).Concat(Words(0.9, 27)).ToList();                     // avg≈0.85, lowRatio 0.1
         Assert.False(LocalAsrConfidence.Assess(borderline).IsLowConfidence);
+
+        var confidentWrongScript = Enumerable.Range(0, 30)
+            .Select(_ => new AsrWord { Text = "baby", StartSeconds = 0, EndSeconds = 0.1, Probability = 0.95 })
+            .ToList();
+        var summary = LocalAsrConfidence.Assess(confidentWrongScript, "ko");
+        Assert.False(summary.IsLowConfidence);
+        Assert.True(summary.IsLowQuality);
+        Assert.Contains("scriptMismatch", summary.QualityIssues);
+
+        var repeatedLoop = Enumerable.Range(0, 36)
+            .Select(_ => new AsrWord { Text = "ね", StartSeconds = 0, EndSeconds = 0.1, Probability = 0.96 })
+            .ToList();
+        var loopSummary = LocalAsrConfidence.Assess(repeatedLoop, "ja");
+        Assert.False(loopSummary.IsLowConfidence);
+        Assert.True(loopSummary.IsLowQuality);
+        Assert.Contains("repetitionLoop", loopSummary.QualityIssues);
+        Assert.Contains("lowDiversity", loopSummary.QualityIssues);
+
+        var autoEnglishLoopSegments = new[]
+        {
+            new AsrSegment { Text = "*Korin*", StartSeconds = 0, EndSeconds = 2 },
+            new AsrSegment { Text = "*Korin*", StartSeconds = 30, EndSeconds = 32 },
+            new AsrSegment { Text = "*Korin*", StartSeconds = 60, EndSeconds = 62 },
+        };
+        var autoEnglishLoopWords = autoEnglishLoopSegments
+            .Select(segment => new AsrWord
+            {
+                Text = segment.Text,
+                StartSeconds = segment.StartSeconds,
+                EndSeconds = segment.EndSeconds,
+                Probability = 0.95,
+            })
+            .ToList();
+        var autoEnglishLoopSummary = LocalAsrConfidence.Assess(
+            autoEnglishLoopWords,
+            "en",
+            autoEnglishLoopSegments,
+            requestedLanguageCode: "auto",
+            languageHintCode: "ja");
+        Assert.True(autoEnglishLoopSummary.HasSevereQualityBlocker);
+        Assert.Contains("autoLanguageMismatch", autoEnglishLoopSummary.QualityIssues);
+        Assert.Contains("lowSegmentDiversity", autoEnglishLoopSummary.QualityIssues);
+        Assert.Equal(1, autoEnglishLoopSummary.DominantPhraseRatio, precision: 4);
+
+        var phraseLoopSegments = Enumerable.Range(0, 7)
+            .Select(index => new AsrSegment
+            {
+                Text = "気持ちいいですか?",
+                StartSeconds = 22 + index * 5,
+                EndSeconds = 24 + index * 5,
+            })
+            .ToList();
+        var phraseLoopWords = phraseLoopSegments
+            .Select(segment => new AsrWord
+            {
+                Text = segment.Text,
+                StartSeconds = segment.StartSeconds,
+                EndSeconds = segment.EndSeconds,
+                Probability = 0.96,
+            })
+            .ToList();
+        var phraseLoopSummary = LocalAsrConfidence.Assess(
+            phraseLoopWords,
+            "ja",
+            phraseLoopSegments,
+            requestedLanguageCode: "ja",
+            languageHintCode: "ja");
+        Assert.True(phraseLoopSummary.HasSevereQualityBlocker);
+        Assert.Contains("phraseLoop", phraseLoopSummary.QualityIssues);
+
+        var fragmentedLoopSegments = new[]
+        {
+            new AsrSegment { Text = "お同じく", StartSeconds = 136.54, EndSeconds = 138.68 },
+            new AsrSegment { Text = "お同じく", StartSeconds = 139.44, EndSeconds = 140.30 },
+            new AsrSegment { Text = "おく同じお同じおく同", StartSeconds = 140.58, EndSeconds = 145.28 },
+            new AsrSegment { Text = "じくお同じ", StartSeconds = 148.44, EndSeconds = 150.76 },
+            new AsrSegment { Text = "くお", StartSeconds = 152.46, EndSeconds = 153.62 },
+            new AsrSegment { Text = "同じくお同じく", StartSeconds = 155.92, EndSeconds = 158.48 },
+        };
+        var fragmentedLoopWords = fragmentedLoopSegments
+            .Select(segment => new AsrWord
+            {
+                Text = segment.Text,
+                StartSeconds = segment.StartSeconds,
+                EndSeconds = segment.EndSeconds,
+                Probability = 0.96,
+            })
+            .ToList();
+        var fragmentedLoopSummary = LocalAsrConfidence.Assess(
+            fragmentedLoopWords,
+            "ja",
+            fragmentedLoopSegments,
+            requestedLanguageCode: "ja",
+            languageHintCode: "ja");
+        Assert.True(fragmentedLoopSummary.HasSevereQualityBlocker);
+        Assert.Contains("phraseLoop", fragmentedLoopSummary.QualityIssues);
+        Assert.Contains("lowSegmentDiversity", fragmentedLoopSummary.QualityIssues);
+
+        var existingSrtSummary = LocalAsrConfidence.AssessSubtitle(
+            """
+            25
+            00:02:16,540 --> 00:02:18,680
+            お同じく
+
+            26
+            00:02:19,440 --> 00:02:20,300
+            お同じく
+
+            27
+            00:02:20,580 --> 00:02:25,280
+            おく同じお同じおく同
+
+            28
+            00:02:28,440 --> 00:02:30,760
+            じくお同じ
+
+            29
+            00:02:32,460 --> 00:02:33,620
+            くお
+
+            30
+            00:02:35,920 --> 00:02:38,480
+            同じくお同じく
+            """,
+            "clip.local-asr.ja.srt",
+            "ja",
+            requestedLanguageCode: "ja",
+            languageHintCode: "ja");
+        Assert.True(existingSrtSummary.HasSevereQualityBlocker);
+        Assert.Contains("phraseLoop", existingSrtSummary.QualityIssues);
+        Assert.Contains("lowSegmentDiversity", existingSrtSummary.QualityIssues);
+
+        string[] healthyTokens = ["青", "い", "空", "を", "見", "る", "君", "と", "歩", "く", "道", "で"];
+        var healthyRepeated = Enumerable.Range(0, 36)
+            .Select(index => new AsrWord
+            {
+                Text = healthyTokens[index % healthyTokens.Length],
+                StartSeconds = 0,
+                EndSeconds = 0.1,
+                Probability = 0.96,
+            })
+            .ToList();
+        var healthySummary = LocalAsrConfidence.Assess(healthyRepeated, "ja");
+        Assert.False(healthySummary.IsLowQuality);
+        Assert.Empty(healthySummary.QualityIssues);
     }
 
     // Identical to Swift cjkBoundaryParityCases — the two platforms must agree on these so the
@@ -1556,6 +1739,19 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void CjkSpeechRecognitionDisablesPromptContextByDefault()
+    {
+        var video = Path.Combine(Path.GetTempPath(), "dialogue clip.mp4");
+
+        Assert.Equal(0, AsrPromptBuilder.MaxTextContextTokens(video, "ja"));
+        Assert.Equal(0, AsrPromptBuilder.MaxTextContextTokens(video, "ko"));
+        Assert.Equal(0, AsrPromptBuilder.MaxTextContextTokens(video, "zh-Hans"));
+        Assert.Equal(0, AsrPromptBuilder.MaxTextContextTokens(video, "yue"));
+        Assert.Null(AsrPromptBuilder.MaxTextContextTokens(video, "en"));
+        Assert.Null(AsrPromptBuilder.MaxTextContextTokens(video, "auto"));
+    }
+
+    [Fact]
     public void TranscriptCacheStoreWritesReadsAndInvalidatesByInputIdentity()
     {
         var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-transcript-cache-" + Guid.NewGuid().ToString("N"));
@@ -1586,21 +1782,31 @@ public class AsrContractsTests
                 "clip-audio-small-auto",
                 audioFingerprint: "sha256:audio-a",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: null));
             Assert.Null(store.CachedTranscript(
                 "clip-audio-small-auto",
                 audioFingerprint: "sha256:audio-b",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: null));
             Assert.Null(store.CachedTranscript(
                 "clip-audio-small-auto",
                 audioFingerprint: "sha256:audio-a",
                 modelId: "whisper.cpp:base",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: null));
             Assert.Null(store.CachedTranscript(
                 "clip-audio-small-auto",
                 audioFingerprint: "sha256:audio-a",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.SenseVoiceFunASR,
+                languageCode: null));
+            Assert.Null(store.CachedTranscript(
+                "clip-audio-small-auto",
+                audioFingerprint: "sha256:audio-a",
+                modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: "en"));
         }
         finally
@@ -1638,16 +1844,19 @@ public class AsrContractsTests
                 "clip-audio-small-auto-detected",
                 audioFingerprint: "sha256:audio-auto",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: "auto"));
             AssertTranscriptEqual(transcript, store.CachedTranscript(
                 "clip-audio-small-auto-detected",
                 audioFingerprint: "sha256:audio-auto",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: " ja "));
             Assert.Null(store.CachedTranscript(
                 "clip-audio-small-auto-detected",
                 audioFingerprint: "sha256:audio-auto",
                 modelId: "whisper.cpp:small",
+                backendKind: AsrBackendKind.WhisperCpp,
                 languageCode: "en"));
         }
         finally
@@ -3393,6 +3602,87 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public async Task LocalAsrGeneratorRetriesAutoEnglishLoopWithJapaneseLanguageLock()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-generator-loop-retry-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var workDirectory = Path.Combine(directory, "work");
+            var video = Path.Combine(directory, "[Amatør] lille japaner sample.mp4");
+            var ffmpeg = Path.Combine(directory, OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
+            File.WriteAllText(video, "video fixture");
+            File.WriteAllText(ffmpeg, "#!/bin/sh\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(ffmpeg, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            var audioExtractor = new RecordingAsrAudioExtractor((plan, _, _) =>
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(plan.OutputPath)!);
+                File.WriteAllText(plan.OutputPath, "wav fixture");
+                return Task.FromResult(plan.OutputPath);
+            });
+            var recognizer = new SequencedSpeechRecognizer(
+            [
+                new AsrTranscript
+                {
+                    Id = "auto-en-loop",
+                    LanguageCode = "en",
+                    DurationSeconds = 70,
+                    Words =
+                    [
+                        new AsrWord { Text = "Korin", StartSeconds = 0, EndSeconds = 2, Probability = 0.95 },
+                        new AsrWord { Text = "Korin", StartSeconds = 30, EndSeconds = 32, Probability = 0.95 },
+                        new AsrWord { Text = "Korin", StartSeconds = 60, EndSeconds = 62, Probability = 0.95 },
+                    ],
+                    SourceModelId = "whisper.cpp:test",
+                    Segments =
+                    [
+                        new AsrSegment { Text = "*Korin*", StartSeconds = 0, EndSeconds = 2 },
+                        new AsrSegment { Text = "*Korin*", StartSeconds = 30, EndSeconds = 32 },
+                        new AsrSegment { Text = "*Korin*", StartSeconds = 60, EndSeconds = 62 },
+                    ],
+                },
+                new AsrTranscript
+                {
+                    Id = "retry-ja",
+                    LanguageCode = "ja",
+                    DurationSeconds = 2,
+                    Words =
+                    [
+                        new AsrWord { Text = "お客様", StartSeconds = 0, EndSeconds = 0.8, Probability = 0.95 },
+                    ],
+                    SourceModelId = "whisper.cpp:test",
+                    Segments =
+                    [
+                        new AsrSegment { Text = "お客様", StartSeconds = 0, EndSeconds = 0.8 },
+                    ],
+                },
+            ]);
+            var generator = new WhisperCppLocalAsrSubtitleGenerator(
+                ffmpeg,
+                workDirectory,
+                recognizer,
+                modelId: "whisper.cpp:test",
+                promptProvider: AsrPromptBuilder.DefaultPrompt,
+                audioExtractor: audioExtractor);
+
+            var output = (await generator.GenerateSourceSubtitleAsync(video, "auto", null, _ => { })).Url;
+
+            Assert.Equal("[Amatør] lille japaner sample.local-asr.ja.srt", Path.GetFileName(output));
+            Assert.Equal(["auto", "ja"], recognizer.Requests.Select(request => request.LanguageCode ?? "").ToArray());
+            Assert.Equal(0, recognizer.Requests.Last().MaxTextContextTokens);
+            Assert.Single(audioExtractor.Plans);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LocalAsrGeneratorFactoryRequiresExplicitReadySettings()
     {
         var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-factory-" + Guid.NewGuid().ToString("N"));
@@ -3546,6 +3836,75 @@ public class AsrContractsTests
         }
     }
 
+    [Fact]
+    public async Task WhisperCppRecognizerRetriesMetalAllocationFailureWithoutGpu()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-metal-retry-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var audio = Path.Combine(directory, "audio.wav");
+            var model = Path.Combine(directory, "ggml-test.bin");
+            var runtime = Path.Combine(directory, OperatingSystem.IsWindows() ? "whisper-cli.exe" : "whisper-cli");
+            File.WriteAllText(audio, "audio fixture");
+            File.WriteAllText(model, "model fixture");
+            File.WriteAllText(runtime, "#!/bin/sh\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(runtime, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            var runner = new RecordingAsrCommandRunner((plan, _, _) =>
+            {
+                if (!plan.Arguments.Contains("--no-gpu"))
+                {
+                    return Task.FromResult(new AsrCommandResult
+                    {
+                        Status = 1,
+                        StderrTail = "ggml_metal_buffer_init: error: failed to allocate buffer",
+                    });
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(plan.OutputJsonPath)!);
+                File.WriteAllText(plan.OutputJsonPath, """
+                {
+                  "result": { "language": "ja" },
+                  "transcription": [
+                    {
+                      "text": " 梅雨",
+                      "offsets": { "from": 0, "to": 600 },
+                      "tokens": [
+                        { "text": " 梅雨", "offsets": { "from": 0, "to": 600 } }
+                      ]
+                    }
+                  ]
+                }
+                """);
+                return Task.FromResult(new AsrCommandResult { Status = 0, StderrTail = "" });
+            });
+            var recognizer = new WhisperCppSpeechRecognizer(
+                new AsrRuntimeInfo { ExecutablePath = runtime },
+                model,
+                Path.Combine(directory, "out"),
+                commandRunner: runner);
+
+            var transcript = await recognizer.TranscribeAsync(new AsrRequest
+            {
+                AudioPath = audio,
+                LanguageCode = "ja",
+                ModelId = "whisper.cpp:test",
+            }, _ => { });
+
+            Assert.Equal(["梅雨"], transcript.Words.Select(word => word.Text).ToArray());
+            Assert.Equal(2, runner.CallCount);
+            Assert.DoesNotContain("--no-gpu", runner.Plans[0].Arguments);
+            Assert.Contains("--no-gpu", runner.Plans[1].Arguments);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static void AssertTranscriptEqual(AsrTranscript expected, AsrTranscript? actual)
     {
         Assert.NotNull(actual);
@@ -3554,6 +3913,11 @@ public class AsrContractsTests
         Assert.Equal(expected.LanguageConfidence, actual.LanguageConfidence);
         Assert.Equal(expected.DurationSeconds, actual.DurationSeconds);
         Assert.Equal(expected.SourceModelId, actual.SourceModelId);
+        Assert.Equal(expected.BackendKind, actual.BackendKind);
+        Assert.Equal(expected.Segments, actual.Segments);
+        Assert.Equal(expected.RawText, actual.RawText);
+        Assert.Equal(expected.BackendDiagnostics, actual.BackendDiagnostics);
+        AssertQualitySummaryEqual(expected.QualitySummary, actual.QualitySummary);
         Assert.Equal(expected.CreatedAt, actual.CreatedAt);
         Assert.Equal(expected.Words.Count, actual.Words.Count);
         for (var index = 0; index < expected.Words.Count; index += 1)
@@ -3626,6 +3990,48 @@ public class AsrContractsTests
         }
     }
 
+    private sealed class SequencedSpeechRecognizer(IReadOnlyList<AsrTranscript> transcripts) : ISpeechRecognizer
+    {
+        private readonly object _lock = new();
+        private readonly Queue<AsrTranscript> _transcripts = new(transcripts);
+        private readonly List<AsrRequest> _requests = [];
+
+        public IReadOnlyList<AsrRequest> Requests
+        {
+            get { lock (_lock) return [.. _requests]; }
+        }
+
+        public Task<AsrReadiness> ReadinessAsync(AsrRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new AsrReadiness
+            {
+                Status = AsrReadinessStatus.Ready,
+                ModelId = request.ModelId,
+                Message = "ready",
+            });
+
+        public Task<AsrTranscript> TranscribeAsync(
+            AsrRequest request,
+            Action<AsrProgress> progress,
+            TaskControlToken? control = null,
+            CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            AsrTranscript transcript;
+            lock (_lock)
+            {
+                _requests.Add(request);
+                transcript = _transcripts.Dequeue();
+            }
+            progress(new AsrProgress
+            {
+                Phase = AsrProgressPhase.SpeechRecognition,
+                CompletedUnits = 1,
+                TotalUnits = 1,
+            });
+            return Task.FromResult(transcript);
+        }
+    }
+
     private sealed class RecordingAsrAudioExtractor(
         Func<AsrAudioExtractionPlan, Action<AsrProgress>, CancellationToken, Task<string>> handler)
         : IAsrAudioExtractor
@@ -3647,5 +4053,21 @@ public class AsrContractsTests
             lock (_lock) _plans.Add(plan);
             return handler(plan, progress, ct);
         }
+    }
+
+    private static void AssertQualitySummaryEqual(LocalAsrConfidenceSummary? expected, LocalAsrConfidenceSummary? actual)
+    {
+        Assert.Equal(expected.HasValue, actual.HasValue);
+        if (!expected.HasValue || !actual.HasValue) return;
+        Assert.Equal(expected.Value.AssessedWordCount, actual.Value.AssessedWordCount);
+        Assert.Equal(expected.Value.AverageProbability, actual.Value.AverageProbability);
+        Assert.Equal(expected.Value.LowConfidenceWordRatio, actual.Value.LowConfidenceWordRatio);
+        Assert.Equal(expected.Value.IsLowConfidence, actual.Value.IsLowConfidence);
+        Assert.Equal(expected.Value.ScriptMismatchRatio, actual.Value.ScriptMismatchRatio);
+        Assert.Equal(expected.Value.LatinTokenRatio, actual.Value.LatinTokenRatio);
+        Assert.Equal(expected.Value.DominantPhraseRatio, actual.Value.DominantPhraseRatio);
+        Assert.Equal(expected.Value.RepeatedPhraseSpanSeconds, actual.Value.RepeatedPhraseSpanSeconds);
+        Assert.Equal(expected.Value.QualityIssues, actual.Value.QualityIssues);
+        Assert.Equal(expected.Value.IsLowQuality, actual.Value.IsLowQuality);
     }
 }

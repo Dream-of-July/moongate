@@ -3109,8 +3109,10 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         if advice == nil, isLocalASRSource {
             advice = Self.localASRLyricsFallbackAdvice(fileName: srtFile.lastPathComponent, cues: cues)
         }
-        if (settings.smartTranslationPromptsEnabled || isLocalASRSource),
-           sourceLooksLikeAutoCaption || Self.looksLikeAutoCaption(cues) {
+        let shouldResegment = isLocalASRSource
+            ? sourceLooksLikeAutoCaption || Self.shouldResegmentLocalASR(fileName: srtFile.lastPathComponent, cues: cues, advice: advice)
+            : settings.smartTranslationPromptsEnabled && (sourceLooksLikeAutoCaption || Self.looksLikeAutoCaption(cues))
+        if shouldResegment {
             let reseg = try await resegmentForReadability(
                 cues,
                 context: context,
@@ -3744,6 +3746,21 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         guard multilineRatio < 0.5 || (cues.count >= 20 && avgDuration < 2.5) else { return false }
         return true
     }
+
+    private static func shouldResegmentLocalASR(
+        fileName: String,
+        cues: [SubtitleCue],
+        advice: TranslationPromptAdvice?
+    ) -> Bool {
+        guard !cues.isEmpty else { return false }
+        if advice?.preset == .songLyrics {
+            return true
+        }
+        if advice == nil, looksLikeLocalASRLyrics(fileName: fileName, cues: cues) {
+            return true
+        }
+        return looksLikeAutoCaption(cues)
+    }
 }
 
 @available(*, deprecated, renamed: "ConfiguredTranslator")
@@ -4037,10 +4054,51 @@ extension ConfiguredTranslator {
 
         let characters = text.filter { !$0.isWhitespace }.map(String.init)
         guard characters.count >= parts else { return [text] }
-        return (0..<parts).map { part in
-            let start = characters.count * part / parts
-            let end = part == parts - 1 ? characters.count : characters.count * (part + 1) / parts
-            return start < end ? characters[start..<end].joined() : ""
+        return splitCJKSegmentText(characters, parts: parts)
+    }
+
+    private static func splitCJKSegmentText(_ characters: [String], parts: Int) -> [String] {
+        let fullText = characters.joined()
+        var cuts: [Int] = [0]
+        for part in 1..<parts {
+            let target = characters.count * part / parts
+            let remainingParts = parts - part
+            let lower = max(cuts.last! + 1, target - max(2, characters.count / max(2, parts * 2)))
+            let upper = min(characters.count - remainingParts, target + max(2, characters.count / max(2, parts * 2)))
+            let candidates = lower...max(lower, upper)
+            let cut = candidates.max { lhs, rhs in
+                cjkSplitScore(characters, fullText: fullText, cut: lhs, target: target)
+                    < cjkSplitScore(characters, fullText: fullText, cut: rhs, target: target)
+            } ?? target
+            cuts.append(cut)
         }
+        cuts.append(characters.count)
+
+        return zip(cuts, cuts.dropFirst()).map { start, end in
+            start < end ? characters[start..<end].joined() : ""
+        }
+    }
+
+    private static func cjkSplitScore(_ characters: [String], fullText: String, cut: Int, target: Int) -> Int {
+        guard cut > 0, cut < characters.count else { return Int.min }
+        var score = -abs(cut - target)
+        if CJKWordBoundary.straddles(fullText, at: cut) {
+            score -= 100
+        }
+        let previous = characters[cut - 1]
+        let next = characters[cut]
+        if "。！？!?、，,；;：:」』）)]】".contains(previous) {
+            score += 80
+        }
+        if "。！？!?「『（([【".contains(next) {
+            score += 40
+        }
+        if ["を", "が", "は", "に", "へ", "で", "と", "も", "の", "了", "的", "著", "着", "过", "過", "을", "를", "은", "는", "이", "가"].contains(previous) {
+            score += 24
+        }
+        if ["ば", "て", "た", "だ", "ます", "です", "요", "다"].contains(next) {
+            score -= 36
+        }
+        return score
     }
 }

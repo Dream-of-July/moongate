@@ -66,6 +66,7 @@ struct ContentView: View {
             if let site = model.loginSite {
                 LoginSheet(
                     site: site,
+                    startURL: model.loginStartURL,
                     onComplete: { model.loginCompleted() },
                     onCancel: { model.cancelLogin() }
                 )
@@ -324,6 +325,8 @@ struct ContentView: View {
                     }
                     outputOptionsSection(info)
                     section(localizer.t(L.Ready.subtitleLanguageSection)) {
+                        sourceLanguagePreferencePicker(info)
+                        Divider().padding(.leading, 12)
                         subtitleLanguageRows(info)
                     }
                     section(localizer.t(L.Ready.subtitleOutputSection)) {
@@ -502,6 +505,37 @@ struct ContentView: View {
 
     // MARK: - Language-first subtitle selection
 
+    private func sourceLanguagePreferencePicker(_ info: VideoInfo) -> some View {
+        HStack {
+            Text(localizer.t(L.Ready.sourceLanguagePickerAccessibility))
+            Spacer(minLength: 8)
+            Picker(localizer.t(L.Ready.sourceLanguagePickerAccessibility), selection: $model.readySourceLanguagePreference) {
+                ForEach(ViewModel.sourceLanguagePreferenceOptions) { option in
+                    Text(sourceLanguagePreferenceLabel(option.code)).tag(option.code)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+            .onChange(of: model.readySourceLanguagePreference) { _, _ in
+                if let recommended = model.recommendedLanguage(for: info) {
+                    model.selectLanguage(recommended)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(localizer.t(L.Ready.sourceLanguagePickerAccessibility))
+    }
+
+    private func sourceLanguagePreferenceLabel(_ code: String) -> String {
+        if code == "auto" {
+            return localizer.t(L.Ready.sourceLanguageAuto)
+        }
+        return TranslationLanguage.sourceDisplayName(for: code) ?? code
+    }
+
     /// Main area: the single recommended language + an explanation that the source is auto-chosen,
     /// a "no subtitles" option, and a disclosure for other languages. Technical source details
     /// (official / auto / local recognition badges) only appear once expanded.
@@ -542,8 +576,7 @@ struct ContentView: View {
         }
     }
 
-    /// One language row: display label + optional "recommended" badge; the technical source badge
-    /// (auto / local recognition) only shows in the expanded list, never for the recommended row.
+    /// One language row: display label + optional "recommended" badge plus the actual source badge.
     @ViewBuilder
     private func subtitleLanguageRow(_ language: SubtitleLanguageChoice, isRecommended: Bool) -> some View {
         let needsLocalASRConfig = !language.hasManualTrack && !language.hasAutoTrack
@@ -551,7 +584,8 @@ struct ContentView: View {
         primarySubtitleSourceRow(
             title: language.displayLabel,
             detail: nil,
-            badge: isRecommended ? localizer.t(L.Ready.recommendedBadge) : subtitleLanguageSourceBadge(language),
+            badge: isRecommended ? localizer.t(L.Ready.recommendedBadge) : nil,
+            sourceBadge: subtitleLanguageSourceBadge(language),
             isSelected: model.isLanguageSelected(language),
             trailingActionLabel: needsLocalASRConfig ? localizer.t(L.Ready.localASRConfigure) : nil,
             action: {
@@ -576,6 +610,7 @@ struct ContentView: View {
         title: String,
         detail: String?,
         badge: String?,
+        sourceBadge: String? = nil,
         isSelected: Bool,
         trailingActionLabel: String? = nil,
         action: @escaping () -> Void
@@ -590,6 +625,14 @@ struct ContentView: View {
                         Text(title)
                         if let badge {
                             Text(badge)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(.quaternary))
+                        }
+                        if let sourceBadge {
+                            Text(sourceBadge)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)

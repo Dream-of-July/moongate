@@ -153,7 +153,7 @@ final class LocalizerTests: XCTestCase {
 
     func testFailedStateStringsAreLocalized() {
         XCTAssertEqual(LocalizedStrings.string(L.Failed.technicalDetails, language: .en), "Technical details")
-        XCTAssertEqual(LocalizedStrings.string(L.Failed.login, language: .zhHant), "前往登入")
+        XCTAssertEqual(LocalizedStrings.string(L.Failed.login, language: .zhHant), "打開網頁並儲存驗證資訊")
         XCTAssertEqual(LocalizedStrings.string(L.Failed.restart, language: .zhHans), "重新开始")
     }
 
@@ -183,9 +183,9 @@ final class LocalizerTests: XCTestCase {
     }
 
     func testLoginStringsAreLocalized() {
-        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .en, ["YouTube"]), "Log in to YouTube")
-        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .zhHant, ["YouTube"]), "登入 YouTube")
-        XCTAssertEqual(LocalizedStrings.string(L.Login.saveLogin, language: .en), "Save login")
+        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .en, ["YouTube"]), "Verify YouTube")
+        XCTAssertEqual(LocalizedStrings.format(L.Login.title, language: .zhHant, ["YouTube"]), "驗證 YouTube")
+        XCTAssertEqual(LocalizedStrings.string(L.Login.saveLogin, language: .en), "Save verification")
         XCTAssertEqual(LocalizedStrings.string(L.Login.saving, language: .zhHant), "儲存中…")
         XCTAssertEqual(LocalizedStrings.string(L.Login.cookieReady, language: .zhHans), "已检测到当前站点 Cookie")
         XCTAssertEqual(LocalizedStrings.string(L.Login.loadFailed, language: .zhHant), "頁面載入失敗，請檢查網路後重試")

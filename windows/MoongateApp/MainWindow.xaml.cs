@@ -113,9 +113,9 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void OpenLoginWindow(string site)
+    private void OpenLoginWindow(string site, string? startUrl = null)
     {
-        var login = new LoginWindow(site) { Owner = this };
+        var login = new LoginWindow(site, startUrl) { Owner = this };
         if (login.ShowDialog() == true) _vm.LoginCompleted();
     }
 

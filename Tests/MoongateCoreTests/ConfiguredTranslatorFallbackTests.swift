@@ -442,6 +442,49 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertTrue(flags.translation)
     }
 
+    func testTranslateResegmentsPunctuatedLocalASRMusicSourceWithoutSmart() async throws {
+        // 本地 ASR 偶尔会带少量标点；这会让普通 auto-caption heuristic 判 false，
+        // 但歌词源仍应在翻译内存视图里重分段。
+        let input = [
+            SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: "感じたまま。"),
+            SubtitleCue(index: 2, start: "00:00:01,000", end: "00:00:02,000", text: "手を"),
+            SubtitleCue(index: 3, start: "00:00:02,000", end: "00:00:03,000", text: "伸ばせば"),
+            SubtitleCue(index: 4, start: "00:00:03,000", end: "00:00:04,000", text: "伸ばすほど。"),
+            SubtitleCue(index: 5, start: "00:00:04,000", end: "00:00:05,000", text: "青い"),
+            SubtitleCue(index: 6, start: "00:00:05,000", end: "00:00:06,000", text: "世界が"),
+            SubtitleCue(index: 7, start: "00:00:06,000", end: "00:00:07,000", text: "広がる"),
+            SubtitleCue(index: 8, start: "00:00:07,000", end: "00:00:08,000", text: "怖くて"),
+            SubtitleCue(index: 9, start: "00:00:08,000", end: "00:00:09,000", text: "仕方ない"),
+            SubtitleCue(index: 10, start: "00:00:09,000", end: "00:00:10,000", text: "けど"),
+        ]
+        XCTAssertFalse(ConfiguredTranslator.looksLikeAutoCaption(input))
+        let source = try writeSRT("YOASOBI Official Music Video.local-asr.ja.srt", input)
+        let didSegment = AttemptCounter()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, system, userContent, _, _ in
+                if (system ?? "").contains("待断句文本") {
+                    _ = await didSegment.next()
+                    return ModelReply(
+                        text: "1|感じたまま。手を伸ばせば\n2|伸ばすほど。青い世界が広がる\n3|怖くて仕方ないけど",
+                        reachedOutputLimit: false)
+                }
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source, style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil, progress: { _ in })
+
+        let segmentCalls = await didSegment.value()
+        XCTAssertGreaterThan(segmentCalls, 0)
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 3)
+    }
+
     func testSmartInterviewAdviceOverridesMusicFilenameAndAvoidsLyricsSegmentation() async throws {
         // 文件名像 MV，但第一层规划判定为访谈：必须按访谈处理，不走歌词分段、不套歌词翻译风格。
         let source = try writeSRT("YOASOBI Official Music Video.local-asr.ja.srt", japaneseLyricsCues())
@@ -644,6 +687,35 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
             "拆分后的 CJK 文本应首尾相接，而不是每段重复整句"
         )
         XCTAssertEqual(Set(output.map(\.text)).count, output.count, "不能把同一整句重复到多个 cue")
+    }
+
+    func testResegmentCJKLongSegmentPrefersSafePhraseBoundary() async throws {
+        let parts = ["感じた", "まま", "手を", "伸ばせば", "伸ばすほど", "青くなる"]
+        let cues = parts.enumerated().map { i, text in
+            SubtitleCue(index: i + 1,
+                        start: secondsToSRTTime(Double(i) * 1.5),
+                        end: secondsToSRTTime(Double(i) * 1.5 + 1.5),
+                        text: text)
+        }
+        let joined = parts.joined()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(text: "1|\(joined)", reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.resegmentForReadability(
+            cues,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            preset: .songLyrics
+        )
+
+        XCTAssertGreaterThan(output.count, 1)
+        XCTAssertFalse(output[0].text.hasSuffix("伸ばせ"), "不能把「伸ばせば」切成 伸ばせ / ば")
+        XCTAssertFalse(output[1].text.hasPrefix("ば"), "不能让下一行以活用残片「ば」开头")
+        XCTAssertEqual(output.map(\.text).joined(), joined)
     }
 
     func testResegmentCJKFallsBackWhenCharactersChanged() async throws {

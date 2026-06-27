@@ -13,6 +13,25 @@ public class PageSnifferTests
         FetchYouTubeTitleHook = (id, _) => Task.FromResult(youtubeTitle?.Invoke(id)),
     };
 
+    [Fact]
+    public async Task CloudflareChallengeResponse_GetsActionableFailure()
+    {
+        using var response = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("<html>challenge</html>"),
+        };
+        response.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+        var sniffer = new PageSniffer(new StaticResponseHandler(response));
+
+        var error = await Assert.ThrowsAsync<MoongateException>(
+            () => sniffer.SniffAsync(new Uri("https://missav.live/cn/hublk-074")));
+
+        Assert.Equal(MoongateErrorKind.SiteCookieRequired, error.Kind);
+        Assert.Equal("missav.live", error.Detail);
+        Assert.Equal("https://missav.live/cn/hublk-074", error.CookieRequestUrl);
+        Assert.Contains("Cloudflare", error.CookieRequestReason);
+    }
+
     /// <summary>Nintendo 规则：assets.nintendo.com/video/upload + data-videoid + .mp4。</summary>
     [Fact]
     public async Task Nintendo_DataVideoId_BuildsCdnUrl()
@@ -170,5 +189,12 @@ public class PageSnifferTests
     {
         Assert.Equal("12345", PageSniffer.VimeoId("https://player.vimeo.com/video/12345?h=x"));
         Assert.Null(PageSniffer.VimeoId("https://vimeo.com/12345"));
+    }
+
+    private sealed class StaticResponseHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromResult(response);
     }
 }

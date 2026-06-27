@@ -184,6 +184,24 @@ class ViewingQualityTests(unittest.TestCase):
         self.assertIn("garbledOrRepetitive", report.reasons)
         self.assertGreaterEqual(report.sound_effect_cue_count, 4)
 
+    def test_auto_caption_with_non_adjacent_repetition_loop_is_unusable(self):
+        looped = []
+        for index in range(24):
+            if index % 2 == 0:
+                looped.append("ね")
+            else:
+                looped.append("同じ短い声")
+        report = source_quality_report(
+            cues(looped),
+            requested_language_code="ja",
+            subtitle_language_code="ja",
+        )
+
+        self.assertFalse(report.usable)
+        self.assertIn("garbledOrRepetitive", report.reasons)
+        self.assertGreaterEqual(report.dominant_cue_text_ratio, 0.5)
+        self.assertLess(report.unique_cue_text_ratio, 0.20)
+
     def test_auto_caption_with_long_sound_effect_holds_is_unusable(self):
         sample_cues = [
             Cue(index=1, start=1.0, end=16.0, text="[Musica]"),
@@ -537,6 +555,40 @@ class ViewingQualityTests(unittest.TestCase):
             any("danglingCaseParticle" in issue for issue in resegmented),
             resegmented,
         )
+
+    def test_final_source_quality_flags_zh_yue_ko_weak_boundary_splits(self):
+        zh = final_source_quality_issues(
+            [
+                Cue(index=1, start=10.0, end=12.0, text="我想把"),
+                Cue(index=2, start=12.1, end=14.0, text="所有故事都唱给你听"),
+            ],
+            preview_seconds=30.0,
+            category="c-pop_music",
+            source_language_code="zh",
+        )
+        self.assertIn("weakBoundarySplit:1:danglingChineseFunctionWord", zh)
+
+        yue = final_source_quality_issues(
+            [
+                Cue(index=3, start=20.0, end=22.0, text="我哋嘅"),
+                Cue(index=4, start=22.1, end=24.0, text="心事未講完"),
+            ],
+            preview_seconds=30.0,
+            category="cantopop_mv",
+            source_language_code="yue",
+        )
+        self.assertIn("weakBoundarySplit:3:danglingCantoneseParticle", yue)
+
+        ko = final_source_quality_issues(
+            [
+                Cue(index=5, start=30.0, end=32.0, text="너의 마음을"),
+                Cue(index=6, start=32.1, end=34.0, text="잡고 싶어"),
+            ],
+            preview_seconds=40.0,
+            category="kpop_music",
+            source_language_code="ko",
+        )
+        self.assertIn("weakBoundarySplit:5:danglingKoreanParticle", ko)
 
     def test_translation_attempt_without_output_blocks_report(self):
         with tempfile.TemporaryDirectory() as temp:

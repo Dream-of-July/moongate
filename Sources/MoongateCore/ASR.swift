@@ -45,14 +45,27 @@ public enum ASRRecognitionProfile: String, Codable, Sendable {
     case lyricsHighQuality
 }
 
+public enum ASRBackendKind: String, Codable, Sendable {
+    case whisperCpp
+    case senseVoiceFunASR
+    case unknown
+
+    static func inferred(from sourceModelID: String) -> ASRBackendKind {
+        let normalized = sourceModelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("whisper.cpp") { return .whisperCpp }
+        if normalized.contains("sensevoice") || normalized.contains("funasr") { return .senseVoiceFunASR }
+        return .unknown
+    }
+}
+
 public struct ASRRequest: Codable, Equatable, Sendable {
     public let audioURL: URL
     public let languageCode: String?
     public let modelID: String
     public let prompt: String?
     public let recognitionProfile: ASRRecognitionProfile
-    /// Optional whisper.cpp text-context cap (`-mc`). Japanese/J-pop lyric ASR can fall into
-    /// previous-text repetition loops; music-like local-ASR requests use 0 to disable carryover.
+    /// Optional whisper.cpp text-context cap (`-mc`). CJK local-ASR can fall into previous-text
+    /// repetition loops; those requests use 0 to disable carryover.
     public let maxTextContextTokens: Int?
     /// Reserved / not yet wired: whisper.cpp `--vad` needs a separate Silero VAD model that Moongate
     /// does not ship yet, so `WhisperCppCommandPlan` intentionally does NOT emit `--vad` (see the
@@ -172,6 +185,18 @@ public struct ASRWord: Codable, Equatable, Sendable {
     }
 }
 
+public struct ASRSegment: Codable, Equatable, Sendable {
+    public let text: String
+    public let startSeconds: Double
+    public let endSeconds: Double
+
+    public init(text: String, startSeconds: Double, endSeconds: Double) {
+        self.text = text
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+    }
+}
+
 public struct ASRTranscript: Codable, Equatable, Sendable {
     public let id: String
     public let languageCode: String
@@ -179,6 +204,11 @@ public struct ASRTranscript: Codable, Equatable, Sendable {
     public let durationSeconds: Double?
     public let words: [ASRWord]
     public let sourceModelID: String
+    public let backendKind: ASRBackendKind
+    public let segments: [ASRSegment]
+    public let rawText: String?
+    public let backendDiagnostics: [String: String]
+    public let qualitySummary: LocalASRConfidenceSummary?
     public let createdAt: Date
 
     public init(
@@ -188,6 +218,11 @@ public struct ASRTranscript: Codable, Equatable, Sendable {
         durationSeconds: Double? = nil,
         words: [ASRWord],
         sourceModelID: String,
+        backendKind: ASRBackendKind? = nil,
+        segments: [ASRSegment] = [],
+        rawText: String? = nil,
+        backendDiagnostics: [String: String] = [:],
+        qualitySummary: LocalASRConfidenceSummary? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -196,6 +231,11 @@ public struct ASRTranscript: Codable, Equatable, Sendable {
         self.durationSeconds = durationSeconds
         self.words = words
         self.sourceModelID = sourceModelID
+        self.backendKind = backendKind ?? ASRBackendKind.inferred(from: sourceModelID)
+        self.segments = segments
+        self.rawText = rawText
+        self.backendDiagnostics = backendDiagnostics
+        self.qualitySummary = qualitySummary
         self.createdAt = createdAt
     }
 
@@ -206,7 +246,45 @@ public struct ASRTranscript: Codable, Equatable, Sendable {
         case durationSeconds
         case words
         case sourceModelID = "sourceModelId"
+        case backendKind
+        case segments
+        case rawText
+        case backendDiagnostics
+        case qualitySummary
         case createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.languageCode = try container.decode(String.self, forKey: .languageCode)
+        self.languageConfidence = try container.decodeIfPresent(Double.self, forKey: .languageConfidence)
+        self.durationSeconds = try container.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        self.words = try container.decode([ASRWord].self, forKey: .words)
+        self.sourceModelID = try container.decode(String.self, forKey: .sourceModelID)
+        self.backendKind = try container.decodeIfPresent(ASRBackendKind.self, forKey: .backendKind)
+            ?? ASRBackendKind.inferred(from: sourceModelID)
+        self.segments = try container.decodeIfPresent([ASRSegment].self, forKey: .segments) ?? []
+        self.rawText = try container.decodeIfPresent(String.self, forKey: .rawText)
+        self.backendDiagnostics = try container.decodeIfPresent([String: String].self, forKey: .backendDiagnostics) ?? [:]
+        self.qualitySummary = try container.decodeIfPresent(LocalASRConfidenceSummary.self, forKey: .qualitySummary)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(languageCode, forKey: .languageCode)
+        try container.encodeIfPresent(languageConfidence, forKey: .languageConfidence)
+        try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try container.encode(words, forKey: .words)
+        try container.encode(sourceModelID, forKey: .sourceModelID)
+        try container.encode(backendKind, forKey: .backendKind)
+        try container.encode(segments, forKey: .segments)
+        try container.encodeIfPresent(rawText, forKey: .rawText)
+        try container.encode(backendDiagnostics, forKey: .backendDiagnostics)
+        try container.encodeIfPresent(qualitySummary, forKey: .qualitySummary)
+        try container.encode(createdAt, forKey: .createdAt)
     }
 }
 
@@ -709,6 +787,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
     public let cacheKey: String
     public let audioFingerprint: String
     public let modelID: String
+    public let backendKind: ASRBackendKind
     public let languageCode: String?
     public let transcriptURL: URL
     public let createdAt: Date
@@ -717,6 +796,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
         cacheKey: String,
         audioFingerprint: String,
         modelID: String,
+        backendKind: ASRBackendKind? = nil,
         languageCode: String? = nil,
         transcriptURL: URL,
         createdAt: Date = Date()
@@ -724,6 +804,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
         self.cacheKey = cacheKey
         self.audioFingerprint = audioFingerprint
         self.modelID = modelID
+        self.backendKind = backendKind ?? ASRBackendKind.inferred(from: modelID)
         self.languageCode = languageCode
         self.transcriptURL = transcriptURL
         self.createdAt = createdAt
@@ -733,6 +814,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
         case cacheKey
         case audioFingerprint
         case modelID = "modelId"
+        case backendKind
         case languageCode
         case transcriptPath
         case legacyTranscriptURL = "transcriptUrl"
@@ -744,6 +826,8 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
         self.cacheKey = try container.decode(String.self, forKey: .cacheKey)
         self.audioFingerprint = try container.decode(String.self, forKey: .audioFingerprint)
         self.modelID = try container.decode(String.self, forKey: .modelID)
+        self.backendKind = try container.decodeIfPresent(ASRBackendKind.self, forKey: .backendKind)
+            ?? ASRBackendKind.inferred(from: modelID)
         self.languageCode = try container.decodeIfPresent(String.self, forKey: .languageCode)
         let transcriptValue = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
             ?? container.decode(String.self, forKey: .legacyTranscriptURL)
@@ -756,6 +840,7 @@ public struct ASRTranscriptCacheEntry: Codable, Equatable, Sendable {
         try container.encode(cacheKey, forKey: .cacheKey)
         try container.encode(audioFingerprint, forKey: .audioFingerprint)
         try container.encode(modelID, forKey: .modelID)
+        try container.encode(backendKind, forKey: .backendKind)
         try container.encodeIfPresent(languageCode, forKey: .languageCode)
         try container.encode(transcriptURL.path, forKey: .transcriptPath)
         try container.encode(createdAt, forKey: .createdAt)
@@ -891,6 +976,11 @@ public enum ASRTranscriptMapper {
             durationSeconds: transcript.durationSeconds,
             words: words,
             sourceModelID: transcript.sourceModelID,
+            backendKind: transcript.backendKind,
+            segments: transcript.segments,
+            rawText: transcript.rawText,
+            backendDiagnostics: transcript.backendDiagnostics,
+            qualitySummary: transcript.qualitySummary,
             createdAt: transcript.createdAt
         )
         return sourceFragments(from: adjustedTranscript)
@@ -4010,22 +4100,13 @@ public enum ASRPromptBuilder {
         if recognitionProfile == .lyricsHighQuality {
             return 0
         }
-        let title = videoURL.deletingPathExtension().lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard !title.isEmpty else { return nil }
         let language = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let cjkLanguage = language.hasPrefix("ja")
             || language.hasPrefix("ko")
             || language.hasPrefix("zh")
             || language.hasPrefix("yue")
             || language.hasPrefix("cmn")
-        guard cjkLanguage else { return nil }
-        let strongMusicMarkers = [
-            "official music video", "music video", "official mv", " mv", "mv ",
-            "live", "lyrics", "lyric", "歌詞", "歌ってみた", "cover", "ライブ", "ライヴ"
-        ]
-        return strongMusicMarkers.contains(where: { title.contains($0) }) ? 0 : nil
+        return cjkLanguage ? 0 : nil
     }
 
     public static func recognitionProfile(videoURL: URL, languageCode: String) -> ASRRecognitionProfile {
@@ -4345,13 +4426,6 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         try await control?.gate()
         try FileManager.default.createDirectory(at: workDirectoryURL, withIntermediateDirectories: true)
 
-        let recognitionProfile = ASRPromptBuilder.recognitionProfile(videoURL: videoFile, languageCode: languageCode)
-        let prompt = promptProvider?(videoFile, languageCode)
-        let maxTextContextTokens = ASRPromptBuilder.maxTextContextTokens(
-            videoURL: videoFile,
-            languageCode: languageCode,
-            recognitionProfile: recognitionProfile
-        )
         let audioURL = audioURL(for: videoFile, languageCode: languageCode)
         if FileManager.default.fileExists(atPath: audioURL.path) {
             progress(ASRProgress(phase: .audioExtract, completedUnits: 1, totalUnits: 1))
@@ -4360,24 +4434,34 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             _ = try await audioExtractor.extractAudio(plan: plan, control: control, progress: progress)
         }
 
-        let request = ASRRequest(
-            audioURL: audioURL,
-            languageCode: languageCode,
-            modelID: modelID,
-            prompt: prompt,
-            recognitionProfile: recognitionProfile,
-            maxTextContextTokens: maxTextContextTokens,
-            vadEnabled: true,
-            wordTimestamps: true,
-            cacheKey: cacheKey(
-                for: videoFile,
-                languageCode: languageCode,
-                prompt: prompt,
-                recognitionProfile: recognitionProfile,
-                maxTextContextTokens: maxTextContextTokens
-            )
+        var request = makeRequest(videoFile: videoFile, audioURL: audioURL, languageCode: languageCode)
+        var transcript = try await recognizer.transcribe(request, control: control, progress: progress)
+        let languageHintCode = SubtitleLanguageRecommender.inferredLocalASRLanguageCode(
+            title: videoFile.deletingPathExtension().lastPathComponent
         )
-        let transcript = try await recognizer.transcribe(request, control: control, progress: progress)
+        var qualitySummary = qualitySummary(
+            for: transcript,
+            request: request,
+            languageHintCode: languageHintCode
+        )
+        if shouldRetryAutoTranscript(
+            summary: qualitySummary,
+            request: request,
+            languageHintCode: languageHintCode
+        ), let retryLanguageCode = languageHintCode {
+            try Task.checkCancellation()
+            try await control?.gate()
+            request = makeRequest(videoFile: videoFile, audioURL: audioURL, languageCode: retryLanguageCode)
+            transcript = try await recognizer.transcribe(request, control: control, progress: progress)
+            qualitySummary = self.qualitySummary(
+                for: transcript,
+                request: request,
+                languageHintCode: languageHintCode
+            )
+        }
+        guard !qualitySummary.hasSevereQualityBlocker else {
+            throw MoongateError.downloadFailed(Self.severeASRQualityMessage())
+        }
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 0, totalUnits: 1))
         let audioActivity = try await audioActivityIfNeeded(
             transcript: transcript,
@@ -4393,7 +4477,82 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 1, totalUnits: 1))
         return GeneratedLocalASRSource(
             url: outputURL,
-            confidence: LocalASRConfidence.assess(words: transcript.words))
+            confidence: qualitySummary)
+    }
+
+    private func makeRequest(
+        videoFile: URL,
+        audioURL: URL,
+        languageCode: String
+    ) -> ASRRequest {
+        let recognitionProfile = ASRPromptBuilder.recognitionProfile(videoURL: videoFile, languageCode: languageCode)
+        let prompt = promptProvider?(videoFile, languageCode)
+        let maxTextContextTokens = ASRPromptBuilder.maxTextContextTokens(
+            videoURL: videoFile,
+            languageCode: languageCode,
+            recognitionProfile: recognitionProfile
+        )
+        return ASRRequest(
+            audioURL: audioURL,
+            languageCode: languageCode,
+            modelID: modelID,
+            prompt: prompt,
+            recognitionProfile: recognitionProfile,
+            maxTextContextTokens: maxTextContextTokens,
+            vadEnabled: true,
+            wordTimestamps: true,
+            cacheKey: cacheKey(
+                for: videoFile,
+                languageCode: languageCode,
+                prompt: prompt,
+                recognitionProfile: recognitionProfile,
+                maxTextContextTokens: maxTextContextTokens,
+                backendKind: .whisperCpp,
+                vadEnabled: true,
+                wordTimestamps: true,
+                dtwTokenTimestamps: true
+            )
+        )
+    }
+
+    private func qualitySummary(
+        for transcript: ASRTranscript,
+        request: ASRRequest,
+        languageHintCode: String?
+    ) -> LocalASRConfidenceSummary {
+        LocalASRConfidence.assess(
+            words: transcript.words,
+            segments: transcript.segments,
+            languageCode: transcript.languageCode,
+            requestedLanguageCode: request.languageCode,
+            languageHintCode: languageHintCode
+        )
+    }
+
+    private func shouldRetryAutoTranscript(
+        summary: LocalASRConfidenceSummary,
+        request: ASRRequest,
+        languageHintCode: String?
+    ) -> Bool {
+        let requested = request.languageCode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard requested.isEmpty || requested == "auto" || requested == "und" || requested == "unknown" else {
+            return false
+        }
+        guard let hint = languageHintCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !hint.isEmpty else {
+            return false
+        }
+        return summary.qualityIssues.contains("autoLanguageMismatch")
+            || summary.qualityIssues.contains("phraseLoop")
+            || summary.qualityIssues.contains("lowSegmentDiversity")
+    }
+
+    private static func severeASRQualityMessage() -> String {
+        CoreL10n.text(
+            en: "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.",
+            zhHans: "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
+            zhHant: "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。"
+        )
     }
 
     private func audioActivityIfNeeded(
@@ -4435,9 +4594,13 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         languageCode: String,
         prompt: String?,
         recognitionProfile: ASRRecognitionProfile,
-        maxTextContextTokens: Int?
+        maxTextContextTokens: Int?,
+        backendKind: ASRBackendKind,
+        vadEnabled: Bool,
+        wordTimestamps: Bool,
+        dtwTokenTimestamps: Bool
     ) -> String {
-        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\n\(prompt ?? "")\nrp=\(recognitionProfile.rawValue)\nmc=\(maxTextContextTokens.map(String.init) ?? "default")"))"
+        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\nbackend=\(backendKind.rawValue)\n\(prompt ?? "")\nrp=\(recognitionProfile.rawValue)\nmc=\(maxTextContextTokens.map(String.init) ?? "default")\nvad=\(vadEnabled)\nwords=\(wordTimestamps)\ndtw=\(dtwTokenTimestamps)\nschema=v3"))"
     }
 
     private func audioSeed(videoFile: URL, languageCode: String) -> String {
@@ -4562,6 +4725,7 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
     public let modelURL: URL
     public let request: ASRRequest
     public let outputBaseURL: URL
+    public let disableGPU: Bool
     public let arguments: [String]
 
     public var executableURL: URL { runtime.executableURL }
@@ -4574,12 +4738,14 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
         runtime: ASRRuntimeInfo,
         modelURL: URL,
         request: ASRRequest,
-        outputBaseURL: URL
+        outputBaseURL: URL,
+        disableGPU: Bool = false
     ) {
         self.runtime = runtime
         self.modelURL = modelURL
         self.request = request
         self.outputBaseURL = outputBaseURL.deletingPathExtension()
+        self.disableGPU = disableGPU
         var arguments = [
             "-m", modelURL.path,
             "-f", request.audioURL.path,
@@ -4587,6 +4753,9 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
             "-of", self.outputBaseURL.path,
             "-pp"
         ]
+        if disableGPU {
+            arguments.append("--no-gpu")
+        }
         // 注意：request.vadEnabled 暂不接通——whisper.cpp `--vad` 需要单独的 Silero VAD 模型，尚未随包分发，
         // 故这里刻意不发 `--vad`（见 forced-alignment ExecPlan 的推迟决定）。字段保留以便日后无契约改动地启用。
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
@@ -4785,12 +4954,18 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
             ?? (root["segments"] as? [[String: Any]])
             ?? []
         var words: [ASRWord] = []
+        var transcriptSegments: [ASRSegment] = []
+        var rawTexts: [String] = []
         var dtwStarts: [Double?] = []
         var maxEnd: Double?
 
         for segment in segments {
             if let interval = interval(in: segment, offsetValuesAreMilliseconds: true) {
                 maxEnd = max(maxEnd ?? interval.end, interval.end)
+                if let text = cleanText(segment["text"] as? String) {
+                    transcriptSegments.append(ASRSegment(text: text, startSeconds: interval.start, endSeconds: interval.end))
+                    rawTexts.append(text)
+                }
             }
             let tokenEntries = parseTokenEntries(in: segment)
             if tokenEntries.isEmpty {
@@ -4825,6 +5000,21 @@ public struct WhisperCppJSONTranscriptParser: Sendable {
             durationSeconds: maxEnd,
             words: words,
             sourceModelID: request.modelID,
+            backendKind: .whisperCpp,
+            segments: transcriptSegments,
+            rawText: rawTexts.isEmpty ? nil : rawTexts.joined(separator: "\n"),
+            backendDiagnostics: [
+                "segmentCount": String(segments.count),
+                "wordTimestampMode": request.wordTimestamps ? "word" : "segment",
+                "dtwRequested": String(request.wordTimestamps && request.dtwTokenTimestamps),
+                "vadRequested": String(request.vadEnabled)
+            ],
+            qualitySummary: LocalASRConfidence.assess(
+                words: words,
+                segments: transcriptSegments,
+                languageCode: languageCode,
+                requestedLanguageCode: request.languageCode
+            ),
             createdAt: createdAt
         )
     }
@@ -5115,6 +5305,7 @@ public struct WhisperCppSpeechRecognizer: SpeechRecognizer {
                 cacheKey: cacheKey,
                 audioFingerprint: audioFingerprint,
                 modelID: request.modelID,
+                backendKind: .whisperCpp,
                 languageCode: request.languageCode
            ) {
             progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
@@ -5125,12 +5316,13 @@ public struct WhisperCppSpeechRecognizer: SpeechRecognizer {
         let transcriptID = request.cacheKey ?? UUID().uuidString
         let outputBaseURL = outputDirectoryURL.appendingPathComponent(Self.stableFileStem(transcriptID), isDirectory: false)
 
-        func run(_ planRequest: ASRRequest) async throws -> (plan: WhisperCppCommandPlan, result: ASRCommandResult) {
+        func run(_ planRequest: ASRRequest, disableGPU: Bool = false) async throws -> (plan: WhisperCppCommandPlan, result: ASRCommandResult) {
             let plan = WhisperCppCommandPlan(
                 runtime: runtime,
                 modelURL: modelURL,
                 request: planRequest,
-                outputBaseURL: outputBaseURL
+                outputBaseURL: outputBaseURL,
+                disableGPU: disableGPU
             )
             let result = try await commandRunner.runWhisper(plan: plan, control: control) { line in
                 if let parsed = ASRProgressLineParser.whisperCppProgress(from: line) {
@@ -5141,14 +5333,19 @@ public struct WhisperCppSpeechRecognizer: SpeechRecognizer {
             return (plan, result)
         }
 
-        var (plan, result) = try await run(request)
+        var disableGPU = false
+        var (plan, result) = try await run(request, disableGPU: disableGPU)
+        if Self.shouldRetryWithoutGPU(result: result) {
+            disableGPU = true
+            (plan, result) = try await run(request, disableGPU: disableGPU)
+        }
         let usedDTW = request.wordTimestamps
             && request.dtwTokenTimestamps
             && WhisperDTWPreset.preset(forModelID: request.modelID) != nil
         if usedDTW, result.status != 0 || !fm.fileExists(atPath: plan.outputJSONURL.path) {
             // Fail-safe: if a model build rejects `-dtw`/`-nfa`, retry once without it so a DTW
             // incompatibility degrades to plain offsets instead of failing the whole run.
-            (plan, result) = try await run(request.disablingDTW())
+            (plan, result) = try await run(request.disablingDTW(), disableGPU: disableGPU)
         }
 
         guard result.status == 0 else {
@@ -5174,6 +5371,14 @@ public struct WhisperCppSpeechRecognizer: SpeechRecognizer {
         }
         progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
         return transcript
+    }
+
+    private static func shouldRetryWithoutGPU(result: ASRCommandResult) -> Bool {
+        guard result.status != 0 else { return false }
+        let stderr = result.stderrTail.lowercased()
+        return stderr.contains("ggml_metal")
+            || stderr.contains("metal buffer")
+            || stderr.contains("failed to allocate buffer")
     }
 
     private static func stableFileStem(_ value: String) -> String {
@@ -5341,6 +5546,7 @@ public struct ASRTranscriptCacheStore: Sendable {
             cacheKey: cacheKey,
             audioFingerprint: audioFingerprint,
             modelID: transcript.sourceModelID,
+            backendKind: transcript.backendKind,
             languageCode: Self.normalizedCacheLanguage(languageCode)
                 ?? Self.normalizedCacheLanguage(transcript.languageCode),
             transcriptURL: transcriptURL,
@@ -5364,12 +5570,14 @@ public struct ASRTranscriptCacheStore: Sendable {
         cacheKey: String,
         audioFingerprint: String,
         modelID: String,
+        backendKind: ASRBackendKind = .whisperCpp,
         languageCode: String?
     ) throws -> ASRTranscript? {
         let requestedLanguageCode = Self.normalizedCacheLanguage(languageCode)
         guard let entry = try readEntry(cacheKey: cacheKey),
               entry.audioFingerprint == audioFingerprint,
               entry.modelID == modelID,
+              entry.backendKind == backendKind,
               requestedLanguageCode == nil || Self.normalizedCacheLanguage(entry.languageCode) == requestedLanguageCode,
               FileManager.default.fileExists(atPath: entry.transcriptURL.path) else {
             return nil

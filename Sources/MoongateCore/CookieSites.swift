@@ -40,6 +40,17 @@ public enum CookieSites {
 
     public static let all = [youtube, bilibili]
 
+    /// 未注册站点的动态 cookie key。只用于文件名，不出现在设置页站点列表。
+    public static func dynamicKey(forHost host: String) -> String? {
+        let normalized = normalizedHost(host)
+        guard !normalized.isEmpty else { return nil }
+        let safe = normalized.map { ch -> Character in
+            if ch.isLetter || ch.isNumber || ch == "." || ch == "-" { return ch }
+            return "_"
+        }
+        return "site-" + String(safe)
+    }
+
     /// 按登录站点标识（如 "youtube.com"）找到对应隔离定义；未知站点返回 nil。
     public static func forLoginSite(_ site: String) -> CookieSite? {
         let s = site.lowercased()
@@ -63,6 +74,16 @@ public enum CookieSites {
         return site.allowedCookieDomains.contains(where: { d == $0 || d.hasSuffix("." + $0) })
     }
 
+    /// cookie 的 domain 是否可用于当前 host。用于未注册站点的动态 jar。
+    public static func domainMatches(host: String, cookieDomain: String) -> Bool {
+        let h = normalizedHost(host)
+        let d = normalizedHost(cookieDomain)
+        guard !h.isEmpty, !d.isEmpty else { return false }
+        if h == d || d.hasSuffix("." + h) { return true }
+        // 允许父域 cookie（例如 host=cn.example.com, cookieDomain=.example.com）。
+        return d.contains(".") && h.hasSuffix("." + d)
+    }
+
     /// 记录里是否存在该站点的认证 cookie（且域名属于该站点）——用于「是否真正登录」判定。
     public static func containsAuthCookie(_ site: CookieSite, _ cookies: [HTTPCookie]) -> Bool {
         cookies.contains { site.authCookieNames.contains($0.name) && domainAllowed(site, $0.domain) }
@@ -71,6 +92,18 @@ public enum CookieSites {
     /// 只保留属于该站点允许域的 cookie（导出隔离用）。
     public static func filterToSite(_ cookies: [HTTPCookie], _ site: CookieSite) -> [HTTPCookie] {
         cookies.filter { domainAllowed(site, $0.domain) }
+    }
+
+    /// 只保留与某个 host 明确相关的 cookie。用于未注册站点的动态导出。
+    public static func filterToHost(_ cookies: [HTTPCookie], host: String) -> [HTTPCookie] {
+        cookies.filter { domainMatches(host: host, cookieDomain: $0.domain) }
+    }
+
+    public static func normalizedHost(_ value: String) -> String {
+        let rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let parsedHost = URL(string: rawValue)?.host ?? rawValue
+        return String(parsedHost.drop(while: { $0 == "." }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
     }
 }
 

@@ -17,6 +17,18 @@ final class ASRContractsTests: XCTestCase {
                 ASRWord(text: "明ける", startSeconds: 0.8, endSeconds: 1.5, probability: 0.76)
             ],
             sourceModelID: "whisper.cpp:small-q5_1",
+            backendKind: .whisperCpp,
+            segments: [
+                ASRSegment(text: "梅雨が明ける", startSeconds: 0.0, endSeconds: 1.5)
+            ],
+            rawText: "梅雨が明ける",
+            backendDiagnostics: ["dtw": "enabled"],
+            qualitySummary: LocalASRConfidenceSummary(
+                assessedWordCount: 3,
+                averageProbability: 0.84,
+                lowConfidenceWordRatio: 0,
+                isLowConfidence: false
+            ),
             createdAt: createdAt
         )
         let model = ASRModelInfo(
@@ -45,6 +57,8 @@ final class ASRContractsTests: XCTestCase {
         let transcriptData = try encoder.encode(transcript)
         let transcriptJSON = try XCTUnwrap(String(data: transcriptData, encoding: .utf8))
         XCTAssertTrue(transcriptJSON.contains("\"sourceModelId\""))
+        XCTAssertTrue(transcriptJSON.contains("\"backendKind\":\"whisperCpp\""))
+        XCTAssertTrue(transcriptJSON.contains("\"rawText\":\"梅雨が明ける\""))
         XCTAssertFalse(transcriptJSON.contains("sourceModelID"))
         XCTAssertEqual(transcript, try decoder.decode(ASRTranscript.self, from: transcriptData))
         XCTAssertEqual(ASRModelManifest(models: [model]), try decoder.decode(
@@ -60,6 +74,28 @@ final class ASRContractsTests: XCTestCase {
         ))
         let progressJSON = try XCTUnwrap(String(data: progressData, encoding: .utf8))
         XCTAssertTrue(progressJSON.contains("\"phase\":\"speechRecognition\""))
+    }
+
+    func testTranscriptDecodesLegacyPayloadWithBackendDefaults() throws {
+        let data = Data("""
+        {
+          "id": "legacy",
+          "languageCode": "ja",
+          "words": [
+            { "text": "雨", "startSeconds": 0.0, "endSeconds": 0.3 }
+          ],
+          "sourceModelId": "whisper.cpp:small-q5_1",
+          "createdAt": "2026-06-27T00:00:00Z"
+        }
+        """.utf8)
+
+        let transcript = try ASRJSON.makeDecoder().decode(ASRTranscript.self, from: data)
+
+        XCTAssertEqual(transcript.backendKind, .whisperCpp)
+        XCTAssertEqual(transcript.segments, [])
+        XCTAssertNil(transcript.rawText)
+        XCTAssertEqual(transcript.backendDiagnostics, [:])
+        XCTAssertNil(transcript.qualitySummary)
     }
 
     func testRecommendedWhisperCppManifestUsesVerifiedHuggingFaceMetadata() throws {
@@ -1479,6 +1515,17 @@ final class ASRContractsTests: XCTestCase {
         )
     }
 
+    func testCJKSpeechRecognitionDisablesPromptContextByDefault() {
+        let video = URL(fileURLWithPath: "/tmp/Interview Clip.mp4")
+
+        XCTAssertEqual(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "ja"), 0)
+        XCTAssertEqual(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "ko"), 0)
+        XCTAssertEqual(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "zh-Hans"), 0)
+        XCTAssertEqual(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "yue"), 0)
+        XCTAssertNil(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "en"))
+        XCTAssertNil(ASRPromptBuilder.maxTextContextTokens(videoURL: video, languageCode: "auto"))
+    }
+
     func testTranscriptCacheStoreWritesReadsAndInvalidatesByInputIdentity() throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory
@@ -1521,6 +1568,13 @@ final class ASRContractsTests: XCTestCase {
             cacheKey: "clip-audio-small-auto",
             audioFingerprint: "sha256:audio-a",
             modelID: "whisper.cpp:base",
+            languageCode: nil
+        ))
+        XCTAssertNil(try store.cachedTranscript(
+            cacheKey: "clip-audio-small-auto",
+            audioFingerprint: "sha256:audio-a",
+            modelID: "whisper.cpp:small",
+            backendKind: .senseVoiceFunASR,
             languageCode: nil
         ))
         XCTAssertNil(try store.cachedTranscript(
@@ -3171,6 +3225,80 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertTrue(secondProgress.events.contains(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1)))
     }
 
+    func testLocalASRGeneratorRetriesAutoEnglishLoopWithJapaneseLanguageLock() async throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("moongate-asr-generator-loop-retry-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: directory) }
+        let workDirectory = directory.appendingPathComponent("work", isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let video = directory.appendingPathComponent("[Amatør] lille japaner sample.mp4")
+        let ffmpeg = directory.appendingPathComponent("ffmpeg")
+        try Data("video fixture".utf8).write(to: video)
+        try Data("#!/bin/sh\n".utf8).write(to: ffmpeg)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ffmpeg.path)
+
+        let audioExtractor = RecordingASRAudioExtractor { plan, _ in
+            try FileManager.default.createDirectory(
+                at: plan.outputURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("wav fixture".utf8).write(to: plan.outputURL)
+            return plan.outputURL
+        }
+        let recognizer = SequencedSpeechRecognizer([
+            ASRTranscript(
+                id: "auto-en-loop",
+                languageCode: "en",
+                durationSeconds: 70,
+                words: [
+                    ASRWord(text: "Korin", startSeconds: 0, endSeconds: 2, probability: 0.95),
+                    ASRWord(text: "Korin", startSeconds: 30, endSeconds: 32, probability: 0.95),
+                    ASRWord(text: "Korin", startSeconds: 60, endSeconds: 62, probability: 0.95),
+                ],
+                sourceModelID: "whisper.cpp:test",
+                segments: [
+                    ASRSegment(text: "*Korin*", startSeconds: 0, endSeconds: 2),
+                    ASRSegment(text: "*Korin*", startSeconds: 30, endSeconds: 32),
+                    ASRSegment(text: "*Korin*", startSeconds: 60, endSeconds: 62),
+                ]
+            ),
+            ASRTranscript(
+                id: "retry-ja",
+                languageCode: "ja",
+                durationSeconds: 2,
+                words: [
+                    ASRWord(text: "お客様", startSeconds: 0, endSeconds: 0.8, probability: 0.95),
+                ],
+                sourceModelID: "whisper.cpp:test",
+                segments: [
+                    ASRSegment(text: "お客様", startSeconds: 0, endSeconds: 0.8),
+                ]
+            ),
+        ])
+        let generator = WhisperCppLocalASRSubtitleGenerator(
+            ffmpegURL: ffmpeg,
+            workDirectoryURL: workDirectory,
+            recognizer: recognizer,
+            modelID: "whisper.cpp:test",
+            promptProvider: { videoURL, languageCode in
+                ASRPromptBuilder.defaultPrompt(videoURL: videoURL, languageCode: languageCode)
+            },
+            audioExtractor: audioExtractor
+        )
+
+        let output = try await generator.generateSourceSubtitle(
+            videoFile: video,
+            languageCode: "auto",
+            control: nil
+        ) { _ in }.url
+
+        XCTAssertEqual(output.lastPathComponent, "[Amatør] lille japaner sample.local-asr.ja.srt")
+        XCTAssertEqual(recognizer.requests.map { $0.languageCode ?? "" }, ["auto", "ja"])
+        XCTAssertEqual(recognizer.requests.last?.maxTextContextTokens, 0)
+        XCTAssertEqual(audioExtractor.plans.count, 1)
+    }
+
     func testLocalASRGeneratorFactoryRequiresExplicitReadySettings() throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory
@@ -3310,6 +3438,63 @@ final class ASRContractsTests: XCTestCase {
             XCTAssertEqual(error as? WhisperCppRecognizerError, .processFailed(status: 2, stderrTail: "bad model"))
         }
     }
+
+    func testWhisperCppRecognizerRetriesMetalAllocationFailureWithoutGPU() async throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("moongate-asr-metal-retry-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: directory) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audio = directory.appendingPathComponent("audio.wav")
+        let model = directory.appendingPathComponent("ggml-test.bin")
+        let runtime = directory.appendingPathComponent("whisper-cli")
+        try Data("audio fixture".utf8).write(to: audio)
+        try Data("model fixture".utf8).write(to: model)
+        try Data("#!/bin/sh\n".utf8).write(to: runtime)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+
+        let runner = RecordingASRCommandRunner { plan, _ in
+            if !plan.arguments.contains("--no-gpu") {
+                return ASRCommandResult(
+                    status: 1,
+                    stderrTail: "ggml_metal_buffer_init: error: failed to allocate buffer")
+            }
+            try FileManager.default.createDirectory(
+                at: plan.outputJSONURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("""
+            {
+              "result": { "language": "ja" },
+              "transcription": [
+                {
+                  "text": " 梅雨",
+                  "offsets": { "from": 0, "to": 600 },
+                  "tokens": [
+                    { "text": " 梅雨", "offsets": { "from": 0, "to": 600 } }
+                  ]
+                }
+              ]
+            }
+            """.utf8).write(to: plan.outputJSONURL)
+            return ASRCommandResult(status: 0, stderrTail: "")
+        }
+        let recognizer = WhisperCppSpeechRecognizer(
+            runtime: ASRRuntimeInfo(executableURL: runtime),
+            modelURL: model,
+            outputDirectoryURL: directory.appendingPathComponent("out", isDirectory: true),
+            commandRunner: runner
+        )
+
+        let transcript = try await recognizer.transcribe(
+            ASRRequest(audioURL: audio, languageCode: "ja", modelID: "whisper.cpp:test")
+        ) { _ in }
+
+        XCTAssertEqual(transcript.words.map(\.text), ["梅雨"])
+        XCTAssertEqual(runner.callCount, 2)
+        XCTAssertFalse(runner.plans[0].arguments.contains("--no-gpu"))
+        XCTAssertTrue(runner.plans[1].arguments.contains("--no-gpu"))
+    }
 }
 
 private func XCTAssertThrowsErrorAsync<T>(
@@ -3417,6 +3602,43 @@ private final class RecordingASRCommandRunner: ASRCommandRunner, @unchecked Send
         calls += 1
         recordedPlans.append(plan)
         lock.unlock()
+    }
+}
+
+private final class SequencedSpeechRecognizer: SpeechRecognizer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var transcripts: [ASRTranscript]
+    private var recordedRequests: [ASRRequest] = []
+
+    init(_ transcripts: [ASRTranscript]) {
+        self.transcripts = transcripts
+    }
+
+    var requests: [ASRRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedRequests
+    }
+
+    func readiness(for request: ASRRequest) async -> ASRReadiness {
+        ASRReadiness(status: .ready, modelID: request.modelID, message: "ready")
+    }
+
+    func transcribe(
+        _ request: ASRRequest,
+        control: TaskControlToken?,
+        progress: @escaping @Sendable (ASRProgress) -> Void
+    ) async throws -> ASRTranscript {
+        let transcript = nextTranscript(for: request)
+        progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
+        return transcript
+    }
+
+    private func nextTranscript(for request: ASRRequest) -> ASRTranscript {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedRequests.append(request)
+        return transcripts.removeFirst()
     }
 }
 

@@ -78,6 +78,8 @@ public enum L {
         public static let autoSourceExplanation = "L.Ready.AutoSourceExplanation"
         public static let moreLanguages = "L.Ready.MoreLanguages"
         public static let subtitleLanguageSection = "L.Ready.SubtitleLanguageSection"
+        public static let sourceLanguageAuto = "L.Ready.SourceLanguageAuto"
+        public static let sourceLanguagePickerAccessibility = "L.Ready.SourceLanguagePickerAccessibility"
         public static let outputOptionsSection = "L.Ready.OutputOptionsSection"
         public static let hdrHint = "L.Ready.HDRHint"
         public static let outputFormat = "L.Ready.OutputFormat"
@@ -244,6 +246,7 @@ public enum L {
         public static let languageSection = "L.Settings.LanguageSection"
         public static let appLanguage = "L.Settings.AppLanguage"
         public static let targetLanguage = "L.Settings.TargetLanguage"
+        public static let defaultSourceLanguage = "L.Settings.DefaultSourceLanguage"
         public static let followSystem = "L.Settings.FollowSystem"
         public static let langHans = "L.Settings.LangHans"
         public static let langHant = "L.Settings.LangHant"
@@ -457,6 +460,7 @@ public enum L {
         public static let cookieReady = "L.Login.CookieReady"
         public static let cookieMissing = "L.Login.CookieMissing"
         public static let exportFailed = "L.Login.ExportFailed"
+        public static let noUsableCookiesForPage = "L.Login.NoUsableCookiesForPage"
         public static let loadFailed = "L.Login.LoadFailed"
     }
 

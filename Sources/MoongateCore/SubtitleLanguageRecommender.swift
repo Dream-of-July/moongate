@@ -1,4 +1,5 @@
 import Foundation
+import MoongateMobileCore
 
 /// Deterministic, no-regex script detection over titles and short text samples. Shared by the
 /// language recommender; the Unicode ranges mirror `looksJapanese` in ASR.swift on purpose so the
@@ -78,6 +79,12 @@ public enum SubtitleLanguageRecommender {
     /// Stronger Han-script signal when a CJK language has a platform auto track. Local-ASR choices
     /// are synthetic per-language candidates in the UI, so they are not source-language evidence.
     public static let platformAutoCJKPresenceBonus = 90
+    /// Current output target wins when a real platform/manual subtitle already exists in that
+    /// target. This keeps "I already have Chinese subtitles" from being overridden by source hints.
+    public static let targetLanguageTrackScore = 260
+    /// User/global source-language preference. This can make a local-ASR source candidate win over
+    /// unrelated auto captions, while still letting manual target subtitles stay on top.
+    public static let preferredSourceLanguageScore = 180
     public static let titleLanguageHintBonus = 15
     public static let titleScriptDominanceRatio = 0.18
 
@@ -87,14 +94,34 @@ public enum SubtitleLanguageRecommender {
     }
 
     /// Picks a recommended language from the title + available language groups.
-    public static func recommend(title: String, languages: [SubtitleLanguageChoice]) -> Result {
+    public static func recommend(
+        title: String,
+        languages: [SubtitleLanguageChoice],
+        targetLanguage: String? = nil,
+        preferredSourceLanguage: String? = nil
+    ) -> Result {
         guard !languages.isEmpty else { return Result(recommended: nil, others: []) }
         let titleProfile = ScriptDetector.profile(of: title)
         let lowerTitle = title.lowercased()
+        let normalizedTarget = normalizedTargetLanguage(targetLanguage)
+        let normalizedPreferredSource = normalizedPreferredSourceLanguage(preferredSourceLanguage)
+        let targetAwareLanguages = languages.map {
+            prioritizeTargetTrack(in: $0, targetLanguage: normalizedTarget)
+        }
 
         // Score each language; keep original index for a stable, documented tie-break.
-        let scored = languages.enumerated().map { index, language -> (language: SubtitleLanguageChoice, score: Int, index: Int) in
-            (language, score(for: language, titleProfile: titleProfile, lowerTitle: lowerTitle), index)
+        let scored = targetAwareLanguages.enumerated().map { index, language -> (language: SubtitleLanguageChoice, score: Int, index: Int) in
+            (
+                language,
+                score(
+                    for: language,
+                    titleProfile: titleProfile,
+                    lowerTitle: lowerTitle,
+                    targetLanguage: normalizedTarget,
+                    preferredSourceLanguage: normalizedPreferredSource
+                ),
+                index
+            )
         }
         // Highest score wins. Tie-break: manual track first, then language code ascending.
         let ranked = scored.sorted { lhs, rhs in
@@ -109,7 +136,39 @@ public enum SubtitleLanguageRecommender {
         return Result(recommended: recommended, others: Array(others))
     }
 
-    static func score(for language: SubtitleLanguageChoice, titleProfile: ScriptDetector.Profile, lowerTitle: String) -> Int {
+    /// Best-effort language lock for local-ASR-only pages. Used only when no platform subtitles
+    /// exist, so strong title hints can prevent Whisper auto-detection from mislabeling Japanese
+    /// audio as English. Weak/ambiguous titles return nil and keep auto-detect.
+    public static func inferredLocalASRLanguageCode(title: String) -> String? {
+        let lowerTitle = title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+        let profile = ScriptDetector.profile(of: title)
+        if lowerTitle.contains("japanese")
+            || lowerTitle.contains("japaner")
+            || lowerTitle.contains("japansk")
+            || lowerTitle.contains("japonais")
+            || lowerTitle.contains("japones")
+            || lowerTitle.contains("japonesa")
+            || lowerTitle.contains("japon")
+            || lowerTitle.contains("giapponese")
+            || title.contains("日本語")
+            || title.contains("日语")
+            || title.contains("日語")
+            || title.contains("日文")
+            || profile.kanaRatio >= titleScriptDominanceRatio {
+            return "ja"
+        }
+        return nil
+    }
+
+    static func score(
+        for language: SubtitleLanguageChoice,
+        titleProfile: ScriptDetector.Profile,
+        lowerTitle: String,
+        targetLanguage: String? = nil,
+        preferredSourceLanguage: String? = nil
+    ) -> Int {
         var total = 0
         // 1) Track availability base score (manual preferred over auto over localASR-only).
         if language.hasManualTrack {
@@ -118,6 +177,13 @@ public enum SubtitleLanguageRecommender {
             total += autoTrackScore
         } else {
             total += localASROnlyScore
+        }
+        if hasTargetLanguageTrack(language, targetLanguage: targetLanguage) {
+            total += targetLanguageTrackScore
+        }
+        if let preferredSourceLanguage,
+           TranslationLanguage.normalizedScript(language.languageCode) == preferredSourceLanguage {
+            total += preferredSourceLanguageScore
         }
 
         // 2) Title script alignment.
@@ -153,6 +219,60 @@ public enum SubtitleLanguageRecommender {
             total += titleLanguageHintBonus
         }
         return total
+    }
+
+    static func normalizedTargetLanguage(_ targetLanguage: String?) -> String? {
+        guard let targetLanguage else { return nil }
+        let trimmed = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : TranslationLanguage.normalizedScript(trimmed)
+    }
+
+    static func normalizedPreferredSourceLanguage(_ preferredSourceLanguage: String?) -> String? {
+        guard let preferredSourceLanguage else { return nil }
+        let normalized = AppSettings.normalizedPreferredSourceLanguage(preferredSourceLanguage)
+        return normalized == "auto" ? nil : normalized
+    }
+
+    static func prioritizeTargetTrack(
+        in language: SubtitleLanguageChoice,
+        targetLanguage: String?
+    ) -> SubtitleLanguageChoice {
+        guard hasTargetLanguageTrack(language, targetLanguage: targetLanguage) else {
+            return language
+        }
+        let tracks = language.tracks.enumerated().sorted { lhs, rhs in
+            let lt = isTargetLanguageTrack(lhs.element, targetLanguage: targetLanguage)
+            let rt = isTargetLanguageTrack(rhs.element, targetLanguage: targetLanguage)
+            if lt != rt { return lt }
+            let lr = SubtitleLanguageChoice.trackRank(lhs.element.sourceKind)
+            let rr = SubtitleLanguageChoice.trackRank(rhs.element.sourceKind)
+            if lr != rr { return lr < rr }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+        let label = tracks.first { $0.sourceKind != .localASR }?.label
+            ?? tracks.first?.label
+            ?? language.displayLabel
+        return SubtitleLanguageChoice(
+            languageCode: language.languageCode,
+            displayLabel: label,
+            tracks: tracks
+        )
+    }
+
+    static func hasTargetLanguageTrack(
+        _ language: SubtitleLanguageChoice,
+        targetLanguage: String?
+    ) -> Bool {
+        language.tracks.contains { isTargetLanguageTrack($0, targetLanguage: targetLanguage) }
+    }
+
+    static func isTargetLanguageTrack(
+        _ track: SubtitleChoice,
+        targetLanguage: String?
+    ) -> Bool {
+        guard let targetLanguage else { return false }
+        guard track.sourceKind != .localASR, track.sourceKind != .platformAuto else { return false }
+        return TranslationLanguage.normalizedScript(track.languageCode) == targetLanguage
     }
 
     static func isJapaneseCode(_ code: String) -> Bool {

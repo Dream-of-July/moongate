@@ -37,6 +37,11 @@ JAPANESE_WEAK_ADJECTIVE_CONTINUATIONS = ("なる", "なり", "ない")
 # 「好きなものを」「朝が」），是机器分段把句子切成半句的高精度信号。刻意不含 に/の/は/も：に（如
 # 「日々に」换气）、の（连体）、は/も（主题/兼提）可以合法收尾，纳入会误伤已断好的行。
 JAPANESE_DANGLING_CASE_PARTICLES = ("を", "が")
+CHINESE_DANGLING_FUNCTION_WORDS = ("把", "被", "让", "讓", "将", "將")
+CANTONESE_DANGLING_PARTICLES = ("嘅", "既", "畀", "俾", "喺", "响", "響", "將", "将")
+KOREAN_DANGLING_PARTICLES = ("을", "를", "은", "는", "이", "가", "에", "에서", "에게", "와", "과", "도")
+HAN_START_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff]")
+HANGUL_START_RE = re.compile(r"^[\uac00-\ud7a3]")
 LYRIC_FILLER_LOOP_TOKENS = {
     "yeah", "yea", "ya", "yah", "ey", "hey", "heyy",
     "oh", "ooh", "uh", "uhh", "ah", "mmm", "mm", "hmm", "hm",
@@ -63,6 +68,7 @@ class SourceQualityReport:
     adjacent_identical_ratio: float
     bad_scalar_ratio: float
     unique_cue_text_ratio: float
+    dominant_cue_text_ratio: float
     romanized_loop_token_count: int
     romanized_loop_max_run: int
     romanized_loop_token_ratio: float
@@ -136,7 +142,7 @@ def source_quality_report(
     cjk_language = is_cjk_language(requested_language_code, subtitle_language_code)
     if not cues:
         return SourceQualityReport(
-            0, 0, cjk_language, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, ["tooFewCues"]
+            0, 0, cjk_language, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, ["tooFewCues"]
         )
 
     visible = 0
@@ -147,6 +153,7 @@ def source_quality_report(
     comparable = 0
     previous: Optional[str] = None
     unique_texts = set()
+    text_counts: Dict[str, int] = {}
     latin_tokens: List[str] = []
     sound_effect_cues = 0
     sound_effect_duration = 0.0
@@ -168,6 +175,7 @@ def source_quality_report(
         previous = text
         if text:
             unique_texts.add(text)
+            text_counts[text] = text_counts.get(text, 0) + 1
         if is_sound_effect_cue_text(text):
             sound_effect_cues += 1
             sound_effect_duration += duration
@@ -200,12 +208,18 @@ def source_quality_report(
     cjk_scalar_ratio = cjk / visible if visible else 0.0
     latin_scalar_ratio = latin / visible if visible else 0.0
     unique_cue_text_ratio = len(unique_texts) / len(cues) if cues else 0.0
+    dominant_cue_text_ratio = max(text_counts.values(), default=0) / len(cues) if cues else 0.0
     sound_effect_cue_ratio = sound_effect_cues / len(cues) if cues else 0.0
     sound_effect_duration_ratio = sound_effect_duration / subtitle_duration if subtitle_duration > 0 else 0.0
     long_cue_ratio = long_cues / len(cues) if cues else 0.0
 
     reasons: List[str] = []
     if adjacent_identical_ratio >= 0.50:
+        reasons.append("garbledOrRepetitive")
+    if len(cues) >= 12 and (
+        (dominant_cue_text_ratio >= 0.45 and unique_cue_text_ratio <= 0.25)
+        or unique_cue_text_ratio <= 0.12
+    ):
         reasons.append("garbledOrRepetitive")
     if bad_scalar_ratio >= 0.05:
         reasons.append("garbledOrRepetitive")
@@ -246,6 +260,7 @@ def source_quality_report(
         adjacent_identical_ratio=adjacent_identical_ratio,
         bad_scalar_ratio=bad_scalar_ratio,
         unique_cue_text_ratio=unique_cue_text_ratio,
+        dominant_cue_text_ratio=dominant_cue_text_ratio,
         romanized_loop_token_count=romanized_loop_token_count,
         romanized_loop_max_run=romanized_loop_max_run,
         romanized_loop_token_ratio=romanized_loop_token_ratio,
@@ -625,13 +640,38 @@ def _agent_translation_style(category: str) -> str:
 
 
 def weak_boundary_candidates(rows: Sequence[Dict[str, Any]], *, language_code: Optional[str] = None) -> List[Dict[str, Any]]:
-    if normalized_language_code(language_code) != "ja":
+    language = normalized_language_code(language_code)
+    if language not in {"ja", "zh", "yue", "ko"}:
         return []
     candidates: List[Dict[str, Any]] = []
     for current, next_row in zip(rows, rows[1:]):
         source = str(current.get("source") or "").strip()
         next_source = str(next_row.get("source") or "").strip()
         if not source or not next_source:
+            continue
+        if language == "zh":
+            if source.endswith(CHINESE_DANGLING_FUNCTION_WORDS) and HAN_START_RE.search(next_source):
+                candidates.append({
+                    "cue": current.get("index"),
+                    "type": "danglingChineseFunctionWord",
+                    "reason": f"{source[-min(8, len(source)):]} / {next_source[:min(8, len(next_source))]}",
+                })
+            continue
+        if language == "yue":
+            if source.endswith(CANTONESE_DANGLING_PARTICLES) and HAN_START_RE.search(next_source):
+                candidates.append({
+                    "cue": current.get("index"),
+                    "type": "danglingCantoneseParticle",
+                    "reason": f"{source[-min(8, len(source)):]} / {next_source[:min(8, len(next_source))]}",
+                })
+            continue
+        if language == "ko":
+            if source.endswith(KOREAN_DANGLING_PARTICLES) and HANGUL_START_RE.search(next_source):
+                candidates.append({
+                    "cue": current.get("index"),
+                    "type": "danglingKoreanParticle",
+                    "reason": f"{source[-min(8, len(source)):]} / {next_source[:min(8, len(next_source))]}",
+                })
             continue
         for ending in JAPANESE_WEAK_ADJECTIVE_ENDINGS:
             if source.endswith(ending) and any(next_source.startswith(start) for start in JAPANESE_WEAK_ADJECTIVE_CONTINUATIONS):

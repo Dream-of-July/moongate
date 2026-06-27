@@ -3065,8 +3065,10 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         {
             advice = LocalAsrLyricsFallbackAdvice(Path.GetFileName(srtFile), cues);
         }
-        if ((_settings.SmartTranslationPromptsEnabled || isLocalAsrSource)
-            && (sourceLooksLikeAutoCaption || LooksLikeAutoCaption(cues)))
+        var shouldResegment = isLocalAsrSource
+            ? sourceLooksLikeAutoCaption || ShouldResegmentLocalAsr(Path.GetFileName(srtFile), cues, advice)
+            : _settings.SmartTranslationPromptsEnabled && (sourceLooksLikeAutoCaption || LooksLikeAutoCaption(cues));
+        if (shouldResegment)
         {
             var reseg = await ResegmentForReadabilityAsync(
                 cues,
@@ -3420,6 +3422,17 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
         // never disagree about whether a clip is a song.
         SubtitleTimingProfileDetector.Detect(fileName, cues) is SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics;
+
+    private static bool ShouldResegmentLocalAsr(
+        string fileName,
+        IReadOnlyList<SubtitleCue> cues,
+        TranslationPromptAdvice? advice)
+    {
+        if (cues.Count == 0) return false;
+        if (advice?.Preset == TranslationPromptPreset.SongLyrics) return true;
+        if (advice is null && LooksLikeLocalAsrLyrics(fileName, cues)) return true;
+        return LooksLikeAutoCaption(cues);
+    }
 
     /// <summary>
     /// 字幕条内部换行折叠成一行发给模型。用空格连接（旧版用 " / " 会被模型原样抄进译文，
@@ -3822,14 +3835,54 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
     {
         if (cues.Count == 0) return [];
 
-        // 1) 在 cue 边界分块请求断句，拼出全部句子。
-        var sentences = new List<string>();
+        // 1) 在 cue 边界分块请求断句，拼出全部句子。与 Swift 保持最多 3 个在途。
+        var chunkRanges = new List<(int Start, int Count)>();
         for (var start = 0; start < cues.Count; start += ResegmentChunkCues)
         {
-            var count = Math.Min(ResegmentChunkCues, cues.Count - start);
-            var chunk = await SegmentChunkAsync(cues, start, count, preset, ct).ConfigureAwait(false);
-            sentences.AddRange(chunk);
+            chunkRanges.Add((start, Math.Min(ResegmentChunkCues, cues.Count - start)));
         }
+        var sentenceChunks = new Dictionary<int, List<string>>();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var inFlight = new List<Task<(int Start, List<string> Sentences)>>();
+        var nextChunk = 0;
+
+        void ScheduleNext()
+        {
+            if (nextChunk >= chunkRanges.Count) return;
+            var range = chunkRanges[nextChunk++];
+            var token = linked.Token;
+            inFlight.Add(Task.Run(async () =>
+            {
+                var chunk = await SegmentChunkAsync(cues, range.Start, range.Count, preset, token).ConfigureAwait(false);
+                return (range.Start, chunk);
+            }, token));
+        }
+
+        try
+        {
+            for (var i = 0; i < Math.Min(MaxInFlight, chunkRanges.Count); i++)
+            {
+                ScheduleNext();
+            }
+            while (inFlight.Count > 0)
+            {
+                var done = await Task.WhenAny(inFlight).ConfigureAwait(false);
+                inFlight.Remove(done);
+                var (start, chunk) = await done.ConfigureAwait(false);
+                sentenceChunks[start] = chunk;
+                ScheduleNext();
+            }
+        }
+        catch
+        {
+            linked.Cancel();
+            try { await Task.WhenAll(inFlight).ConfigureAwait(false); } catch { /* canceled */ }
+            throw;
+        }
+        var sentences = chunkRanges
+            .OrderBy(range => range.Start)
+            .SelectMany(range => sentenceChunks[range.Start])
+            .ToList();
         if (preset == TranslationPromptPreset.SongLyrics
             && ContainsSuspiciousJapaneseLyricInternalDuplicateNoise(string.Join("、", sentences)))
         {
@@ -4014,13 +4067,69 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
 
         var characters = text.Where(ch => !char.IsWhiteSpace(ch)).Select(ch => ch.ToString()).ToArray();
         if (characters.Length < parts) return [text];
+        return SplitCjkSegmentText(characters, parts);
+    }
+
+    private static List<string> SplitCjkSegmentText(string[] characters, int parts)
+    {
+        var fullText = string.Concat(characters);
+        var cuts = new List<int> { 0 };
+        for (var part = 1; part < parts; part++)
+        {
+            var target = (int)((long)characters.Length * part / parts);
+            var remainingParts = parts - part;
+            var window = Math.Max(2, characters.Length / Math.Max(2, parts * 2));
+            var lower = Math.Max(cuts[^1] + 1, target - window);
+            var upper = Math.Min(characters.Length - remainingParts, target + window);
+            if (upper < lower) upper = lower;
+            var bestCut = lower;
+            var bestScore = int.MinValue;
+            for (var cut = lower; cut <= upper; cut++)
+            {
+                var score = CjkSplitScore(characters, fullText, cut, target);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestCut = cut;
+                }
+            }
+            cuts.Add(bestCut);
+        }
+        cuts.Add(characters.Length);
+
         var charParts = new List<string>();
         for (var part = 0; part < parts; part++)
         {
-            var start = (int)((long)characters.Length * part / parts);
-            var end = part == parts - 1 ? characters.Length : (int)((long)characters.Length * (part + 1) / parts);
+            var start = cuts[part];
+            var end = cuts[part + 1];
             charParts.Add(start < end ? string.Concat(characters[start..end]) : "");
         }
         return charParts;
+    }
+
+    private static int CjkSplitScore(string[] characters, string fullText, int cut, int target)
+    {
+        if (cut <= 0 || cut >= characters.Length) return int.MinValue;
+        var score = -Math.Abs(cut - target);
+        if (CjkWordBoundary.Straddles(fullText, cut)) score -= 100;
+        var previous = characters[cut - 1];
+        var next = characters[cut];
+        if ("。！？!?、，,；;：:」』）)]】".Contains(previous, StringComparison.Ordinal)) score += 80;
+        if ("。！？!?「『（([【".Contains(next, StringComparison.Ordinal)) score += 40;
+        if (new HashSet<string>(StringComparer.Ordinal)
+            {
+                "を", "が", "は", "に", "へ", "で", "と", "も", "の", "了", "的", "著", "着", "过", "過", "을", "를", "은", "는", "이", "가",
+            }.Contains(previous))
+        {
+            score += 24;
+        }
+        if (new HashSet<string>(StringComparer.Ordinal)
+            {
+                "ば", "て", "た", "だ", "요", "다",
+            }.Contains(next))
+        {
+            score -= 36;
+        }
+        return score;
     }
 }

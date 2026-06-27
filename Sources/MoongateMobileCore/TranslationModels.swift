@@ -277,6 +277,7 @@ public enum TranslationLanguage {
         switch normalizedScript(code) {
         case "zh-Hans": return "简体中文"
         case "zh-Hant": return "繁体中文"
+        case "yue": return "粤语"
         case "ja": return "日语"
         case "ko": return "韩语"
         case "en": return "英语"
