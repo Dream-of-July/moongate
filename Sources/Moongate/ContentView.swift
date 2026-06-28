@@ -1276,12 +1276,21 @@ private struct OnboardingView: View {
 
     @ViewBuilder
     private var LocalASROnboardingOptionView: some View {
-        Label {
-            Text(localizer.t(L.Onboarding.platformSubtitlePreference))
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: "captions.bubble")
-        }
+        onboardingComponentRow(
+            icon: "wrench.and.screwdriver",
+            title: localizer.t(L.Onboarding.requiredComponentsTitle),
+            detail: localizer.t(L.Onboarding.requiredComponentsDetail)
+        )
+        onboardingComponentRow(
+            icon: "captions.bubble",
+            title: localizer.t(L.Onboarding.recommendedComponentsTitle),
+            detail: localizer.t(L.Onboarding.recommendedComponentsDetail)
+        )
+        onboardingComponentRow(
+            icon: "waveform.path.ecg",
+            title: localizer.t(L.Onboarding.optionalComponentsTitle),
+            detail: localizer.t(L.Onboarding.optionalComponentsDetail)
+        )
 
         Toggle(isOn: $preferLocalSpeechRecognition) {
             VStack(alignment: .leading, spacing: 3) {
@@ -1295,7 +1304,7 @@ private struct OnboardingView: View {
 
         HStack {
             Button {
-                model.openLocalASRSettings()
+                model.openSettings(paneID: "components")
             } label: {
                 Label(localizer.t(L.Onboarding.configureLocalSpeechOptional), systemImage: "waveform")
             }
@@ -1305,6 +1314,21 @@ private struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func onboardingComponentRow(icon: String, title: String, detail: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } icon: {
+            Image(systemName: icon)
         }
     }
 

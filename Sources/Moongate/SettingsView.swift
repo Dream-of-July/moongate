@@ -81,6 +81,9 @@ struct SettingsView: View {
     @State private var localASRModelCatalogVersion = 0
     @State private var localASRInstallingModelID: String?
     @State private var localASRModelInstallProgress: Double?
+    @State private var showSubtitleRecognitionAdvanced = false
+    @State private var localASRSidecarTestMessage: String?
+    @State private var localASRSidecarTestPassed = false
 
     private let appleTranslationSourceLanguages = ["en", "ja", "ko", "zh-Hans", "zh-Hant"]
 
@@ -130,6 +133,8 @@ struct SettingsView: View {
         .onChange(of: draft.translationTargetLanguage) {
             refreshDraftRuntimeReadiness()
         }
+        .onChange(of: draft.localASRSidecarRuntimePath) { resetLocalASRSidecarTest() }
+        .onChange(of: draft.localASRSidecarModelPath) { resetLocalASRSidecarTest() }
         .onChange(of: appleTranslationSourceLanguage) { refreshDraftRuntimeReadiness() }
         .onAppear {
             // 打开设置即补齐凭证，使 SecureField 显示已存 Token、连接测试/拉模型可用。
@@ -192,6 +197,7 @@ struct SettingsView: View {
                 loginSection
             case .components:
                 dependencySection
+                subtitleRecognitionComponentsSection
                 storageSection
             case .updates:
                 updateSection
@@ -259,7 +265,7 @@ struct SettingsView: View {
         return TranslationLanguage.sourceDisplayName(for: code) ?? code
     }
 
-    // MARK: - 本地语音识别
+    // MARK: - 字幕识别
 
     private enum LocalASRSetupState: Equatable {
         case disabled
@@ -273,14 +279,96 @@ struct SettingsView: View {
     @ViewBuilder
     private var localSpeechSection: some View {
         Section {
-            Toggle(localizer.t(L.Settings.localASREnabled), isOn: $draft.localASREnabled)
-            Text(localizer.t(L.Settings.localASRHelp))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(localizer.t(L.Settings.localASRSection))
+                    .font(.title3.weight(.semibold))
+                Text(localizer.t(L.Settings.subtitleRecognitionDescription))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+        }
+
+        Section(localizer.t(L.Settings.subtitleRecognitionMode)) {
+            Picker(localizer.t(L.Settings.subtitleRecognitionMode), selection: subtitleRecognitionModeBinding) {
+                Text(localizer.t(L.Settings.subtitleRecognitionAutomatic))
+                    .tag(SubtitleRecognitionMode.automatic)
+                Text(localizer.t(L.Settings.subtitleRecognitionAlwaysLocal))
+                    .tag(SubtitleRecognitionMode.alwaysLocal)
+                Text(localizer.t(L.Settings.subtitleRecognitionPlatformOnly))
+                    .tag(SubtitleRecognitionMode.platformOnly)
+            }
+            .pickerStyle(.radioGroup)
+
+            Text(subtitleRecognitionModeDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            LocalASRSetupStatusView(state: localASRSetupState)
-            if draft.localASREnabled {
+        }
+
+        if draft.subtitleRecognitionMode != .platformOnly {
+            Section(localizer.t(L.Settings.subtitleRecognitionQuality)) {
+                Picker(localizer.t(L.Settings.subtitleRecognitionQuality), selection: localRecognitionQualityBinding) {
+                    Text(localizer.t(L.Settings.localRecognitionQualityStandard))
+                        .tag(LocalRecognitionQuality.standard)
+                    Text(localizer.t(L.Settings.localRecognitionQualityAccurate))
+                        .tag(LocalRecognitionQuality.accurate)
+                }
+                .pickerStyle(.segmented)
+
+                Text(localRecognitionQualityDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section(localizer.t(L.Settings.subtitleRecognitionComponents)) {
+                recognitionComponentStatusRow(
+                    title: localizer.t(L.Settings.offlineRecognitionComponent),
+                    status: offlineRecognitionStatusText,
+                    tint: offlineRecognitionStatusTint
+                )
+                recognitionComponentStatusRow(
+                    title: localizer.t(L.Settings.voiceBoundaryComponent),
+                    status: voiceBoundaryStatusText,
+                    tint: localASRVADModelURL == nil ? .orange : .green
+                )
+                recognitionComponentStatusRow(
+                    title: localizer.t(L.Settings.highQualityRecognitionComponent),
+                    status: highQualityRecognitionStatusText,
+                    tint: draft.isLocalASRSidecarConfigured ? .green : .secondary
+                )
+
+                HStack(spacing: 10) {
+                    Button(localizer.t(L.Settings.manageComponents)) {
+                        openComponentsPane()
+                    }
+                    .buttonStyle(.bordered)
+
+                    if shouldOfferRecommendedRecognitionInstall {
+                        Button(localizer.t(L.Settings.installRecommendedComponents)) {
+                            installRecommendedRecognitionComponents()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+
+        Section {
+            DisclosureGroup(localizer.t(L.Settings.subtitleRecognitionAdvanced), isExpanded: $showSubtitleRecognitionAdvanced) {
+                Text(localizer.t(L.Settings.subtitleRecognitionAdvancedHelp))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
+
+                LocalASRSetupStatusView(state: localASRSetupState)
                 LocalASRVADStatusView(vadModelURL: localASRVADModelURL)
+
                 Toggle(localizer.t(L.Settings.localASRPreciseModeEnabled), isOn: $draft.localASRPreciseModeEnabled)
                 Text(localizer.t(L.Settings.localASRPreciseModeHelp))
                     .font(.caption)
@@ -293,41 +381,142 @@ struct SettingsView: View {
                     TextField(localizer.t(L.Settings.localASRSidecarModelPath), text: $draft.localASRSidecarModelPath)
                         .textContentType(.none)
                         .help(localizer.t(L.Settings.localASRSidecarModelPathPrompt))
-                    Text(localASRSidecarReadinessText)
-                        .font(.caption)
-                        .foregroundStyle(draft.isLocalASRSidecarConfigured ? .green : .secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button(localizer.t(L.Settings.localASRSidecarTest)) {
+                            testLocalASRSidecar()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text(localASRSidecarTestMessage ?? localASRSidecarReadinessText)
+                            .font(.caption)
+                            .foregroundStyle(localASRSidecarStatusTint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-            }
-        } header: {
-            Text(localizer.t(L.Settings.localASRSection))
-        }
 
-        cloudASRSection
-
-        // Recommended models.
-        Section {
-            let recommended = recommendedModelForDevice()
-
-            if importedLocalASRModelURL != nil {
-                importedLocalASRModelRow()
                 Divider()
-            }
 
-            ForEach(localASRModelCatalogEntries, id: \.id) { entry in
-                localASRModelRow(entry, isRecommended: entry.id == recommended?.id)
+                cloudASRAdvancedControls
+
+                Button(localizer.t(L.Settings.manageComponents)) {
+                    openComponentsPane()
+                }
+                .buttonStyle(.bordered)
             }
-        } header: {
-            LocalASRModelListHeader(
-                title: localizer.t(L.Settings.localASRRecommendedModels),
-                importTitle: localizer.t(L.Settings.localASRImportModel),
-                importAction: importLocalASRModel
-            )
         }
     }
 
-    private var cloudASRSection: some View {
-        Section {
+    private var subtitleRecognitionModeBinding: Binding<SubtitleRecognitionMode> {
+        Binding(
+            get: { draft.subtitleRecognitionMode },
+            set: { newValue in
+                draft.subtitleRecognitionMode = newValue
+                draft.localASREnabled = newValue != .platformOnly
+            }
+        )
+    }
+
+    private var localRecognitionQualityBinding: Binding<LocalRecognitionQuality> {
+        Binding(
+            get: { draft.localRecognitionQuality },
+            set: { newValue in
+                draft.localRecognitionQuality = newValue
+            }
+        )
+    }
+
+    private var subtitleRecognitionModeDescription: String {
+        switch draft.subtitleRecognitionMode {
+        case .automatic:
+            return localizer.t(L.Settings.subtitleRecognitionAutomaticDescription)
+        case .alwaysLocal:
+            return localizer.t(L.Settings.subtitleRecognitionAlwaysLocalDescription)
+        case .platformOnly:
+            return localizer.t(L.Settings.subtitleRecognitionPlatformOnlyDescription)
+        }
+    }
+
+    private var localRecognitionQualityDescription: String {
+        switch draft.localRecognitionQuality {
+        case .standard:
+            return localizer.t(L.Settings.localRecognitionQualityStandardDescription)
+        case .accurate:
+            return localizer.t(L.Settings.localRecognitionQualityAccurateDescription)
+        }
+    }
+
+    private var offlineRecognitionStatusText: String {
+        if draft.subtitleRecognitionMode == .platformOnly {
+            return localizer.t(L.Settings.componentStatusOff)
+        }
+        switch localASRSetupState {
+        case .ready:
+            return localizer.t(L.Settings.componentStatusReady)
+        case .downloading:
+            return localizer.t(L.Settings.componentStatusInstalling)
+        case .badHash:
+            return localizer.t(L.Settings.componentStatusNeedsRepair)
+        case .disabled, .missingRuntime, .missingModel:
+            return localizer.t(L.Settings.componentStatusNeedsInstall)
+        }
+    }
+
+    private var offlineRecognitionStatusTint: Color {
+        if draft.subtitleRecognitionMode == .platformOnly { return .secondary }
+        switch localASRSetupState {
+        case .ready:
+            return .green
+        case .badHash:
+            return .orange
+        case .disabled, .missingRuntime, .missingModel, .downloading:
+            return .orange
+        }
+    }
+
+    private var voiceBoundaryStatusText: String {
+        localASRVADModelURL == nil
+            ? localizer.t(L.Settings.voiceBoundarySuggested)
+            : localizer.t(L.Settings.componentStatusReady)
+    }
+
+    private var highQualityRecognitionStatusText: String {
+        draft.isLocalASRSidecarConfigured
+            ? localizer.t(L.Settings.componentStatusReady)
+            : localizer.t(L.Settings.componentStatusNotInstalled)
+    }
+
+    private var shouldOfferRecommendedRecognitionInstall: Bool {
+        guard draft.subtitleRecognitionMode != .platformOnly else { return false }
+        if case .ready = localASRSetupState {
+            return localASRVADModelURL == nil || (draft.localRecognitionQuality == .accurate && !draft.isLocalASRSidecarConfigured)
+        }
+        return true
+    }
+
+    private func openComponentsPane() {
+        selectedPane = .components
+    }
+
+    @ViewBuilder
+    private func recognitionComponentStatusRow(title: String, status: String, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Spacer(minLength: 12)
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(tint)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var cloudASRAdvancedControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(localizer.t(L.Settings.cloudASRSection))
+                .font(.callout.weight(.medium))
+            Text(localizer.t(L.Settings.cloudASRExperimentalHelp))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle(localizer.t(L.Settings.cloudASREnabled), isOn: $draft.cloudASREnabled)
             Text(localizer.t(L.Settings.cloudASRPrivacyNotice))
                 .font(.caption)
@@ -350,8 +539,6 @@ struct SettingsView: View {
                     .foregroundStyle(cloudASRReadinessStyle)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        } header: {
-            Text(localizer.t(L.Settings.cloudASRSection))
         }
     }
 
@@ -388,6 +575,40 @@ struct SettingsView: View {
         draft.isLocalASRSidecarConfigured
             ? localizer.t(L.Settings.localASRSidecarReady)
             : localizer.t(L.Settings.localASRSidecarNeedsSetup)
+    }
+
+    private var localASRSidecarStatusTint: Color {
+        if localASRSidecarTestMessage != nil {
+            return localASRSidecarTestPassed ? .green : .orange
+        }
+        return draft.isLocalASRSidecarConfigured ? .green : .secondary
+    }
+
+    private func resetLocalASRSidecarTest() {
+        localASRSidecarTestMessage = nil
+        localASRSidecarTestPassed = false
+    }
+
+    private func testLocalASRSidecar() {
+        let runtimePath = draft.localASRSidecarRuntimePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelPath = draft.localASRSidecarModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !runtimePath.isEmpty, !modelPath.isEmpty else {
+            localASRSidecarTestPassed = false
+            localASRSidecarTestMessage = localizer.t(L.Settings.localASRSidecarTestMissingFields)
+            return
+        }
+        guard FileManager.default.isExecutableFile(atPath: runtimePath) else {
+            localASRSidecarTestPassed = false
+            localASRSidecarTestMessage = localizer.t(L.Settings.localASRSidecarTestRuntimeUnavailable)
+            return
+        }
+        guard FileManager.default.fileExists(atPath: modelPath) else {
+            localASRSidecarTestPassed = false
+            localASRSidecarTestMessage = localizer.t(L.Settings.localASRSidecarTestModelUnavailable)
+            return
+        }
+        localASRSidecarTestPassed = true
+        localASRSidecarTestMessage = localizer.t(L.Settings.localASRSidecarTestReady)
     }
 
     @ViewBuilder
@@ -680,11 +901,9 @@ struct SettingsView: View {
     }
 
     private var localASRVADModelURL: URL? {
-        guard let runtimePath = availableLocalASRRuntimePath else { return nil }
-        return WhisperCppVADModelLocator.locate(
-            runtime: ASRRuntimeInfo(executableURL: URL(fileURLWithPath: runtimePath)),
-            extraSearchURLs: localASRRuntimeSearchURLs
-        )
+        let path = draft.localASRVADModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     private var selectedCatalogLocalASRModel: ASRModelCatalogEntry? {
@@ -822,6 +1041,20 @@ struct SettingsView: View {
         }
     }
 
+    private func installRecommendedRecognitionComponents() {
+        selectedPane = .components
+        switch localASRSetupState {
+        case .ready, .downloading:
+            break
+        case .missingRuntime:
+            requestDependencySetup()
+        case .badHash:
+            repairSelectedLocalASRModel()
+        case .disabled, .missingModel:
+            installRecommendedLocalASRModel()
+        }
+    }
+
     private func repairSelectedLocalASRModel() {
         if let entry = selectedCatalogLocalASRModel {
             deleteLocalASRModel(entry)
@@ -847,6 +1080,7 @@ struct SettingsView: View {
                     }
                 }
                 await MainActor.run {
+                    draft.localASREnabled = draft.subtitleRecognitionMode != .platformOnly
                     draft.localASRModelID = entry.id
                     draft.localASRModelPath = status.installedURL.path
                     localASRModelCatalogVersion += 1
@@ -888,6 +1122,12 @@ struct SettingsView: View {
         AppSettings.supportDirectory
             .appendingPathComponent("asr", isDirectory: true)
             .appendingPathComponent("models", isDirectory: true)
+    }
+
+    private var localASRVADStoreURL: URL {
+        AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("vad", isDirectory: true)
     }
 
     private var localASRRuntimeSearchURLs: [URL] {
@@ -935,6 +1175,7 @@ struct SettingsView: View {
     }
 
     private func useLocalASRModel(_ entry: ASRModelCatalogEntry) {
+        draft.localASREnabled = draft.subtitleRecognitionMode != .platformOnly
         draft.localASRModelID = entry.id
         draft.localASRModelPath = entry.installedURL.path
     }
@@ -1005,7 +1246,7 @@ struct SettingsView: View {
             )
             copiedURL = destinationURL
             try fm.copyItem(at: sourceURL, to: destinationURL)
-            draft.localASREnabled = true
+            draft.localASREnabled = draft.subtitleRecognitionMode != .platformOnly
             draft.localASRModelID = importedLocalASRModelID(for: destinationURL)
             draft.localASRModelPath = destinationURL.path
             localASRModelCatalogVersion += 1
@@ -1031,6 +1272,71 @@ struct SettingsView: View {
             draft.localASRModelPath = ""
             localASRModelCatalogVersion += 1
             storageSizes["asrModels"] = nil
+        } catch {
+            model.settingsNotice = error.localizedDescription
+        }
+    }
+
+    private func importLocalASRVADModel() {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = localizer.t(L.Settings.localASRVADImport)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        #if canImport(UniformTypeIdentifiers)
+        if let binType = UTType(filenameExtension: "bin") {
+            panel.allowedContentTypes = [binType]
+        }
+        #endif
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        importLocalASRVADModel(from: sourceURL)
+        #else
+        model.settingsNotice = localizer.t(L.Settings.localASRImportUnavailable)
+        #endif
+    }
+
+    private func importLocalASRVADModel(from sourceURL: URL) {
+        let accessed = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fm = FileManager.default
+        var copiedURL: URL?
+        do {
+            try fm.createDirectory(at: localASRVADStoreURL, withIntermediateDirectories: true)
+            let destinationURL = uniqueImportedModelDestination(
+                directoryURL: localASRVADStoreURL,
+                fileName: sanitizedImportedModelFileName(sourceURL.lastPathComponent)
+            )
+            copiedURL = destinationURL
+            try fm.copyItem(at: sourceURL, to: destinationURL)
+            draft.localASRVADModelPath = destinationURL.path
+            storageSizes["asrModels"] = nil
+            model.settingsNotice = localizer.t(L.Settings.localASRVADImportComplete, destinationURL.lastPathComponent)
+        } catch {
+            if let copiedURL {
+                try? fm.removeItem(at: copiedURL)
+            }
+            model.settingsNotice = localizer.t(L.Settings.localASRVADImportFailed, error.localizedDescription)
+        }
+    }
+
+    private func deleteLocalASRVADModel() {
+        let path = draft.localASRVADModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path)
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: url.path), isManagedLocalASRVADModelURL(url) {
+                try fm.removeItem(at: url)
+            }
+            draft.localASRVADModelPath = ""
+            storageSizes["asrModels"] = nil
+            model.settingsNotice = localizer.t(L.Settings.localASRVADDeleted)
         } catch {
             model.settingsNotice = error.localizedDescription
         }
@@ -1070,6 +1376,12 @@ struct SettingsView: View {
         let modelsPath = localASRModelStoreURL.standardizedFileURL.path
         let path = url.standardizedFileURL.path
         return path == modelsPath || path.hasPrefix(modelsPath + "/")
+    }
+
+    private func isManagedLocalASRVADModelURL(_ url: URL) -> Bool {
+        let vadPath = localASRVADStoreURL.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == vadPath || path.hasPrefix(vadPath + "/")
     }
 
     private func localASRModelStatusText(_ entry: ASRModelCatalogEntry) -> String {
@@ -1177,6 +1489,43 @@ struct SettingsView: View {
         dependencyChecked = true
     }
 
+    private var subtitleRecognitionComponentsSection: some View {
+        Section(localizer.t(L.Settings.subtitleRecognitionComponents)) {
+            LocalASRSetupStatusView(state: localASRSetupState)
+            LocalASRVADStatusView(vadModelURL: localASRVADModelURL)
+            HStack(spacing: 10) {
+                Button(localizer.t(L.Settings.localASRVADImport)) {
+                    importLocalASRVADModel()
+                }
+                .buttonStyle(.bordered)
+
+                if let vadURL = localASRVADModelURL, isManagedLocalASRVADModelURL(vadURL) {
+                    Button(role: .destructive) {
+                        deleteLocalASRVADModel()
+                    } label: {
+                        Label(localizer.t(L.Settings.localASRVADDelete), systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            let recommended = recommendedModelForDevice()
+            LocalASRModelListHeader(
+                title: localizer.t(L.Settings.localASRRecommendedModels),
+                importTitle: localizer.t(L.Settings.localASRImportModel),
+                importAction: importLocalASRModel
+            )
+
+            if importedLocalASRModelURL != nil {
+                importedLocalASRModelRow()
+            }
+
+            ForEach(localASRModelCatalogEntries, id: \.id) { entry in
+                localASRModelRow(entry, isRecommended: entry.id == recommended?.id)
+            }
+        }
+    }
+
     // MARK: - 存储
 
     @State private var storageSizes: [String: Int64] = [:]
@@ -1194,11 +1543,14 @@ struct SettingsView: View {
         let supportDir = supportDataURL
         let downloadsDir = appDownloadsDirectoryURL
         let modelsDir = localASRModelStoreURL
+        let vadDir = localASRVADStoreURL
         let result: [String: Int64] = await Task.detached(priority: .userInitiated) {
             var sizes: [String: Int64] = [:]
             let modelsSize = Self.directorySize(modelsDir)
-            sizes["support"] = max(Self.directorySize(supportDir) - modelsSize, 0)
-            sizes["asrModels"] = modelsSize
+            let vadSize = Self.directorySize(vadDir)
+            let asrAssetsSize = modelsSize + vadSize
+            sizes["support"] = max(Self.directorySize(supportDir) - asrAssetsSize, 0)
+            sizes["asrModels"] = asrAssetsSize
             sizes["downloads"] = Self.directorySize(downloadsDir)
             return sizes
         }.value
@@ -1237,6 +1589,11 @@ struct SettingsView: View {
             if FileManager.default.fileExists(atPath: modelsDir.path) {
                 try FileManager.default.removeItem(at: modelsDir)
             }
+            let vadDir = localASRVADStoreURL
+            if FileManager.default.fileExists(atPath: vadDir.path) {
+                try FileManager.default.removeItem(at: vadDir)
+            }
+            draft.localASRVADModelPath = ""
             storageFeedback = localizer.t(L.Settings.storageDeleted)
             localASRModelCatalogVersion += 1
             Task { await calculateStorageSizes() }

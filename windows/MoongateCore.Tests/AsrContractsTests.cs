@@ -1703,7 +1703,7 @@ public class AsrContractsTests
     }
 
     [Fact]
-    public void WhisperCppCommandPlanUsesVADModelWhenAvailable()
+    public void WhisperCppCommandPlanUsesVADOnlyWithExplicitExistingModelPath()
     {
         var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-vad-" + Guid.NewGuid().ToString("N"));
         try
@@ -1730,25 +1730,42 @@ public class AsrContractsTests
                 request,
                 Path.Combine(directory, "missing"));
             Assert.DoesNotContain("--vad", missingPlan.Arguments);
-            Assert.DoesNotContain("--vad-model", missingPlan.Arguments);
+            Assert.DoesNotContain("-vm", missingPlan.Arguments);
 
             var vadModel = Path.Combine(runtimeDirectory, "ggml-silero-v5.1.2.bin");
             File.WriteAllText(vadModel, "fake vad model");
-            var readyPlan = WhisperCppCommandPlan.Create(
+            var implicitLocatorPlan = WhisperCppCommandPlan.Create(
                 runtime,
                 model,
                 request,
+                Path.Combine(directory, "implicit"));
+            Assert.DoesNotContain("--vad", implicitLocatorPlan.Arguments);
+            Assert.DoesNotContain("-vm", implicitLocatorPlan.Arguments);
+
+            var readyPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request with { VadModelPath = vadModel },
                 Path.Combine(directory, "ready"));
             Assert.Contains("--vad", readyPlan.Arguments);
-            Assert.Equal(vadModel, ArgumentValueAfter("--vad-model", readyPlan.Arguments));
+            Assert.Equal(vadModel, ArgumentValueAfter("-vm", readyPlan.Arguments));
+            Assert.DoesNotContain("--vad-model", readyPlan.Arguments);
+
+            var missingExplicitPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request with { VadModelPath = Path.Combine(runtimeDirectory, "missing-vad.bin") },
+                Path.Combine(directory, "missing-explicit"));
+            Assert.DoesNotContain("--vad", missingExplicitPlan.Arguments);
+            Assert.DoesNotContain("-vm", missingExplicitPlan.Arguments);
 
             var disabledPlan = WhisperCppCommandPlan.Create(
                 runtime,
                 model,
-                request with { VadEnabled = false },
+                request with { VadEnabled = false, VadModelPath = vadModel },
                 Path.Combine(directory, "disabled"));
             Assert.DoesNotContain("--vad", disabledPlan.Arguments);
-            Assert.DoesNotContain("--vad-model", disabledPlan.Arguments);
+            Assert.DoesNotContain("-vm", disabledPlan.Arguments);
         }
         finally
         {

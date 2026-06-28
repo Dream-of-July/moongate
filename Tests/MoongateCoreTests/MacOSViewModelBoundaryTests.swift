@@ -218,6 +218,7 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let hydrateIndex = try XCTUnwrap(body.range(of: "hydrateCredentials()")?.lowerBound)
         let draftIndex = try XCTUnwrap(body.range(of: "var draft = settings")?.lowerBound)
         XCTAssertTrue(hydrateIndex < draftIndex, "hydrateCredentials() 必须在 var draft = settings 之前")
+        XCTAssertTrue(body.contains("draft.subtitleRecognitionMode = preferLocalSpeechRecognition ? .automatic : .platformOnly"))
     }
 
     func testReadySelectionAlwaysIncludesLocalASRTracksAndGatesDownloadOnReadiness() throws {
@@ -237,6 +238,14 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("func openLocalASRSettings()"))
         XCTAssertTrue(source.contains("pendingSettingsPaneID"))
         XCTAssertTrue(settingsBody.contains("queue.syncLocalASRGenerator(from: settings)"))
+        XCTAssertTrue(settingsBody.contains("applySubtitleRecognitionMode(settings.subtitleRecognitionMode)"))
+        let modeBody = try XCTUnwrap(functionBody(prefix: "private func applySubtitleRecognitionMode", in: source))
+        XCTAssertTrue(modeBody.contains("case .automatic:"))
+        XCTAssertTrue(modeBody.contains("subtitleSourcePolicy = .autoBest"))
+        XCTAssertTrue(modeBody.contains("case .alwaysLocal:"))
+        XCTAssertTrue(modeBody.contains("subtitleSourcePolicy = .forceLocalASR"))
+        XCTAssertTrue(modeBody.contains("case .platformOnly:"))
+        XCTAssertTrue(modeBody.contains("subtitleSourcePolicy = .forcePlatform"))
         XCTAssertTrue(startDownloadBody.contains("availableSubtitleChoices(for: info)"))
         XCTAssertTrue(startDownloadBody.contains("primaryTrack.sourceKind == .localASR"))
         XCTAssertTrue(startDownloadBody.contains("!localASRReadyForDownload"))

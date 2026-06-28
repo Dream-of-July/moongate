@@ -104,6 +104,8 @@ final class TranslationSettingsTests: XCTestCase {
 
     func testLocalASRSettingsDefaultOffAndRoundTripThroughJSON() throws {
         let fresh = AppSettings()
+        XCTAssertEqual(fresh.subtitleRecognitionMode, .automatic)
+        XCTAssertEqual(fresh.localRecognitionQuality, .standard)
         XCTAssertFalse(fresh.localASREnabled)
         XCTAssertEqual(fresh.localASRRuntimePath, "")
         XCTAssertEqual(fresh.localASRModelPath, "")
@@ -111,19 +113,25 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(fresh.localASRPreciseModeEnabled)
         XCTAssertEqual(fresh.localASRSidecarRuntimePath, "")
         XCTAssertEqual(fresh.localASRSidecarModelPath, "")
+        XCTAssertEqual(fresh.localASRVADModelPath, "")
         XCTAssertFalse(fresh.isLocalASRSidecarConfigured)
 
         let settings = AppSettings(
+            subtitleRecognitionMode: .alwaysLocal,
+            localRecognitionQuality: .accurate,
             localASREnabled: true,
             localASRRuntimePath: " /opt/moongate/bin/whisper-cli\n",
             localASRModelPath: "\n/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin ",
             localASRModelID: " whisper.cpp:small-q5_1\n",
             localASRPreciseModeEnabled: true,
             localASRSidecarRuntimePath: " /opt/moongate/bin/faster-whisper-sidecar\n",
-            localASRSidecarModelPath: "\n/Users/me/Models/faster-whisper-small "
+            localASRSidecarModelPath: "\n/Users/me/Models/faster-whisper-small ",
+            localASRVADModelPath: " /Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin\n"
         )
         let encoded = try JSONEncoder().encode(settings)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["subtitleRecognitionMode"] as? String, "alwaysLocal")
+        XCTAssertEqual(object["localRecognitionQuality"] as? String, "accurate")
         XCTAssertEqual(object["localASREnabled"] as? Bool, true)
         XCTAssertEqual(object["localASRRuntimePath"] as? String, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(object["localASRModelPath"] as? String, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
@@ -131,8 +139,14 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(object["localASRPreciseModeEnabled"] as? Bool, true)
         XCTAssertEqual(object["localASRSidecarRuntimePath"] as? String, "/opt/moongate/bin/faster-whisper-sidecar")
         XCTAssertEqual(object["localASRSidecarModelPath"] as? String, "/Users/me/Models/faster-whisper-small")
+        XCTAssertEqual(
+            object["localASRVADModelPath"] as? String,
+            "/Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin"
+        )
 
         let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertEqual(decoded.subtitleRecognitionMode, .alwaysLocal)
+        XCTAssertEqual(decoded.localRecognitionQuality, .accurate)
         XCTAssertTrue(decoded.localASREnabled)
         XCTAssertEqual(decoded.localASRRuntimePath, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(decoded.localASRModelPath, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
@@ -140,7 +154,20 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(decoded.localASRPreciseModeEnabled)
         XCTAssertEqual(decoded.localASRSidecarRuntimePath, "/opt/moongate/bin/faster-whisper-sidecar")
         XCTAssertEqual(decoded.localASRSidecarModelPath, "/Users/me/Models/faster-whisper-small")
+        XCTAssertEqual(
+            decoded.localASRVADModelPath,
+            "/Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin"
+        )
         XCTAssertTrue(decoded.isLocalASRSidecarConfigured)
+
+        let unknownFutureValue = try decodeSettings("""
+        {
+          "subtitleRecognitionMode": "futureMode",
+          "localRecognitionQuality": "futureQuality"
+        }
+        """)
+        XCTAssertEqual(unknownFutureValue.subtitleRecognitionMode, .automatic)
+        XCTAssertEqual(unknownFutureValue.localRecognitionQuality, .standard)
     }
 
     func testCloudASRSettingsDefaultOffRequireConsentAndRoundTrip() throws {

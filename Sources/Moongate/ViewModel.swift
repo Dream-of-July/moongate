@@ -117,6 +117,7 @@ final class ViewModel: ObservableObject {
             || old.localASRPreciseModeEnabled != new.localASRPreciseModeEnabled
             || old.localASRSidecarRuntimePath != new.localASRSidecarRuntimePath
             || old.localASRSidecarModelPath != new.localASRSidecarModelPath
+            || old.localASRVADModelPath != new.localASRVADModelPath
     }
 
     private static func cloudASRGeneratorSettingsChanged(_ old: AppSettings, _ new: AppSettings) -> Bool {
@@ -133,6 +134,9 @@ final class ViewModel: ObservableObject {
         didSet {
             CoreL10n.sync(from: settings)
             queue.syncConcurrency(from: settings)
+            if oldValue.subtitleRecognitionMode != settings.subtitleRecognitionMode {
+                applySubtitleRecognitionMode(settings.subtitleRecognitionMode)
+            }
             if Self.localASRGeneratorSettingsChanged(oldValue, settings) {
                 queue.syncLocalASRGenerator(from: settings)
                 queue.syncCloudASRGenerator(from: settings)
@@ -933,6 +937,19 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    private func applySubtitleRecognitionMode(_ mode: SubtitleRecognitionMode) {
+        switch mode {
+        case .automatic:
+            if subtitleSourcePolicy == .forceLocalASR || subtitleSourcePolicy == .forcePlatform {
+                subtitleSourcePolicy = .autoBest
+            }
+        case .alwaysLocal:
+            subtitleSourcePolicy = .forceLocalASR
+        case .platformOnly:
+            subtitleSourcePolicy = .forcePlatform
+        }
+    }
+
     private func ensureSubtitleSourceSelected(for info: VideoInfo) {
         if primarySubtitleTrack(in: info) != nil { return }
         if let policyTrack = trackMatching(policy: subtitleSourcePolicy, for: info) {
@@ -1417,6 +1434,7 @@ final class ViewModel: ObservableObject {
         draft.translationTargetLanguage = translationTargetLanguage
         draft.onboardingCompleted = true
         draft.localASREnabled = preferLocalSpeechRecognition
+        draft.subtitleRecognitionMode = preferLocalSpeechRecognition ? .automatic : .platformOnly
         let engine = TranslationEngine.compatible(with: translationProvider)
         draft.translationProvider = translationProvider
         draft.aiEngine = engine

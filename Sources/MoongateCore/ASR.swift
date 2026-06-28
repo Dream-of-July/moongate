@@ -70,6 +70,9 @@ public struct ASRRequest: Codable, Equatable, Sendable {
     /// Requests whisper.cpp VAD when a local Silero VAD model is available. Missing VAD assets are
     /// treated as a graceful downgrade to ordinary recognition.
     public let vadEnabled: Bool
+    /// Explicit VAD model path. VAD is never enabled from an implicit runtime search; the path must
+    /// come from app-managed settings and exist when the command is planned.
+    public let vadModelPath: String?
     public let wordTimestamps: Bool
     /// When true (with word timestamps), whisper.cpp is asked for DTW-aligned token timestamps
     /// (`-dtw <preset> -nfa`). These are markedly closer to human timing than the default
@@ -85,6 +88,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         recognitionProfile: ASRRecognitionProfile = .speech,
         maxTextContextTokens: Int? = nil,
         vadEnabled: Bool = true,
+        vadModelPath: String? = nil,
         wordTimestamps: Bool = true,
         dtwTokenTimestamps: Bool = true,
         cacheKey: String? = nil
@@ -96,6 +100,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.recognitionProfile = recognitionProfile
         self.maxTextContextTokens = maxTextContextTokens
         self.vadEnabled = vadEnabled
+        self.vadModelPath = Self.normalizedOptionalPath(vadModelPath)
         self.wordTimestamps = wordTimestamps
         self.dtwTokenTimestamps = dtwTokenTimestamps
         self.cacheKey = cacheKey
@@ -110,6 +115,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         case recognitionProfile
         case maxTextContextTokens
         case vadEnabled
+        case vadModelPath
         case wordTimestamps
         case dtwTokenTimestamps
         case cacheKey
@@ -126,6 +132,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         self.recognitionProfile = try container.decodeIfPresent(ASRRecognitionProfile.self, forKey: .recognitionProfile) ?? .speech
         self.maxTextContextTokens = try container.decodeIfPresent(Int.self, forKey: .maxTextContextTokens)
         self.vadEnabled = try container.decodeIfPresent(Bool.self, forKey: .vadEnabled) ?? true
+        self.vadModelPath = Self.normalizedOptionalPath(try container.decodeIfPresent(String.self, forKey: .vadModelPath))
         self.wordTimestamps = try container.decodeIfPresent(Bool.self, forKey: .wordTimestamps) ?? true
         self.dtwTokenTimestamps = try container.decodeIfPresent(Bool.self, forKey: .dtwTokenTimestamps) ?? true
         self.cacheKey = try container.decodeIfPresent(String.self, forKey: .cacheKey)
@@ -140,6 +147,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
         try container.encode(recognitionProfile, forKey: .recognitionProfile)
         try container.encodeIfPresent(maxTextContextTokens, forKey: .maxTextContextTokens)
         try container.encode(vadEnabled, forKey: .vadEnabled)
+        try container.encodeIfPresent(vadModelPath, forKey: .vadModelPath)
         try container.encode(wordTimestamps, forKey: .wordTimestamps)
         try container.encode(dtwTokenTimestamps, forKey: .dtwTokenTimestamps)
         try container.encodeIfPresent(cacheKey, forKey: .cacheKey)
@@ -155,6 +163,7 @@ public struct ASRRequest: Codable, Equatable, Sendable {
             recognitionProfile: recognitionProfile,
             maxTextContextTokens: maxTextContextTokens,
             vadEnabled: vadEnabled,
+            vadModelPath: vadModelPath,
             wordTimestamps: wordTimestamps,
             dtwTokenTimestamps: false,
             cacheKey: cacheKey
@@ -166,6 +175,11 @@ public struct ASRRequest: Codable, Equatable, Sendable {
             return url
         }
         return URL(fileURLWithPath: value)
+    }
+
+    private static func normalizedOptionalPath(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -4644,6 +4658,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
     public let ffmpegURL: URL
     public let workDirectoryURL: URL
     public let modelID: String
+    public let vadModelURL: URL?
 
     private let recognizer: any SpeechRecognizer
     private let promptProvider: PromptProvider?
@@ -4655,6 +4670,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         workDirectoryURL: URL,
         recognizer: any SpeechRecognizer,
         modelID: String,
+        vadModelURL: URL? = nil,
         promptProvider: PromptProvider? = nil,
         audioActivityDetector: any ASRAudioActivityDetector = ProcessASRAudioActivityDetector(),
         audioExtractor: any ASRAudioExtractor = ProcessASRAudioExtractor()
@@ -4663,6 +4679,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         self.workDirectoryURL = workDirectoryURL
         self.recognizer = recognizer
         self.modelID = modelID
+        self.vadModelURL = vadModelURL
         self.promptProvider = promptProvider
         self.audioActivityDetector = audioActivityDetector
         self.audioExtractor = audioExtractor
@@ -4770,6 +4787,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             recognitionProfile: recognitionProfile,
             maxTextContextTokens: maxTextContextTokens,
             vadEnabled: true,
+            vadModelPath: vadModelURL?.path,
             wordTimestamps: true,
             cacheKey: cacheKey(
                 for: videoFile,
@@ -4779,6 +4797,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
                 maxTextContextTokens: maxTextContextTokens,
                 backendKind: .whisperCpp,
                 vadEnabled: true,
+                vadModelPath: vadModelURL?.path,
                 wordTimestamps: true,
                 dtwTokenTimestamps: true
             )
@@ -4867,10 +4886,11 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         maxTextContextTokens: Int?,
         backendKind: ASRBackendKind,
         vadEnabled: Bool,
+        vadModelPath: String?,
         wordTimestamps: Bool,
         dtwTokenTimestamps: Bool
     ) -> String {
-        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\nbackend=\(backendKind.rawValue)\n\(prompt ?? "")\nrp=\(recognitionProfile.rawValue)\nmc=\(maxTextContextTokens.map(String.init) ?? "default")\nvad=\(vadEnabled)\nwords=\(wordTimestamps)\ndtw=\(dtwTokenTimestamps)\nschema=v3"))"
+        "local-asr:\(stableFileStem("\(audioSeed(videoFile: videoFile, languageCode: languageCode))\nbackend=\(backendKind.rawValue)\n\(prompt ?? "")\nrp=\(recognitionProfile.rawValue)\nmc=\(maxTextContextTokens.map(String.init) ?? "default")\nvad=\(vadEnabled)\nvm=\(vadModelPath ?? "none")\nwords=\(wordTimestamps)\ndtw=\(dtwTokenTimestamps)\nschema=v4"))"
     }
 
     private func audioSeed(videoFile: URL, languageCode: String) -> String {
@@ -4931,6 +4951,12 @@ public enum LocalASRGeneratorFactory {
         guard isReadyModel(modelID: modelID, modelURL: modelURL, supportDirectoryURL: supportDirectoryURL) else {
             return nil
         }
+        let vadModelPath = settings.localASRVADModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let vadModelURL: URL? = {
+            guard !vadModelPath.isEmpty else { return nil }
+            let url = URL(fileURLWithPath: vadModelPath)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }()
 
         let asrDirectory = supportDirectoryURL.appendingPathComponent("asr", isDirectory: true)
         let recognizer = WhisperCppSpeechRecognizer(
@@ -4945,6 +4971,7 @@ public enum LocalASRGeneratorFactory {
             workDirectoryURL: asrDirectory.appendingPathComponent("work", isDirectory: true),
             recognizer: recognizer,
             modelID: modelID,
+            vadModelURL: vadModelURL,
             promptProvider: { videoURL, languageCode, metadata in
                 ASRPromptBuilder.defaultPrompt(
                     videoURL: videoURL,
@@ -5008,67 +5035,6 @@ public enum LocalASRGeneratorFactory {
     }
 }
 
-public enum WhisperCppVADModelLocator {
-    public static let candidateFileNames: [String] = [
-        "ggml-silero-v5.1.2.bin",
-        "ggml-silero-vad-v5.1.2.bin",
-        "silero-vad-v5.1.2.bin"
-    ]
-
-    public static func locate(
-        runtime: ASRRuntimeInfo,
-        extraSearchURLs: [URL] = []
-    ) -> URL? {
-        let fm = FileManager.default
-        for directory in candidateDirectories(runtime: runtime, extraSearchURLs: extraSearchURLs) {
-            for name in candidateFileNames {
-                let url = directory.appendingPathComponent(name, isDirectory: false)
-                if fm.fileExists(atPath: url.path) {
-                    return url
-                }
-            }
-        }
-        return nil
-    }
-
-    public static func candidateDirectories(
-        runtime: ASRRuntimeInfo,
-        extraSearchURLs: [URL] = []
-    ) -> [URL] {
-        var seen = Set<String>()
-        var directories: [URL] = []
-
-        func append(_ url: URL) {
-            let standardized = url.standardizedFileURL
-            guard seen.insert(standardized.path).inserted else { return }
-            directories.append(standardized)
-        }
-
-        let executableDirectory = runtime.executableURL.deletingLastPathComponent()
-        let runtimeRoot = executableDirectory.lastPathComponent == "bin"
-            ? executableDirectory.deletingLastPathComponent()
-            : executableDirectory
-
-        append(executableDirectory)
-        append(runtimeRoot)
-        append(runtimeRoot.appendingPathComponent("models", isDirectory: true))
-        append(runtimeRoot.appendingPathComponent("vad", isDirectory: true))
-        append(AppSettings.supportDirectory
-            .appendingPathComponent("asr", isDirectory: true)
-            .appendingPathComponent("vad", isDirectory: true))
-
-        if let bundledVADURL = Bundle.main.resourceURL?
-            .appendingPathComponent("asr", isDirectory: true)
-            .appendingPathComponent("vad", isDirectory: true) {
-            append(bundledVADURL)
-        }
-        for url in extraSearchURLs {
-            append(url)
-        }
-        return directories
-    }
-}
-
 public struct WhisperCppCommandPlan: Equatable, Sendable {
     public let runtime: ASRRuntimeInfo
     public let modelURL: URL
@@ -5106,8 +5072,9 @@ public struct WhisperCppCommandPlan: Equatable, Sendable {
             arguments.append("--no-gpu")
         }
         if request.vadEnabled,
-           let vadModelURL = WhisperCppVADModelLocator.locate(runtime: runtime) {
-            arguments.append(contentsOf: ["--vad", "--vad-model", vadModelURL.path])
+           let vadModelPath = request.vadModelPath,
+           FileManager.default.fileExists(atPath: vadModelPath) {
+            arguments.append(contentsOf: ["--vad", "-vm", vadModelPath])
         }
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
         // OFF (`-nfa`) — otherwise whisper.cpp silently disables DTW.

@@ -300,7 +300,8 @@ public class WindowsSettingsSurfaceTests
         Assert.Contains("L.Settings.LocalASRVADStatus", xaml);
         Assert.Contains("LocalAsrVADStatusText", xaml);
         Assert.Contains("LocalAsrVADStatusText", viewModel);
-        Assert.Contains("WhisperCppVADModelLocator.Locate", viewModel);
+        Assert.Contains("LocalAsrVadModelPath.Trim()", viewModel);
+        Assert.DoesNotContain("WhisperCppVADModelLocator", viewModel);
         Assert.Contains("L.Settings.LocalASRVADReady", viewModel);
         Assert.Contains("L.Settings.LocalASRVADMissing", viewModel);
         Assert.Contains("RaisePropertyChanged(nameof(LocalAsrVADStatusText))", viewModel);

@@ -86,9 +86,11 @@ public sealed record AsrRequest
     /// <summary>Optional whisper.cpp text-context cap (<c>-mc</c>). Music-like local-ASR requests
     /// use 0 to reduce previous-text repetition loops.</summary>
     public int? MaxTextContextTokens { get; init; }
-    /// <summary>When true, whisper.cpp uses <c>--vad</c> if a local Silero VAD model can be found.
-    /// Missing VAD assets gracefully fall back to the standard whisper.cpp path.</summary>
+    /// <summary>When true, whisper.cpp may use <c>--vad</c> if <see cref="VadModelPath"/> points to
+    /// an existing app-managed VAD model. Missing VAD assets gracefully fall back to the standard path.</summary>
     public bool VadEnabled { get; init; } = true;
+    /// <summary>Explicit app-managed VAD model path. The command planner never guesses this from the runtime folder.</summary>
+    public string? VadModelPath { get; init; }
     public bool WordTimestamps { get; init; } = true;
     /// <summary>
     /// When true (with word timestamps), whisper.cpp is asked for DTW-aligned token timestamps
@@ -4247,6 +4249,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
     private readonly string _workDirectoryPath;
     private readonly ISpeechRecognizer _recognizer;
     private readonly string _modelId;
+    private readonly string? _vadModelPath;
     private readonly Func<string, string, string?>? _promptProvider;
     private readonly IAsrAudioActivityDetector _audioActivityDetector;
     private readonly IAsrAudioExtractor _audioExtractor;
@@ -4256,6 +4259,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         string workDirectoryPath,
         ISpeechRecognizer recognizer,
         string modelId,
+        string? vadModelPath = null,
         Func<string, string, string?>? promptProvider = null,
         IAsrAudioActivityDetector? audioActivityDetector = null,
         IAsrAudioExtractor? audioExtractor = null)
@@ -4264,6 +4268,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         _workDirectoryPath = workDirectoryPath;
         _recognizer = recognizer;
         _modelId = modelId;
+        _vadModelPath = string.IsNullOrWhiteSpace(vadModelPath) ? null : vadModelPath.Trim();
         _promptProvider = promptProvider;
         _audioActivityDetector = audioActivityDetector ?? new ProcessAsrAudioActivityDetector();
         _audioExtractor = audioExtractor ?? new ProcessAsrAudioExtractor();
@@ -4328,6 +4333,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             RecognitionProfile = recognitionProfile,
             MaxTextContextTokens = maxTextContextTokens,
             VadEnabled = true,
+            VadModelPath = _vadModelPath,
             WordTimestamps = true,
             CacheKey = CacheKey(
                 videoFile,
@@ -4337,6 +4343,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
                 maxTextContextTokens,
                 AsrBackendKind.WhisperCpp,
                 vadEnabled: true,
+                vadModelPath: _vadModelPath,
                 wordTimestamps: true,
                 dtwTokenTimestamps: true),
         };
@@ -4407,6 +4414,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         int? maxTextContextTokens,
         AsrBackendKind backendKind,
         bool vadEnabled,
+        string? vadModelPath,
         bool wordTimestamps,
         bool dtwTokenTimestamps) =>
         "local-asr:" + StableFileStem(
@@ -4416,9 +4424,10 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             + "\nrp=" + RecognitionProfileCacheValue(recognitionProfile)
             + "\nmc=" + (maxTextContextTokens?.ToString(CultureInfo.InvariantCulture) ?? "default")
             + "\nvad=" + BoolCacheValue(vadEnabled)
+            + "\nvm=" + (string.IsNullOrWhiteSpace(vadModelPath) ? "none" : vadModelPath.Trim())
             + "\nwords=" + BoolCacheValue(wordTimestamps)
             + "\ndtw=" + BoolCacheValue(dtwTokenTimestamps)
-            + "\nschema=v3");
+            + "\nschema=v4");
 
     private static string BackendKindCacheValue(AsrBackendKind backendKind) =>
         backendKind switch
@@ -4495,6 +4504,10 @@ public static class LocalAsrGeneratorFactory
         {
             return null;
         }
+        var vadModelPath = settings.LocalAsrVadModelPath.Trim();
+        var usableVadModelPath = vadModelPath.Length > 0 && File.Exists(vadModelPath)
+            ? vadModelPath
+            : null;
 
         var asrDirectory = Path.Combine(supportDirectoryPath ?? AppSettings.SupportDirectory, "asr");
         var recognizer = new WhisperCppSpeechRecognizer(
@@ -4508,6 +4521,7 @@ public static class LocalAsrGeneratorFactory
             Path.Combine(asrDirectory, "work"),
             recognizer,
             modelId,
+            usableVadModelPath,
             (videoPath, languageCode) => AsrPromptBuilder.DefaultPrompt(
                 videoPath,
                 languageCode,
@@ -4595,9 +4609,10 @@ public sealed record WhisperCppCommandPlan
         }
 
         if (request.VadEnabled
-            && WhisperCppVADModelLocator.Locate(runtime) is { } vadModelPath)
+            && !string.IsNullOrWhiteSpace(request.VadModelPath)
+            && File.Exists(request.VadModelPath))
         {
-            arguments.AddRange(["--vad", "--vad-model", vadModelPath]);
+            arguments.AddRange(["--vad", "-vm", request.VadModelPath]);
         }
 
         // DTW token timestamps need full JSON token output, a known preset, and flash attention
@@ -4643,87 +4658,6 @@ public sealed record WhisperCppCommandPlan
         var fileName = Path.GetFileNameWithoutExtension(path);
         return string.IsNullOrEmpty(directory) ? fileName : Path.Combine(directory, fileName);
     }
-}
-
-public static class WhisperCppVADModelLocator
-{
-    public static readonly IReadOnlyList<string> CandidateFileNames =
-    [
-        "ggml-silero-v5.1.2.bin",
-        "ggml-silero-vad-v5.1.2.bin",
-        "silero-vad-v5.1.2.bin",
-    ];
-
-    public static string? Locate(AsrRuntimeInfo runtime, IReadOnlyList<string>? extraSearchPaths = null)
-    {
-        foreach (var directory in CandidateDirectories(runtime, extraSearchPaths))
-        {
-            foreach (var name in CandidateFileNames)
-            {
-                var path = Path.Combine(directory, name);
-                if (File.Exists(path)) return path;
-            }
-        }
-        return null;
-    }
-
-    public static IReadOnlyList<string> CandidateDirectories(
-        AsrRuntimeInfo runtime,
-        IReadOnlyList<string>? extraSearchPaths = null)
-    {
-        var directories = new List<string>();
-        var seen = new HashSet<string>(PathComparer);
-
-        void Append(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path)) return;
-            string normalized;
-            try
-            {
-                normalized = NormalizeDirectoryPath(path);
-            }
-            catch
-            {
-                return;
-            }
-            if (seen.Add(normalized)) directories.Add(normalized);
-        }
-
-        var executableDirectory = Path.GetDirectoryName(runtime.ExecutablePath);
-        var runtimeRoot = string.Equals(
-            Path.GetFileName(executableDirectory),
-            "bin",
-            StringComparison.OrdinalIgnoreCase)
-            ? Path.GetDirectoryName(executableDirectory)
-            : executableDirectory;
-
-        Append(executableDirectory);
-        Append(runtimeRoot);
-        Append(runtimeRoot is null ? null : Path.Combine(runtimeRoot, "models"));
-        Append(runtimeRoot is null ? null : Path.Combine(runtimeRoot, "vad"));
-        Append(Path.Combine(AppSettings.SupportDirectory, "asr", "vad"));
-
-        if (extraSearchPaths is not null)
-        {
-            foreach (var path in extraSearchPaths) Append(path);
-        }
-        return directories;
-    }
-
-    private static string NormalizeDirectoryPath(string path)
-    {
-        var fullPath = Path.GetFullPath(path);
-        var root = Path.GetPathRoot(fullPath);
-        return string.Equals(fullPath, root, PathComparison)
-            ? fullPath
-            : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-    }
-
-    private static StringComparison PathComparison =>
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
-    private static StringComparer PathComparer =>
-        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 }
 
 /// <summary>

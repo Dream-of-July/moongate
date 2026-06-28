@@ -1042,6 +1042,18 @@ final class ASRContractsTests: XCTestCase {
         let requestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
         XCTAssertEqual(requestObject["audioPath"] as? String, "/tmp/moongate/audio.wav")
         XCTAssertFalse(requestJSON.contains("audioUrl"))
+        let vadRequest = ASRRequest(
+            audioURL: URL(fileURLWithPath: "/tmp/moongate/audio.wav"),
+            languageCode: "ja",
+            modelID: "whisper.cpp:base",
+            vadEnabled: true,
+            vadModelPath: " /tmp/moongate/vad.bin\n",
+            cacheKey: "wire-vad"
+        )
+        let vadRequestData = try encoder.encode(vadRequest)
+        let vadRequestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: vadRequestData) as? [String: Any])
+        XCTAssertEqual(vadRequestObject["vadModelPath"] as? String, "/tmp/moongate/vad.bin")
+        XCTAssertEqual(vadRequest.vadModelPath, "/tmp/moongate/vad.bin")
         XCTAssertEqual(request, try decoder.decode(ASRRequest.self, from: Data("""
         {
           "audioUrl": "file:///tmp/moongate/audio.wav",
@@ -1052,6 +1064,7 @@ final class ASRContractsTests: XCTestCase {
           "cacheKey": "wire"
         }
         """.utf8)))
+        XCTAssertNil(request.vadModelPath)
 
         let runtime = ASRRuntimeInfo(executableURL: URL(fileURLWithPath: "/opt/moongate/whisper-cli"))
         let runtimeData = try encoder.encode(runtime)
@@ -1473,7 +1486,7 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(plan.arguments.contains("auto"))
     }
 
-    func testWhisperCppCommandPlanUsesVADOnlyWhenSileroModelExists() throws {
+    func testWhisperCppCommandPlanUsesVADOnlyWithExplicitExistingModelPath() throws {
         let fm = FileManager.default
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("moongate-vad-plan-\(UUID().uuidString)", isDirectory: true)
@@ -1500,21 +1513,52 @@ final class ASRContractsTests: XCTestCase {
             outputBaseURL: directory.appendingPathComponent("missing")
         )
         XCTAssertFalse(missingPlan.arguments.contains("--vad"))
-        XCTAssertFalse(missingPlan.arguments.contains("--vad-model"))
+        XCTAssertFalse(missingPlan.arguments.contains("-vm"))
 
         let vadModel = runtimeDirectory.appendingPathComponent("ggml-silero-v5.1.2.bin")
         try Data("fake vad model".utf8).write(to: vadModel)
-        let readyPlan = WhisperCppCommandPlan(
+        let implicitLocatorPlan = WhisperCppCommandPlan(
             runtime: ASRRuntimeInfo(executableURL: runtimeURL),
             modelURL: model,
             request: request,
+            outputBaseURL: directory.appendingPathComponent("implicit")
+        )
+        XCTAssertFalse(implicitLocatorPlan.arguments.contains("--vad"))
+        XCTAssertFalse(implicitLocatorPlan.arguments.contains("-vm"))
+
+        let readyPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: ASRRequest(
+                audioURL: audio,
+                languageCode: "ja",
+                modelID: "whisper.cpp:small",
+                vadEnabled: true,
+                vadModelPath: vadModel.path
+            ),
             outputBaseURL: directory.appendingPathComponent("ready")
         )
         XCTAssertTrue(readyPlan.arguments.contains("--vad"))
         XCTAssertEqual(
-            argumentValue(after: "--vad-model", in: readyPlan.arguments),
+            argumentValue(after: "-vm", in: readyPlan.arguments),
             vadModel.path
         )
+        XCTAssertFalse(readyPlan.arguments.contains("--vad-model"))
+
+        let missingExplicitPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: ASRRequest(
+                audioURL: audio,
+                languageCode: "ja",
+                modelID: "whisper.cpp:small",
+                vadEnabled: true,
+                vadModelPath: runtimeDirectory.appendingPathComponent("missing-vad.bin").path
+            ),
+            outputBaseURL: directory.appendingPathComponent("missing-explicit")
+        )
+        XCTAssertFalse(missingExplicitPlan.arguments.contains("--vad"))
+        XCTAssertFalse(missingExplicitPlan.arguments.contains("-vm"))
 
         let disabledPlan = WhisperCppCommandPlan(
             runtime: ASRRuntimeInfo(executableURL: runtimeURL),
@@ -1523,12 +1567,13 @@ final class ASRContractsTests: XCTestCase {
                 audioURL: audio,
                 languageCode: "ja",
                 modelID: "whisper.cpp:small",
-                vadEnabled: false
+                vadEnabled: false,
+                vadModelPath: vadModel.path
             ),
             outputBaseURL: directory.appendingPathComponent("disabled")
         )
         XCTAssertFalse(disabledPlan.arguments.contains("--vad"))
-        XCTAssertFalse(disabledPlan.arguments.contains("--vad-model"))
+        XCTAssertFalse(disabledPlan.arguments.contains("-vm"))
     }
 
     func testDefaultLocalASRPromptOmitsLanguageHintForAutoDetect() {

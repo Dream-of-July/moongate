@@ -395,6 +395,7 @@ public class SettingsTests
         Assert.False(fresh.LocalAsrPreciseModeEnabled);
         Assert.Equal("", fresh.LocalAsrSidecarRuntimePath);
         Assert.Equal("", fresh.LocalAsrSidecarModelPath);
+        Assert.Equal("", fresh.LocalAsrVadModelPath);
         Assert.False(fresh.IsLocalAsrSidecarConfigured);
 
         var settings = new AppSettings
@@ -406,6 +407,7 @@ public class SettingsTests
             LocalAsrPreciseModeEnabled = true,
             LocalAsrSidecarRuntimePath = " C:\\Tools\\faster-whisper-sidecar.exe\n",
             LocalAsrSidecarModelPath = "\nC:\\Models\\faster-whisper-small ",
+            LocalAsrVadModelPath = " C:\\Models\\ggml-silero-vad-v5.1.2.bin\n",
         };
         var back = AppSettings.FromJson(settings.ToJson());
         Assert.True(back.LocalAsrEnabled);
@@ -415,6 +417,7 @@ public class SettingsTests
         Assert.True(back.LocalAsrPreciseModeEnabled);
         Assert.Equal("C:\\Tools\\faster-whisper-sidecar.exe", back.LocalAsrSidecarRuntimePath);
         Assert.Equal("C:\\Models\\faster-whisper-small", back.LocalAsrSidecarModelPath);
+        Assert.Equal("C:\\Models\\ggml-silero-vad-v5.1.2.bin", back.LocalAsrVadModelPath);
         Assert.True(back.IsLocalAsrSidecarConfigured);
         var json = settings.ToJson();
         Assert.Contains("\"localASREnabled\"", json, StringComparison.Ordinal);
@@ -424,6 +427,7 @@ public class SettingsTests
         Assert.Contains("\"localASRPreciseModeEnabled\"", json, StringComparison.Ordinal);
         Assert.Contains("\"localASRSidecarRuntimePath\"", json, StringComparison.Ordinal);
         Assert.Contains("\"localASRSidecarModelPath\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"localASRVADModelPath\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

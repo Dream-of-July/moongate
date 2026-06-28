@@ -142,6 +142,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDevelopmentRegion</key>      <string>zh_CN</string>
     <key>CFBundleExecutable</key>             <string>Moongate</string>
     <key>CFBundleIdentifier</key>             <string>com.moongate.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>  <string>6.0</string>
     <key>CFBundleName</key>                   <string>月之门</string>
     <key>CFBundleDisplayName</key>            <string>月之门</string>
     <key>CFBundleIconFile</key>               <string>月之门</string>
@@ -152,6 +153,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key>         <string>14.0</string>
     <key>LSApplicationCategoryType</key>      <string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key>        <true/>
+    <key>NSPrincipalClass</key>               <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>       <string>MIT License</string>
     <key>SUFeedURL</key>                      <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>                  <string>$SPARKLE_PUBLIC_ED_KEY</string>
@@ -162,6 +164,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+printf 'APPL????' > "$TMP_APP/Contents/PkgInfo"
 
 echo "==> ad-hoc 签名"
 codesign --force --deep --sign - "$TMP_APP/Contents/Frameworks/Sparkle.framework"

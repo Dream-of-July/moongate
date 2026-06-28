@@ -161,8 +161,8 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneGeneral, language: .en), "General")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneSubtitles, language: .en), "Subtitles & Translation")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneSubtitles, language: .zhHans), "字幕与翻译")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.paneLocalSpeech, language: .en), "Local Speech Recognition")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.paneLocalSpeech, language: .zhHant), "本機語音識別")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.paneLocalSpeech, language: .en), "Subtitle Recognition")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.paneLocalSpeech, language: .zhHant), "字幕識別")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneAIServices, language: .en), "AI Services")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneVideoOutput, language: .en), "Video & Output")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.paneSiteLogin, language: .en), "Site Login")
@@ -171,21 +171,44 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.performanceSection, language: .en), "Performance")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.notificationsSection, language: .zhHans), "完成提醒")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.completionSound, language: .zhHant), "佇列完成時播放提示音")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSection, language: .en), "Local speech recognition")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRHelp, language: .zhHans), "当平台字幕质量较差时自动补充识别，速度更慢，但部分语言/专名可能更好。Moongate 不会自动下载模型。")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSection, language: .en), "Subtitle recognition")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRHelp, language: .zhHans), "当平台字幕质量较低或不可用时，Moongate 可以在本机生成字幕。")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.subtitleRecognitionAutomatic, language: .zhHans), "自动（推荐）")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localRecognitionQualityAccurate, language: .en), "More accurate")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.offlineRecognitionComponent, language: .zhHant), "離線字幕識別")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.subtitleRecognitionAdvanced, language: .en), "Advanced")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRRepairSetup, language: .zhHans), "修复/配置")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupReady, language: .zhHans), "本地 Whisper 已就绪")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupMissingRuntime, language: .en), "whisper-cli is not configured")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupMissingModel, language: .zhHant), "選擇一個 Whisper 模型")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSetupRepair, language: .zhHans), "修复")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASROptionalNotConfigured, language: .zhHans), "可选能力未配置")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADReady, language: .zhHans), "VAD 已可用，会在本地识别时切分语音段")
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADMissing, language: .en), "VAD model is not installed; local recognition will use the standard path.")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADReady, language: .zhHans), "语音边界检测包已安装")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADMissing, language: .en), "Voice boundary detection package is not installed; standard recognition will be used.")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADImport, language: .zhHans), "导入语音边界检测包…")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRVADDelete, language: .zhHant), "刪除語音邊界偵測包")
+        XCTAssertEqual(
+            LocalizedStrings.format(L.Settings.localASRVADImportComplete, language: .en, ["ggml-silero-vad.bin"]),
+            "Voice boundary package imported: ggml-silero-vad.bin"
+        )
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRImportModel, language: .zhHans), "导入模型…")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRImportedModelBadge, language: .zhHant), "已匯入")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRModelCapabilityTurbo, language: .en), "higher quality for high-memory Macs")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.localASRSidecarTest, language: .zhHans), "测试程序")
+        XCTAssertEqual(
+            LocalizedStrings.string(L.Settings.localASRSidecarTestReady, language: .zhHant),
+            "自訂識別程式已通過本機檢查。"
+        )
+        XCTAssertEqual(
+            LocalizedStrings.string(L.Settings.localASRSidecarTestRuntimeUnavailable, language: .en),
+            "The custom recognition program is not executable."
+        )
         XCTAssertEqual(LocalizedStrings.string(L.Settings.cloudASRSection, language: .en), "Cloud precise recognition")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.cloudASREnabled, language: .zhHans), "允许使用云端精准识别")
+        XCTAssertEqual(
+            LocalizedStrings.string(L.Settings.cloudASRExperimentalHelp, language: .zhHans),
+            "实验功能。只有当你明确选择云端识别时，才会把音频发送到你配置的服务商。"
+        )
         XCTAssertEqual(LocalizedStrings.string(L.Settings.cloudASRConsentAccepted, language: .zhHant), "我理解會上傳音訊並可能產生 API 費用")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.cloudASRModel, language: .en), "Transcription model")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.cloudASRReady, language: .zhHans), "云端精准识别已就绪")
@@ -229,9 +252,12 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Onboarding.translationMethodStep, language: .zhHant), "翻譯方式")
         XCTAssertEqual(LocalizedStrings.string(L.Onboarding.translationProvider, language: .en), "Translation service type")
         XCTAssertEqual(LocalizedStrings.string(L.Onboarding.readinessSummary, language: .zhHans), "准备状态摘要")
-        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.localSpeechSetupLater, language: .zhHans), "本地 whisper.cpp 会重新识别音频，速度更慢，但部分语言/专名可能更好；runtime 和模型仍需之后明确配置。")
-        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.configureLocalSpeechOptional, language: .zhHans), "配置本地 Whisper")
-        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.localSpeechOptionalDependencyHint, language: .en), "Optional. Downloads and platform subtitle translation work without it.")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.requiredComponentsTitle, language: .zhHans), "必需组件")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.recommendedComponentsTitle, language: .en), "Recommended components")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.optionalComponentsTitle, language: .zhHant), "可選進階元件")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.localSpeechSetupLater, language: .zhHans), "不会在未确认的情况下下载识别组件；你可以之后在“组件与存储”里安装。")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.configureLocalSpeechOptional, language: .zhHans), "管理识别组件")
+        XCTAssertEqual(LocalizedStrings.string(L.Onboarding.localSpeechOptionalDependencyHint, language: .en), "Recommended. Platform subtitles still work without it.")
         XCTAssertEqual(LocalizedStrings.string(L.Onboarding.next, language: .en), "Next")
         XCTAssertEqual(
             LocalizedStrings.format(L.App.abortRunningTasks, language: .en, [2]),
