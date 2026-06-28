@@ -349,9 +349,7 @@ public sealed record SubtitleLanguageChoice
     /// </summary>
     public static string NormalizedLanguageCode(string code)
     {
-        var lower = code.ToLowerInvariant();
-        var dash = lower.IndexOf('-');
-        return dash >= 0 ? lower[..dash] : lower;
+        return LanguageCatalog.Normalize(code);
     }
 
     /// <summary>Sort rank for technical tracks within a language group.</summary>

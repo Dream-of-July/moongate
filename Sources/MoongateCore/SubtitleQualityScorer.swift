@@ -3,7 +3,7 @@ import Foundation
 public enum SubtitleQualityScorer {
     public static func score(
         candidate: SubtitleSourceCandidate,
-        requestedLanguageCode: String?,
+        requestedSourceLanguageCode: String?,
         videoDurationSeconds: Double?
     ) -> SubtitleSourceScore {
         guard let url = candidate.fileURL else {
@@ -12,9 +12,9 @@ public enum SubtitleQualityScorer {
                 candidateID: candidate.id,
                 kind: candidate.kind,
                 languageCode: normalizedLanguage(candidate.languageCode),
-                score: localGenerated ? 45 : 0,
-                verdict: localGenerated ? .usable : .unusable,
-                reasons: localGenerated ? ["notGeneratedYet"] : ["missingFile"],
+                score: 0,
+                verdict: .unusable,
+                reasons: [localGenerated ? "pendingGeneration" : "missingFile"],
                 report: nil
             )
         }
@@ -22,14 +22,14 @@ public enum SubtitleQualityScorer {
         let cues = loadCues(from: url)
         let gate = PlatformSubtitleQualityGate.assess(
             cues: cues.cleaned,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: candidate.languageCode,
+            requestedSourceLanguageCode: requestedSourceLanguageCode,
+            candidateLanguageCode: candidate.languageCode,
             videoDurationSeconds: videoDurationSeconds
         )
         let rawReport = PlatformSubtitleQualityGate.qualityReport(
             cues: cues.raw,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: candidate.languageCode
+            requestedSourceLanguageCode: requestedSourceLanguageCode,
+            candidateLanguageCode: candidate.languageCode
         )
         let report = diagnosticReport(cleaned: gate.report, raw: rawReport)
         let extraReasons = contentReasons(cues.raw)
@@ -57,8 +57,7 @@ public enum SubtitleQualityScorer {
         value -= min(20, report.badScalarRatio * 200)
         value -= min(18, report.romanizedLoopTokenRatio * 40)
 
-        if extraReasons.contains("hallucinationLikePhrase") { value -= 45 }
-        if extraReasons.contains("shortCueFragmentation") { value -= 16 }
+        if extraReasons.contains("shortCueFragmentation") { value -= 30 }
         reasons.append(contentsOf: extraReasons)
 
         let clamped = min(100, max(0, value))
@@ -167,27 +166,14 @@ public enum SubtitleQualityScorer {
     private static func contentReasons(_ cues: [SubtitleCue]) -> [String] {
         var reasons: [String] = []
         let texts = cues.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let joined = texts.joined(separator: "\n")
-        let hallucinationLikePhrases = [
-            "世界の銀行が崩れた",
-            "冥府より現れしいお酒",
-            "偉いドクネストレード",
-            "ドクネストレード"
-        ]
-        if hallucinationLikePhrases.contains(where: { joined.contains($0) }) {
-            reasons.append("hallucinationLikePhrase")
-        }
-
         let cjkShortCueCount = texts.filter { text in
             let visibleCount = text.unicodeScalars.filter { !$0.properties.isWhitespace }.count
             return visibleCount > 0
                 && visibleCount <= 6
                 && text.unicodeScalars.contains(where: isCJKScalar)
         }.count
-        let knownFragmentLikePhrases = ["チョコナナナ", "くじ引き野郎", "ソスせんべい", "あいい行く"]
-        let hasKnownFragments = knownFragmentLikePhrases.contains { joined.contains($0) }
         if !texts.isEmpty,
-           Double(cjkShortCueCount) / Double(texts.count) >= 0.35 || hasKnownFragments {
+           Double(cjkShortCueCount) / Double(texts.count) >= 0.35 {
             reasons.append("shortCueFragmentation")
         }
         return reasons

@@ -1553,17 +1553,34 @@ final class QueueManager: ObservableObject {
 
         // Platform auto-caption: assess intrinsic usability.
         let verdict = Self.assessPlatformSubtitle(
-            fileURL: pickedSource, requestedLanguageCode: preferredLang, info: info)
+            fileURL: pickedSource, requestedSourceLanguageCode: preferredLang, info: info)
+        let platformCandidate = candidate(
+            kind: .platformAuto,
+            fileURL: pickedSource,
+            displayName: primarySubtitleTrack?.label,
+            provider: primarySubtitleTrack?.provider
+        )
+        let platformScore = SubtitleQualityScorer.score(
+            candidate: platformCandidate,
+            requestedSourceLanguageCode: preferredLang,
+            videoDurationSeconds: videoDurationSeconds
+        )
         let shouldCompareLocalASR = request.subtitleSourcePolicy == .compareLocalASR
-        if verdict.usable && !shouldCompareLocalASR {
+        let shouldGenerateLocalASR: Bool
+        if shouldCompareLocalASR {
+            shouldGenerateLocalASR = true
+        } else if request.subtitleSourcePolicy == .autoBest {
+            shouldGenerateLocalASR = platformScore.verdict < .good
+        } else {
+            shouldGenerateLocalASR = !verdict.usable
+        }
+        if !shouldGenerateLocalASR {
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
                 resolved: resolvedSource(
                     selectedFile: pickedSource,
                     selectedKind: .platformAuto,
-                    candidates: [
-                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
-                    ]),
+                    candidates: [platformCandidate]),
                 note: nil)
         }
 
@@ -1578,11 +1595,9 @@ final class QueueManager: ObservableObject {
                 resolved: resolvedSource(
                     selectedFile: pickedSource,
                     selectedKind: .platformAuto,
-                    candidates: [
-                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
-                    ],
+                    candidates: [platformCandidate],
                     fallbackReasons: verdict.reasons),
-                note: verdict.usable
+                note: verdict.usable && platformScore.verdict >= .usable
                     ? CoreL10n.t(L.Queue.subtitleSourceCompareLocalASRUnavailable)
                     : CoreL10n.t(L.Queue.subtitleSourceLowQualityEnableLocalASR))
         }
@@ -1621,7 +1636,7 @@ final class QueueManager: ObservableObject {
             $0.postDownloadProcessingKind = nil
         }
         let resolved = resolverResult(candidates: [
-            candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label),
+            platformCandidate,
             candidate(kind: .localASR, fileURL: sourceSRT, provider: "whisper.cpp")
         ])
         let selectedKind = resolved?.selectedKind ?? .localASR
@@ -1645,13 +1660,13 @@ final class QueueManager: ObservableObject {
     /// Parses an auto-caption file and runs the quality gate against it.
     private static func assessPlatformSubtitle(
         fileURL: URL,
-        requestedLanguageCode: String?,
+        requestedSourceLanguageCode: String?,
         info: VideoInfo
     ) -> PlatformSubtitleQualityGate.Verdict {
         PlatformSubtitleQualityGate.assess(
             subtitleFileURL: fileURL,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: langCode(of: fileURL),
+            requestedSourceLanguageCode: requestedSourceLanguageCode,
+            candidateLanguageCode: langCode(of: fileURL),
             videoDurationSeconds: PlatformSubtitleQualityGate.parseDurationSeconds(info.durationText))
     }
 

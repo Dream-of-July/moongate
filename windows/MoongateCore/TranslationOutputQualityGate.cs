@@ -36,6 +36,11 @@ public static class TranslationOutputQualityGate
             return new TranslationOutputQualityVerdict(true, [], EmptyReport);
         }
 
+        if (sourceScript.Kind == ScriptKind.Latin)
+        {
+            return AssessLatinSourceForChineseTarget(lines, sourceScript);
+        }
+
         var visibleScalarCount = 0;
         var sourceScriptScalarCount = 0;
         var affectedLineCount = 0;
@@ -73,6 +78,56 @@ public static class TranslationOutputQualityGate
             : new TranslationOutputQualityVerdict(true, [], report);
     }
 
+    private static TranslationOutputQualityVerdict AssessLatinSourceForChineseTarget(
+        IReadOnlyList<string> lines,
+        SourceScript sourceScript)
+    {
+        var visibleScalarCount = 0;
+        var sourceScriptScalarCount = 0;
+        var affectedLineCount = 0;
+        var affectedLatinWordCount = 0;
+
+        foreach (var line in lines)
+        {
+            var lineVisible = 0;
+            var lineSource = 0;
+            var lineTarget = 0;
+            foreach (var rune in line.EnumerateRunes())
+            {
+                if (!IsVisibleRune(rune)) continue;
+                lineVisible++;
+                if (sourceScript.Contains(rune)) lineSource++;
+                if (IsHanRune(rune)) lineTarget++;
+            }
+            if (lineVisible == 0) continue;
+            visibleScalarCount += lineVisible;
+            sourceScriptScalarCount += lineSource;
+
+            var latinWords = LatinWordCount(line);
+            var targetRatio = (double)lineTarget / lineVisible;
+            var looksLikeUntranslatedEnglishLine = latinWords >= 5
+                && lineSource >= 18
+                && lineTarget < 2
+                && targetRatio < 0.10;
+            if (looksLikeUntranslatedEnglishLine)
+            {
+                affectedLineCount++;
+                affectedLatinWordCount += latinWords;
+            }
+        }
+
+        var ratio = visibleScalarCount == 0 ? 0 : (double)sourceScriptScalarCount / visibleScalarCount;
+        var report = new TranslationOutputQualityReport(
+            visibleScalarCount,
+            sourceScriptScalarCount,
+            ratio,
+            affectedLineCount);
+        var leaking = affectedLineCount >= 2 || affectedLatinWordCount >= 10;
+        return leaking
+            ? new TranslationOutputQualityVerdict(false, [TranslationOutputQualityReason.SourceLanguageLeakage], report)
+            : new TranslationOutputQualityVerdict(true, [], report);
+    }
+
     private static TranslationOutputQualityReport EmptyReport { get; } = new(0, 0, 0, 0);
 
     private static bool IsVisibleRune(Rune rune)
@@ -95,6 +150,36 @@ public static class TranslationOutputQualityGate
             or UnicodeCategory.CurrencySymbol
             or UnicodeCategory.ModifierSymbol
             or UnicodeCategory.OtherSymbol);
+    }
+
+    private static bool IsHanRune(Rune rune) => rune.Value is >= 0x3400 and <= 0x4DBF
+        or >= 0x4E00 and <= 0x9FFF
+        or >= 0xF900 and <= 0xFAFF
+        or >= 0x20000 and <= 0x2FA1F;
+
+    private static int LatinWordCount(string line)
+    {
+        var count = 0;
+        var inWord = false;
+        foreach (var rune in line.EnumerateRunes())
+        {
+            var isLatin = rune.Value is >= 0x0041 and <= 0x005A
+                or >= 0x0061 and <= 0x007A
+                or >= 0x00C0 and <= 0x024F;
+            if (isLatin)
+            {
+                if (!inWord)
+                {
+                    count++;
+                    inWord = true;
+                }
+            }
+            else
+            {
+                inWord = false;
+            }
+        }
+        return count;
     }
 
     private enum ScriptKind

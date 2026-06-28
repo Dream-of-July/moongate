@@ -58,7 +58,7 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(result.recommended?.languageCode, "ja")
     }
 
-    func testTargetLanguageSubtitleWinsWhenAlreadyAvailable() {
+    func testTargetLanguageSubtitleDoesNotBecomeSourceLanguageRecommendation() {
         let groups = SubtitleLanguageChoice.aggregate([
             auto("ja"), manual("en"), manual("zh-Hans"),
             localASR("ja"), localASR("en"), localASR("zh-Hans")
@@ -68,9 +68,8 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
             languages: groups,
             targetLanguage: "zh-Hans"
         )
-        XCTAssertEqual(result.recommended?.languageCode, "zh")
-        XCTAssertEqual(result.recommended?.preferredTrack?.languageCode, "zh-Hans")
-        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .manual)
+        XCTAssertEqual(result.recommended?.languageCode, "ja")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .platformAuto)
     }
 
     func testPreferredSourceLanguageAddsLocalASRRecommendationWhenOnlyEnglishAutoCaptionsExist() {
@@ -99,7 +98,7 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .localASR)
     }
 
-    func testManualTargetSubtitleStillWinsOverPreferredSourceLanguage() {
+    func testPreferredSourceLanguageWinsOverManualTargetSubtitleForSourceRecommendation() {
         let groups = SubtitleLanguageChoice.aggregate([manual("zh-Hans"), auto("en"), localASR("ja", label: "日语")])
         let result = SubtitleLanguageRecommender.recommend(
             title: "【公式】TVアニメ 第55話",
@@ -108,8 +107,8 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
             preferredSourceLanguage: "ja"
         )
 
-        XCTAssertEqual(result.recommended?.languageCode, "zh")
-        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .manual)
+        XCTAssertEqual(result.recommended?.languageCode, "ja")
+        XCTAssertEqual(result.recommended?.preferredTrack?.sourceKind, .localASR)
     }
 
     func testLocalASRFallbackInfersJapaneseFromStrongTitleHint() {
@@ -187,6 +186,56 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertTrue(result.others.isEmpty)
     }
 
+    func testLanguageCatalogNormalizesAliasesAndMarksRareLanguages() {
+        XCTAssertEqual(LanguageCatalog.normalize("en-US"), "en")
+        XCTAssertEqual(LanguageCatalog.normalize("jpn"), "ja")
+        XCTAssertEqual(LanguageCatalog.normalize("ko-KR"), "ko")
+        XCTAssertEqual(LanguageCatalog.normalize("zh-CN"), "zh-Hans")
+        XCTAssertEqual(LanguageCatalog.normalize("zh-TW"), "zh-Hant")
+        XCTAssertEqual(LanguageCatalog.normalize("cmn"), "zh-Hans")
+        XCTAssertEqual(LanguageCatalog.normalize("iw"), "he")
+        XCTAssertEqual(LanguageCatalog.normalize("in"), "id")
+        XCTAssertEqual(LanguageCatalog.normalize("si"), "si")
+
+        XCTAssertFalse(LanguageCatalog.isRareLanguage("en"))
+        XCTAssertTrue(LanguageCatalog.isRareLanguage("si"))
+        XCTAssertEqual(LanguageCatalog.displayName(for: "si"), "Sinhala")
+        XCTAssertTrue(LanguageCatalog.search("英语").contains { $0.code == "en" })
+        XCTAssertTrue(LanguageCatalog.search("日本語").contains { $0.code == "ja" })
+        XCTAssertTrue(LanguageCatalog.search("zh-Hans").contains { $0.code == "zh-Hans" })
+    }
+
+    func testEnglishAutoTrackWinsOverRareSinhalaAutoTrack() {
+        let groups = SubtitleLanguageChoice.aggregate([auto("si", label: "Sinhala"), auto("en", label: "English")])
+        let recommendation = SubtitleLanguageRecommender.sourceRecommendation(
+            title: "The Weird Future Of User Interfaces",
+            languages: groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: nil
+        )
+
+        XCTAssertEqual(recommendation.code, "en")
+        XCTAssertEqual(recommendation.evidence, .platformAutoTrack)
+        XCTAssertEqual(recommendation.confidence, .medium)
+        XCTAssertFalse(recommendation.isRareLanguage)
+        XCTAssertTrue(recommendation.shouldAutoSelect)
+    }
+
+    func testLowConfidenceRareLanguageIsNotAutoSelected() {
+        let groups = SubtitleLanguageChoice.aggregate([auto("si", label: "Sinhala")])
+        let recommendation = SubtitleLanguageRecommender.sourceRecommendation(
+            title: "The Future of Interfaces",
+            languages: groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: nil
+        )
+
+        XCTAssertEqual(recommendation.code, "si")
+        XCTAssertEqual(recommendation.confidence, .low)
+        XCTAssertTrue(recommendation.isRareLanguage)
+        XCTAssertFalse(recommendation.shouldAutoSelect)
+    }
+
     // MARK: - Fixture contract (ARCH-3): scoring constants equal the shared cross-platform fixture.
 
     func testLanguageRecommenderConstantsMatchFixture() throws {
@@ -205,7 +254,6 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(SubtitleLanguageRecommender.latinScriptBonus, try intValue("latinScriptBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.cjkPresenceBonus, try intValue("cjkPresenceBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.platformAutoCJKPresenceBonus, try intValue("platformAutoCJKPresenceBonus"))
-        XCTAssertEqual(SubtitleLanguageRecommender.targetLanguageTrackScore, try intValue("targetLanguageTrackScore"))
         XCTAssertEqual(SubtitleLanguageRecommender.preferredSourceLanguageScore, try intValue("preferredSourceLanguageScore"))
         XCTAssertEqual(SubtitleLanguageRecommender.titleLanguageHintBonus, try intValue("titleLanguageHintBonus"))
         XCTAssertEqual(SubtitleLanguageRecommender.titleScriptDominanceRatio, try doubleValue("titleScriptDominanceRatio"))

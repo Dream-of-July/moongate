@@ -3131,70 +3131,81 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             cues = reseg
         }
 
-        // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
-        // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
         var output = cues
-        var chunkRanges: [Range<Int>] = []
-        var rangeStart = 0
-        while rangeStart < cues.count {
-            let upper = min(rangeStart + Self.chunkSize, cues.count)
-            chunkRanges.append(rangeStart..<upper)
-            rangeStart = upper
-        }
-        let maxInFlight = 3
-        var merged: [Int: String] = [:]
-        var completedCues = 0
-        let allCues = cues
-        try await withThrowingTaskGroup(of: (Range<Int>, [Int: String]).self) { group in
-            var nextChunk = 0
-            func scheduleNext() async throws {
-                guard nextChunk < chunkRanges.count else { return }
-                if Task.isCancelled { throw MoongateError.cancelled }
-                try await control?.gate()
-                let range = chunkRanges[nextChunk]
-                nextChunk += 1
-                group.addTask {
-                    let mapping = try await self.translateChunk(
-                        allCues[range],
-                        startNumber: range.lowerBound + 1,
-                        context: context,
-                        advice: advice,
-                        depth: 0
-                    )
-                    return (range, mapping)
+        func translateAllCues(advice passAdvice: TranslationPromptAdvice?) async throws -> [(text: String, usedSourceFallback: Bool)] {
+            // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
+            // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
+            var chunkRanges: [Range<Int>] = []
+            var rangeStart = 0
+            while rangeStart < cues.count {
+                let upper = min(rangeStart + Self.chunkSize, cues.count)
+                chunkRanges.append(rangeStart..<upper)
+                rangeStart = upper
+            }
+            let maxInFlight = 3
+            var merged: [Int: String] = [:]
+            var completedCues = 0
+            let allCues = cues
+            try await withThrowingTaskGroup(of: (Range<Int>, [Int: String]).self) { group in
+                var nextChunk = 0
+                func scheduleNext() async throws {
+                    guard nextChunk < chunkRanges.count else { return }
+                    if Task.isCancelled { throw MoongateError.cancelled }
+                    try await control?.gate()
+                    let range = chunkRanges[nextChunk]
+                    nextChunk += 1
+                    group.addTask {
+                        let mapping = try await self.translateChunk(
+                            allCues[range],
+                            startNumber: range.lowerBound + 1,
+                            context: context,
+                            advice: passAdvice,
+                            depth: 0
+                        )
+                        return (range, mapping)
+                    }
+                }
+                for _ in 0..<min(maxInFlight, chunkRanges.count) {
+                    try await scheduleNext()
+                }
+                while let (range, mapping) = try await group.next() {
+                    merged.merge(mapping) { _, new in new }
+                    completedCues += range.count
+                    progress(Double(completedCues) / Double(cues.count))
+                    try await scheduleNext()
                 }
             }
-            for _ in 0..<min(maxInFlight, chunkRanges.count) {
-                try await scheduleNext()
+            var translatedLines: [(text: String, usedSourceFallback: Bool)] = []
+            translatedLines.reserveCapacity(cues.count)
+            for cueIndex in 0..<cues.count {
+                let sourceText = cues[cueIndex].text
+                let rawChinese = merged[cueIndex + 1] ?? ""
+                let sanitizedChinese = Self.sanitizeTranslation(rawChinese)
+                let usedSourceFallback = sanitizedChinese.isEmpty
+                let chinese = usedSourceFallback ? sourceText : sanitizedChinese
+                guard !chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
+                }
+                translatedLines.append((text: chinese, usedSourceFallback: usedSourceFallback))
             }
-            while let (range, mapping) = try await group.next() {
-                merged.merge(mapping) { _, new in new }
-                completedCues += range.count
-                progress(Double(completedCues) / Double(cues.count))
-                try await scheduleNext()
-            }
-        }
-        var translatedLines: [(text: String, usedSourceFallback: Bool)] = []
-        translatedLines.reserveCapacity(cues.count)
-        for cueIndex in 0..<cues.count {
-            let sourceText = cues[cueIndex].text
-            let rawChinese = merged[cueIndex + 1] ?? ""
-            let sanitizedChinese = Self.sanitizeTranslation(rawChinese)
-            let usedSourceFallback = sanitizedChinese.isEmpty
-            let chinese = usedSourceFallback ? sourceText : sanitizedChinese
-            guard !chinese.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw MoongateError.translateFailed(TranslatorL10n.missingTranslatedLine)
-            }
-            translatedLines.append((text: chinese, usedSourceFallback: usedSourceFallback))
+            return translatedLines
         }
 
-        let translationQuality = TranslationOutputQualityGate.assess(
+        var translatedLines = try await translateAllCues(advice: advice)
+        var translationQuality = TranslationOutputQualityGate.assess(
             lines: translatedLines.map { $0.text },
             sourceLanguageCode: context.sourceLanguage,
             targetLanguageCode: context.targetLanguage
         )
-        guard translationQuality.usable else {
-            throw MoongateError.translateFailed(TranslatorL10n.translationOutputSourceLanguageLeakage)
+        if Self.shouldRetrySourceLanguageLeakage(translationQuality, context: context) {
+            translatedLines = try await translateAllCues(
+                advice: Self.sourceLeakageRetryAdvice(base: advice, context: context)
+            )
+            translationQuality = TranslationOutputQualityGate.assess(
+                lines: translatedLines.map { $0.text },
+                sourceLanguageCode: context.sourceLanguage,
+                targetLanguageCode: context.targetLanguage
+            )
         }
 
         for cueIndex in 0..<cues.count {
@@ -3290,8 +3301,8 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
     private static func isObviousCJKRomanizedGarbageCue(_ text: String) -> Bool {
         let tokens = PlatformSubtitleQualityGate.qualityReport(
             cues: [SubtitleCue(index: 1, start: "00:00:00,000", end: "00:00:01,000", text: text)],
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja"
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja"
         )
         guard tokens.cjkScalarRatio == 0, tokens.latinScalarRatio > 0 else { return false }
         let latinTokens = text
@@ -3491,6 +3502,43 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
             summary: summary,
             context: "本地 ASR 识别的 MV、歌曲或歌词字幕；按歌词行、乐句和副歌重复来理解。",
             preset: .songLyrics
+        )
+    }
+
+    private static func shouldRetrySourceLanguageLeakage(
+        _ verdict: TranslationOutputQualityGate.Verdict,
+        context: TranslationContext
+    ) -> Bool {
+        guard !verdict.usable,
+              verdict.reasons.contains(.sourceLanguageLeakage),
+              TranslationLanguage.normalizedScript(context.targetLanguage).hasPrefix("zh") else {
+            return false
+        }
+        return !TranslationLanguage.normalizedScript(context.sourceLanguage ?? "").isEmpty
+    }
+
+    private static func sourceLeakageRetryAdvice(
+        base: TranslationPromptAdvice?,
+        context: TranslationContext
+    ) -> TranslationPromptAdvice {
+        let note = "上一次输出仍保留了较多源语言整句或大片段。请把完整句子翻成\(context.targetLanguageDisplayName)；品牌名、产品名、模型名、UI、API、ChatGPT 等短术语可以保留原文，但不能整句照抄源字幕。"
+        if let base {
+            return TranslationPromptAdvice(
+                summary: base.summary.isEmpty ? "重试翻译" : base.summary,
+                context: base.context,
+                terms: base.terms,
+                preset: base.preset,
+                sourceLanguageCode: base.sourceLanguageCode,
+                characters: base.characters,
+                translationNotes: base.translationNotes + [note]
+            )
+        }
+        return TranslationPromptAdvice(
+            summary: "重试翻译",
+            context: "上一轮翻译质量检查发现仍有源语言整句残留。",
+            preset: .general,
+            sourceLanguageCode: context.sourceLanguage ?? "unknown",
+            translationNotes: [note]
         )
     }
 

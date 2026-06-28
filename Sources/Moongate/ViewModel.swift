@@ -99,6 +99,7 @@ final class ViewModel: ObservableObject {
     @Published var importedSubtitleFileURL: URL?
     /// Ready 页语言区是否展开（默认折叠：只显示推荐语言，展开后才显示其他语言与来源细节）。
     @Published var languageSectionExpanded: Bool = false
+    @Published var showSourceLanguagePicker: Bool = false
     /// Ready 页单视频原声语言偏好。默认跟随全局设置；只影响当前选档页。
     @Published var readySourceLanguagePreference: String = "auto"
     var readySourceLanguageIntent: SourceLanguageIntent {
@@ -862,7 +863,9 @@ final class ViewModel: ObservableObject {
     }
 
     func effectiveSourceLanguagePreference(for info: VideoInfo) -> String {
-        let preferred = AppSettings.normalizedPreferredSourceLanguage(readySourceLanguagePreference)
+        let preferred = readySourceLanguagePreference.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "auto"
+            ? "auto"
+            : LanguageCatalog.normalize(readySourceLanguagePreference)
         if preferred != "auto" {
             return preferred
         }
@@ -996,15 +999,17 @@ final class ViewModel: ObservableObject {
 
     static let sourceLanguagePreferenceOptions: [SourceLanguagePreferenceOption] = [
         SourceLanguagePreferenceOption(code: "auto"),
-        SourceLanguagePreferenceOption(code: "ja"),
         SourceLanguagePreferenceOption(code: "en"),
-        SourceLanguagePreferenceOption(code: "ko"),
+        SourceLanguagePreferenceOption(code: "ja"),
         SourceLanguagePreferenceOption(code: "zh-Hans"),
+        SourceLanguagePreferenceOption(code: "ko"),
         SourceLanguagePreferenceOption(code: "yue"),
     ]
 
     static func sourceLanguageIntent(from preference: String) -> SourceLanguageIntent {
-        let normalized = AppSettings.normalizedPreferredSourceLanguage(preference)
+        let normalized = preference.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "auto"
+            ? "auto"
+            : LanguageCatalog.normalize(preference)
         return normalized == "auto" ? .automatic : .language(normalized)
     }
 
@@ -1013,7 +1018,7 @@ final class ViewModel: ObservableObject {
         case .automatic:
             return "auto"
         case .language(let code):
-            return AppSettings.normalizedPreferredSourceLanguage(code)
+            return LanguageCatalog.normalize(code)
         }
     }
 
@@ -1025,6 +1030,15 @@ final class ViewModel: ObservableObject {
     /// Deterministic recommendation (recommended language + the rest), driven by title + tracks.
     func languageRecommendation(for info: VideoInfo) -> SubtitleLanguageRecommender.Result {
         SubtitleLanguageRecommender.recommend(
+            title: info.title,
+            languages: availableLanguageChoices(for: info),
+            targetLanguage: settings.translationTargetLanguage,
+            preferredSourceLanguage: effectiveSourceLanguagePreference(for: info)
+        )
+    }
+
+    func sourceLanguageRecommendation(for info: VideoInfo) -> SubtitleLanguageRecommender.SourceLanguageRecommendation {
+        SubtitleLanguageRecommender.sourceRecommendation(
             title: info.title,
             languages: availableLanguageChoices(for: info),
             targetLanguage: settings.translationTargetLanguage,
@@ -1054,6 +1068,24 @@ final class ViewModel: ObservableObject {
     func selectLanguage(_ language: SubtitleLanguageChoice) {
         guard let track = language.preferredTrack else { return }
         primarySubtitleTrackID = track.id
+    }
+
+    func setReadySourceLanguagePreference(_ code: String, for info: VideoInfo) {
+        readySourceLanguagePreference = code
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "auto"
+            ? "auto"
+            : LanguageCatalog.normalize(code)
+        if normalized == "auto" {
+            if let recommended = recommendedLanguage(for: info) {
+                selectLanguage(recommended)
+            }
+            return
+        }
+        if let selected = availableLanguageChoices(for: info).first(where: { $0.languageCode == normalized }) {
+            selectLanguage(selected)
+        } else {
+            ensureSubtitleSourceSelected(for: info)
+        }
     }
 
     func openSettings(paneID: String? = nil) {

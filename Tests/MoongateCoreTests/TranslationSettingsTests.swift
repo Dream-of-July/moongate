@@ -601,6 +601,20 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertFalse(leakedEnglish.usable)
         XCTAssertTrue(leakedEnglish.reasons.contains(.sourceLanguageLeakage))
+
+        let technicalChinese = TranslationOutputQualityGate.assess(
+            lines: [
+                "这期讲 UI 的 Weird Future，以及 user interfaces 为什么会变得更像 AI agent",
+                "我们会看到 Starbucks、ChatGPT plugin、URL、API 和 Figma 如何影响 interface pattern"
+            ],
+            sourceLanguageCode: "en",
+            targetLanguageCode: "zh-Hans"
+        )
+
+        XCTAssertTrue(
+            technicalChinese.usable,
+            "英文科技视频的正常中文译文会保留产品名和 UI/API 术语，不能按拉丁字母比例误判失败。"
+        )
     }
 
     func testSmartTranslationAdviceNormalizesSourceLanguageAndCapsLists() throws {

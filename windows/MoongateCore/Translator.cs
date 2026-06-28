@@ -3077,92 +3077,99 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
                 ct).ConfigureAwait(false);
             cues = reseg;
         }
-        // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
-        // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
-        var chunkRanges = new List<(int Start, int Count)>();
-        var rangeStart = 0;
-        while (rangeStart < cues.Count)
+        async Task<List<(string Text, bool UsedSourceFallback)>> TranslateAllCuesAsync(TranslationPromptAdvice? passAdvice)
         {
-            var upper = Math.Min(rangeStart + ChunkSize, cues.Count);
-            chunkRanges.Add((rangeStart, upper - rangeStart));
-            rangeStart = upper;
-        }
-
-        var merged = new Dictionary<int, string>();
-        var completedCues = 0;
-        // 某块失败时取消兄弟块（等价 Swift TaskGroup 的隐式取消），避免白白烧 token。
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var inFlight = new List<Task<((int Start, int Count) Range, Dictionary<int, string> Map)>>();
-        var nextChunk = 0;
-
-        async Task ScheduleNextAsync()
-        {
-            if (nextChunk >= chunkRanges.Count) return;
-            ct.ThrowIfCancellationRequested();
-            if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
-            var range = chunkRanges[nextChunk];
-            nextChunk++;
-            var token = linked.Token;
-            inFlight.Add(Task.Run(async () =>
+            // 分块并行请求（最多 3 个在途）：编号用全局序号（1 起），回贴与完成顺序无关。
+            // 每调度一个新块前过一次 gate（暂停挂起 / 取消抛出）；在途块自然跑完。
+            var chunkRanges = new List<(int Start, int Count)>();
+            var rangeStart = 0;
+            while (rangeStart < cues.Count)
             {
-                var mapping = await TranslateChunkAsync(
-                    cues, range.Start, range.Count, range.Start + 1, advice, sourceLanguageCode, depth: 0, token).ConfigureAwait(false);
-                return (range, mapping);
-            }, token));
-        }
-
-        try
-        {
-            for (var i = 0; i < Math.Min(MaxInFlight, chunkRanges.Count); i++)
-            {
-                await ScheduleNextAsync().ConfigureAwait(false);
+                var upper = Math.Min(rangeStart + ChunkSize, cues.Count);
+                chunkRanges.Add((rangeStart, upper - rangeStart));
+                rangeStart = upper;
             }
-            while (inFlight.Count > 0)
+
+            var merged = new Dictionary<int, string>();
+            var completedCues = 0;
+            // 某块失败时取消兄弟块（等价 Swift TaskGroup 的隐式取消），避免白白烧 token。
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var inFlight = new List<Task<((int Start, int Count) Range, Dictionary<int, string> Map)>>();
+            var nextChunk = 0;
+
+            async Task ScheduleNextAsync()
             {
-                var done = await Task.WhenAny(inFlight).ConfigureAwait(false);
-                inFlight.Remove(done);
-                var (range, mapping) = await done.ConfigureAwait(false);
-                foreach (var pair in mapping) merged[pair.Key] = pair.Value;
-                completedCues += range.Count;
-                progress((double)completedCues / cues.Count);
-                await ScheduleNextAsync().ConfigureAwait(false);
+                if (nextChunk >= chunkRanges.Count) return;
+                ct.ThrowIfCancellationRequested();
+                if (control is not null) await control.GateAsync(ct).ConfigureAwait(false);
+                var range = chunkRanges[nextChunk];
+                nextChunk++;
+                var token = linked.Token;
+                inFlight.Add(Task.Run(async () =>
+                {
+                    var mapping = await TranslateChunkAsync(
+                        cues, range.Start, range.Count, range.Start + 1, passAdvice, sourceLanguageCode, depth: 0, token).ConfigureAwait(false);
+                    return (range, mapping);
+                }, token));
             }
-        }
-        catch
-        {
-            linked.Cancel();
-            // 等在途块收敛，避免悬挂任务在测试/退出时乱抛
-            try { await Task.WhenAll(inFlight).ConfigureAwait(false); } catch { /* 已取消 */ }
-            throw;
+
+            try
+            {
+                for (var i = 0; i < Math.Min(MaxInFlight, chunkRanges.Count); i++)
+                {
+                    await ScheduleNextAsync().ConfigureAwait(false);
+                }
+                while (inFlight.Count > 0)
+                {
+                    var done = await Task.WhenAny(inFlight).ConfigureAwait(false);
+                    inFlight.Remove(done);
+                    var (range, mapping) = await done.ConfigureAwait(false);
+                    foreach (var pair in mapping) merged[pair.Key] = pair.Value;
+                    completedCues += range.Count;
+                    progress((double)completedCues / cues.Count);
+                    await ScheduleNextAsync().ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                linked.Cancel();
+                // 等在途块收敛，避免悬挂任务在测试/退出时乱抛
+                try { await Task.WhenAll(inFlight).ConfigureAwait(false); } catch { /* 已取消 */ }
+                throw;
+            }
+
+            var translated = new List<(string Text, bool UsedSourceFallback)>(cues.Count);
+            for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
+            {
+                var sourceText = cues[cueIndex].Text;
+                _ = merged.TryGetValue(cueIndex + 1, out var rawChinese);
+                var sanitizedChinese = SanitizeTranslation(rawChinese ?? "");
+                var usedSourceFallback = sanitizedChinese.Length == 0;
+                var chinese = usedSourceFallback ? sourceText : sanitizedChinese;
+                if (string.IsNullOrWhiteSpace(chinese))
+                {
+                    throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
+                        "模型返回格式異常，缺少譯文行",
+                        "Malformed model reply: translation lines are missing"));
+                }
+                translated.Add((chinese, usedSourceFallback));
+            }
+            return translated;
         }
 
-        var translatedLines = new List<(string Text, bool UsedSourceFallback)>(cues.Count);
-        for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
-        {
-            var sourceText = cues[cueIndex].Text;
-            _ = merged.TryGetValue(cueIndex + 1, out var rawChinese);
-            var sanitizedChinese = SanitizeTranslation(rawChinese ?? "");
-            var usedSourceFallback = sanitizedChinese.Length == 0;
-            var chinese = usedSourceFallback ? sourceText : sanitizedChinese;
-            if (string.IsNullOrWhiteSpace(chinese))
-            {
-                throw MoongateException.TranslateFailed(L10n.T("模型返回格式异常，缺失译文行",
-                    "模型返回格式異常，缺少譯文行",
-                    "Malformed model reply: translation lines are missing"));
-            }
-            translatedLines.Add((chinese, usedSourceFallback));
-        }
-
+        var translatedLines = await TranslateAllCuesAsync(advice).ConfigureAwait(false);
         var translationQuality = TranslationOutputQualityGate.Assess(
             translatedLines.Select(line => line.Text).ToArray(),
             sourceLanguageCode,
             _settings.TranslationTargetLanguage);
-        if (!translationQuality.Usable)
+        if (ShouldRetrySourceLanguageLeakage(translationQuality, sourceLanguageCode, _settings.TranslationTargetLanguage))
         {
-            throw MoongateException.TranslateFailed(L10n.T(
-                "译文仍残留较多源语言内容，请重试翻译或换用更可靠的字幕来源。",
-                "譯文仍殘留較多源語言內容，請重試翻譯或改用更可靠的字幕來源。",
-                "The translation still contains too much source-language text. Retry translation or use a more reliable subtitle source."));
+            translatedLines = await TranslateAllCuesAsync(
+                SourceLeakageRetryAdvice(advice, sourceLanguageCode, _settings.TranslationTargetLanguage)).ConfigureAwait(false);
+            translationQuality = TranslationOutputQualityGate.Assess(
+                translatedLines.Select(line => line.Text).ToArray(),
+                sourceLanguageCode,
+                _settings.TranslationTargetLanguage);
         }
 
         var output = cues.Select(c => new SubtitleCue(c.Index, c.Start, c.End, c.Text)).ToList();
@@ -3443,6 +3450,45 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         // Keeping one heuristic means the LLM resegmentation preset and the cue-timing profile can
         // never disagree about whether a clip is a song.
         SubtitleTimingProfileDetector.Detect(fileName, cues) is SubtitleTimingProfile.Lyrics or SubtitleTimingProfile.JapaneseLyrics;
+
+    private static bool ShouldRetrySourceLanguageLeakage(
+        TranslationOutputQualityVerdict verdict,
+        string? sourceLanguageCode,
+        string targetLanguageCode)
+    {
+        if (verdict.Usable
+            || !verdict.Reasons.Contains(TranslationOutputQualityReason.SourceLanguageLeakage)
+            || !TranslationLanguage.NormalizedScript(targetLanguageCode).StartsWith("zh", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrEmpty(TranslationLanguage.NormalizedScript(sourceLanguageCode ?? ""));
+    }
+
+    private static TranslationPromptAdvice SourceLeakageRetryAdvice(
+        TranslationPromptAdvice? baseAdvice,
+        string? sourceLanguageCode,
+        string targetLanguageCode)
+    {
+        var note = $"上一次输出仍保留了较多源语言整句或大片段。请把完整句子翻成{TranslationLanguage.DisplayName(targetLanguageCode)}；品牌名、产品名、模型名、UI、API、ChatGPT 等短术语可以保留原文，但不能整句照抄源字幕。";
+        if (baseAdvice is not null)
+        {
+            return baseAdvice with
+            {
+                Summary = string.IsNullOrWhiteSpace(baseAdvice.Summary) ? "重试翻译" : baseAdvice.Summary,
+                TranslationNotes = (baseAdvice.TranslationNotes ?? []).Concat([note]).ToArray(),
+            };
+        }
+
+        return new TranslationPromptAdvice(
+            "重试翻译",
+            "上一轮翻译质量检查发现仍有源语言整句残留。",
+            [],
+            TranslationPromptPreset.General,
+            sourceLanguageCode ?? "unknown",
+            TranslationNotes: [note]);
+    }
 
     private static bool ShouldResegmentLocalAsr(
         string fileName,

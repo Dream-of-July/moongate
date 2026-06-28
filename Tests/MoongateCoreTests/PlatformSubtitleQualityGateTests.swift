@@ -26,7 +26,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
     func testHealthyAutoCaptionUsable() {
         let cues = healthyCues(count: 20)
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: 60)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: 60)
         XCTAssertTrue(verdict.usable)
         XCTAssertTrue(verdict.reasons.isEmpty)
     }
@@ -34,15 +34,31 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
     func testLanguageMismatchUnusable() {
         let cues = healthyCues(count: 20)
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "ja", subtitleLanguageCode: "en", videoDurationSeconds: 60)
+            cues: cues, requestedSourceLanguageCode: "ja", candidateLanguageCode: "en", videoDurationSeconds: 60)
         XCTAssertFalse(verdict.usable)
         XCTAssertTrue(verdict.reasons.contains(.languageMismatch))
+    }
+
+    func testTargetTranslationLanguageDoesNotEnterSourceQualityGate() {
+        let cues = healthyCues(count: 20)
+        let targetTranslationLanguage = "zh-Hans"
+
+        let verdict = PlatformSubtitleQualityGate.assess(
+            cues: cues,
+            requestedSourceLanguageCode: "en",
+            candidateLanguageCode: "en",
+            videoDurationSeconds: 60
+        )
+
+        XCTAssertTrue(verdict.usable)
+        XCTAssertFalse(verdict.reasons.contains(.languageMismatch))
+        XCTAssertNotEqual(targetTranslationLanguage, "en")
     }
 
     func testTooFewCuesUnusable() {
         let cues = healthyCues(count: 3)
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: 10)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: 10)
         XCTAssertFalse(verdict.usable)
         XCTAssertTrue(verdict.reasons.contains(.tooFewCues))
     }
@@ -51,7 +67,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         // 20 cues × 1.5s = 30s covered, but the video is 600s → 5% coverage.
         let cues = healthyCues(count: 20)
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: 600)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: 600)
         XCTAssertFalse(verdict.usable)
         XCTAssertTrue(verdict.reasons.contains(.lowCoverage))
     }
@@ -59,7 +75,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
     func testCoverageSkippedWhenDurationUnknown() {
         let cues = healthyCues(count: 20)
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: nil)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: nil)
         XCTAssertTrue(verdict.usable, "no duration → coverage must not be judged")
     }
 
@@ -67,7 +83,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         // Every cue identical → adjacent-identical ratio = 1.0 ≥ 0.5.
         let cues = healthyCues(count: 20, text: { _ in "［音楽］" })
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "ja", subtitleLanguageCode: "ja", videoDurationSeconds: 60)
+            cues: cues, requestedSourceLanguageCode: "ja", candidateLanguageCode: "ja", videoDurationSeconds: 60)
         XCTAssertFalse(verdict.usable)
         XCTAssertTrue(verdict.reasons.contains(.garbledOrRepetitive))
     }
@@ -75,7 +91,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
     func testGarbledUnusable() {
         let cues = healthyCues(count: 20, text: { i in i % 2 == 0 ? "\u{FFFD}\u{FFFD}\u{FFFD}" : "ok line \(i)" })
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: 60)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: 60)
         XCTAssertFalse(verdict.usable)
         XCTAssertTrue(verdict.reasons.contains(.garbledOrRepetitive))
     }
@@ -106,8 +122,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: 50
         )
         XCTAssertFalse(verdict.usable)
@@ -119,8 +135,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: 18
         )
 
@@ -147,8 +163,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: 28
         )
         XCTAssertTrue(verdict.usable)
@@ -171,8 +187,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: nil
         )
         XCTAssertTrue(verdict.usable)
@@ -196,8 +212,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         ]
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: nil
         )
 
@@ -224,8 +240,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ko",
-            subtitleLanguageCode: "ko",
+            requestedSourceLanguageCode: "ko",
+            candidateLanguageCode: "ko",
             videoDurationSeconds: nil
         )
 
@@ -252,8 +268,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "ja",
-            subtitleLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
+            candidateLanguageCode: "ja",
             videoDurationSeconds: nil
         )
 
@@ -276,8 +292,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         ]
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "it",
-            subtitleLanguageCode: "it",
+            requestedSourceLanguageCode: "it",
+            candidateLanguageCode: "it",
             videoDurationSeconds: nil
         )
 
@@ -300,8 +316,8 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
         let cues = healthyCues(count: texts.count, text: { texts[$0] })
         let verdict = PlatformSubtitleQualityGate.assess(
             cues: cues,
-            requestedLanguageCode: "en",
-            subtitleLanguageCode: "en",
+            requestedSourceLanguageCode: "en",
+            candidateLanguageCode: "en",
             videoDurationSeconds: nil
         )
 
@@ -320,7 +336,7 @@ final class PlatformSubtitleQualityGateTests: XCTestCase {
             SubtitleCue(index: i + 1, start: ms(0), end: ms(60_000), text: "distinct healthy sentence number \(i)")
         }
         let verdict = PlatformSubtitleQualityGate.assess(
-            cues: cues, requestedLanguageCode: "en", subtitleLanguageCode: "en", videoDurationSeconds: 60)
+            cues: cues, requestedSourceLanguageCode: "en", candidateLanguageCode: "en", videoDurationSeconds: 60)
         XCTAssertTrue(verdict.usable, "timing must never enter the usability verdict")
         XCTAssertTrue(verdict.reasons.isEmpty)
     }

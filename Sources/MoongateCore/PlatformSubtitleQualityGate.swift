@@ -258,25 +258,25 @@ public enum PlatformSubtitleQualityGate {
 
     /// - Parameters:
     ///   - cues: parsed cues of the auto-caption candidate.
-    ///   - requestedLanguageCode: language the user picked (normalized or raw; normalized here).
-    ///   - subtitleLanguageCode: language code of the candidate track.
+    ///   - requestedSourceLanguageCode: language the user picked (normalized or raw; normalized here).
+    ///   - candidateLanguageCode: language code of the candidate track.
     ///   - videoDurationSeconds: total video duration if known. nil → coverage check is skipped.
     public static func assess(
         cues: [SubtitleCue],
-        requestedLanguageCode: String?,
-        subtitleLanguageCode: String?,
+        requestedSourceLanguageCode: String?,
+        candidateLanguageCode: String?,
         videoDurationSeconds: Double?
     ) -> Verdict {
         var reasons: [Reason] = []
         let report = qualityReport(
             cues: cues,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: subtitleLanguageCode
+            requestedSourceLanguageCode: requestedSourceLanguageCode,
+            candidateLanguageCode: candidateLanguageCode
         )
 
         // 1) Language match (fatal). Normalize both sides to language buckets.
-        if let requested = requestedLanguageCode, !requested.isEmpty,
-           let actual = subtitleLanguageCode, !actual.isEmpty {
+        if let requested = requestedSourceLanguageCode, !requested.isEmpty,
+           let actual = candidateLanguageCode, !actual.isEmpty {
             let r = SubtitleLanguageChoice.normalizedLanguageCode(requested)
             let a = SubtitleLanguageChoice.normalizedLanguageCode(actual)
             if r != a {
@@ -311,8 +311,8 @@ public enum PlatformSubtitleQualityGate {
     /// usable (we can't fault content we couldn't read — avoids a needless fallback).
     public static func assess(
         subtitleFileURL url: URL,
-        requestedLanguageCode: String?,
-        subtitleLanguageCode: String?,
+        requestedSourceLanguageCode: String?,
+        candidateLanguageCode: String?,
         videoDurationSeconds: Double?
     ) -> Verdict {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
@@ -322,8 +322,8 @@ public enum PlatformSubtitleQualityGate {
         let cleaned = cleanCues(isVTT ? parseVTT(raw) : parseSRT(raw))
         return assess(
             cues: cleaned,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: subtitleLanguageCode,
+            requestedSourceLanguageCode: requestedSourceLanguageCode,
+            candidateLanguageCode: candidateLanguageCode,
             videoDurationSeconds: videoDurationSeconds)
     }
 
@@ -339,21 +339,21 @@ public enum PlatformSubtitleQualityGate {
     static func looksGarbledOrRepetitive(_ cues: [SubtitleCue]) -> Bool {
         reportLooksGarbledOrRepetitive(qualityReport(
             cues: cues,
-            requestedLanguageCode: nil,
-            subtitleLanguageCode: nil
+            requestedSourceLanguageCode: nil,
+            candidateLanguageCode: nil
         ))
     }
 
     public static func qualityReport(
         cues: [SubtitleCue],
-        requestedLanguageCode: String?,
-        subtitleLanguageCode: String?
+        requestedSourceLanguageCode: String?,
+        candidateLanguageCode: String?
     ) -> SubtitleSourceQualityReport {
         guard !cues.isEmpty else { return .empty }
 
-        let cjkLanguage = isCJKLanguageCode(requestedLanguageCode) || isCJKLanguageCode(subtitleLanguageCode)
-        let romanizedLoopSensitiveLanguage = isRomanizedLoopSensitiveLanguageCode(requestedLanguageCode)
-            || isRomanizedLoopSensitiveLanguageCode(subtitleLanguageCode)
+        let cjkLanguage = isCJKLanguageCode(requestedSourceLanguageCode) || isCJKLanguageCode(candidateLanguageCode)
+        let romanizedLoopSensitiveLanguage = isRomanizedLoopSensitiveLanguageCode(requestedSourceLanguageCode)
+            || isRomanizedLoopSensitiveLanguageCode(candidateLanguageCode)
         var identical = 0
         var comparable = 0
         var previous: String?

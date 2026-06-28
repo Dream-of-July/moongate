@@ -59,7 +59,6 @@
     "latinScriptBonus": 30,
     "cjkPresenceBonus": 20,
     "platformAutoCJKPresenceBonus": 90,
-    "targetLanguageTrackScore": 260,
     "preferredSourceLanguageScore": 180,
     "titleLanguageHintBonus": 15,
     "titleScriptDominanceRatio": 0.18

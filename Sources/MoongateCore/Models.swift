@@ -313,11 +313,7 @@ public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
     /// Normalizes a subtitle language code to a stable bucket key: lowercased, first `-` segment.
     /// So "ja", "ja-JP", "ja-orig" all collapse to "ja".
     public static func normalizedLanguageCode(_ code: String) -> String {
-        let lower = code.lowercased()
-        if let dash = lower.firstIndex(of: "-") {
-            return String(lower[..<dash])
-        }
-        return lower
+        LanguageCatalog.normalize(code)
     }
 
     /// Sort rank for technical tracks within a language group.

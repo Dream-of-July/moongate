@@ -49,6 +49,17 @@ public class PlatformSubtitleQualityGateTests
     }
 
     [Fact]
+    public void TargetTranslationLanguageDoesNotEnterSourceQualityGate()
+    {
+        var targetTranslationLanguage = "zh-Hans";
+        var verdict = PlatformSubtitleQualityGate.Assess(HealthyCues(20), "en", "en", 60);
+
+        Assert.True(verdict.Usable);
+        Assert.DoesNotContain(PlatformSubtitleQualityGate.Reason.LanguageMismatch, verdict.Reasons);
+        Assert.NotEqual("en", targetTranslationLanguage);
+    }
+
+    [Fact]
     public void TooFewCuesUnusable()
     {
         var verdict = PlatformSubtitleQualityGate.Assess(HealthyCues(3), "en", "en", 10);

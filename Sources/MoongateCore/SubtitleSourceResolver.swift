@@ -9,11 +9,13 @@ public enum SubtitleSourceResolver {
         let scored = candidates.map {
             SubtitleQualityScorer.score(
                 candidate: $0,
-                requestedLanguageCode: requestedLanguage,
+                requestedSourceLanguageCode: requestedLanguage,
                 videoDurationSeconds: request.videoDurationSeconds
             )
         }
-        guard let winner = scored.max(by: { lhs, rhs in
+        let selectableIDs = Set(candidates.compactMap { $0.fileURL == nil ? nil : $0.id })
+        guard !selectableIDs.isEmpty else { return nil }
+        guard let winner = scored.filter({ selectableIDs.contains($0.candidateID) }).max(by: { lhs, rhs in
             let lhsRank = lhs.score + policyBoost(lhs.kind, request.sourcePolicy)
             let rhsRank = rhs.score + policyBoost(rhs.kind, request.sourcePolicy)
             if lhsRank != rhsRank { return lhsRank < rhsRank }

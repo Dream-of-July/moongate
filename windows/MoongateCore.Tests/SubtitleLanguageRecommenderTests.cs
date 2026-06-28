@@ -66,7 +66,7 @@ public class SubtitleLanguageRecommenderTests
     }
 
     [Fact]
-    public void TargetLanguageSubtitleWinsWhenAlreadyAvailable()
+    public void TargetLanguageSubtitleDoesNotBecomeSourceLanguageRecommendation()
     {
         var groups = SubtitleLanguageChoice.Aggregate(new[]
         {
@@ -77,9 +77,8 @@ public class SubtitleLanguageRecommenderTests
             "YOASOBI - 群青 (Gunjou)",
             groups,
             targetLanguage: "zh-Hans");
-        Assert.Equal("zh", result.Recommended?.LanguageCode);
-        Assert.Equal("zh-Hans", result.Recommended?.PreferredTrack?.LanguageCode);
-        Assert.Equal(SubtitleSourceKind.Manual, result.Recommended?.PreferredTrack?.SourceKind);
+        Assert.Equal("ja", result.Recommended?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.PlatformAuto, result.Recommended?.PreferredTrack?.SourceKind);
     }
 
     [Fact]
@@ -111,7 +110,7 @@ public class SubtitleLanguageRecommenderTests
     }
 
     [Fact]
-    public void ManualTargetSubtitleStillWinsOverPreferredSourceLanguage()
+    public void PreferredSourceLanguageWinsOverManualTargetSubtitleForSourceRecommendation()
     {
         var groups = SubtitleLanguageChoice.Aggregate(new[] { Manual("zh-Hans"), Auto("en"), LocalAsr("ja", "日语") });
         var result = SubtitleLanguageRecommender.Recommend(
@@ -120,8 +119,8 @@ public class SubtitleLanguageRecommenderTests
             targetLanguage: "zh-Hans",
             preferredSourceLanguage: "ja");
 
-        Assert.Equal("zh", result.Recommended?.LanguageCode);
-        Assert.Equal(SubtitleSourceKind.Manual, result.Recommended?.PreferredTrack?.SourceKind);
+        Assert.Equal("ja", result.Recommended?.LanguageCode);
+        Assert.Equal(SubtitleSourceKind.LocalAsr, result.Recommended?.PreferredTrack?.SourceKind);
     }
 
     [Fact]
@@ -189,6 +188,60 @@ public class SubtitleLanguageRecommenderTests
         Assert.Empty(result.Others);
     }
 
+    [Fact]
+    public void LanguageCatalogNormalizesAliasesAndMarksRareLanguages()
+    {
+        Assert.Equal("en", LanguageCatalog.Normalize("en-US"));
+        Assert.Equal("ja", LanguageCatalog.Normalize("jpn"));
+        Assert.Equal("ko", LanguageCatalog.Normalize("ko-KR"));
+        Assert.Equal("zh-Hans", LanguageCatalog.Normalize("zh-CN"));
+        Assert.Equal("zh-Hant", LanguageCatalog.Normalize("zh-TW"));
+        Assert.Equal("zh-Hans", LanguageCatalog.Normalize("cmn"));
+        Assert.Equal("he", LanguageCatalog.Normalize("iw"));
+        Assert.Equal("id", LanguageCatalog.Normalize("in"));
+        Assert.Equal("si", LanguageCatalog.Normalize("si"));
+
+        Assert.False(LanguageCatalog.IsRareLanguage("en"));
+        Assert.True(LanguageCatalog.IsRareLanguage("si"));
+        Assert.Equal("Sinhala", LanguageCatalog.DisplayName("si"));
+        Assert.Contains(LanguageCatalog.Search("英语"), item => item.Code == "en");
+        Assert.Contains(LanguageCatalog.Search("日本語"), item => item.Code == "ja");
+        Assert.Contains(LanguageCatalog.Search("zh-Hans"), item => item.Code == "zh-Hans");
+    }
+
+    [Fact]
+    public void EnglishAutoTrackWinsOverRareSinhalaAutoTrack()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[] { Auto("si", "Sinhala"), Auto("en", "English") });
+        var recommendation = SubtitleLanguageRecommender.SourceRecommendation(
+            "The Weird Future Of User Interfaces",
+            groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: null);
+
+        Assert.Equal("en", recommendation.Code);
+        Assert.Equal(SubtitleLanguageRecommender.SourceLanguageEvidence.PlatformAutoTrack, recommendation.Evidence);
+        Assert.Equal(SubtitleLanguageRecommender.SourceLanguageConfidence.Medium, recommendation.Confidence);
+        Assert.False(recommendation.IsRareLanguage);
+        Assert.True(recommendation.ShouldAutoSelect);
+    }
+
+    [Fact]
+    public void LowConfidenceRareLanguageIsNotAutoSelected()
+    {
+        var groups = SubtitleLanguageChoice.Aggregate(new[] { Auto("si", "Sinhala") });
+        var recommendation = SubtitleLanguageRecommender.SourceRecommendation(
+            "The Future of Interfaces",
+            groups,
+            targetLanguage: "zh-Hans",
+            preferredSourceLanguage: null);
+
+        Assert.Equal("si", recommendation.Code);
+        Assert.Equal(SubtitleLanguageRecommender.SourceLanguageConfidence.Low, recommendation.Confidence);
+        Assert.True(recommendation.IsRareLanguage);
+        Assert.False(recommendation.ShouldAutoSelect);
+    }
+
     // MARK: - Fixture contract (ARCH-3)
 
     [Fact]
@@ -203,7 +256,6 @@ public class SubtitleLanguageRecommenderTests
         Assert.Equal(SubtitleLanguageRecommender.LatinScriptBonus, section.GetProperty("latinScriptBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.CjkPresenceBonus, section.GetProperty("cjkPresenceBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.PlatformAutoCjkPresenceBonus, section.GetProperty("platformAutoCJKPresenceBonus").GetInt32());
-        Assert.Equal(SubtitleLanguageRecommender.TargetLanguageTrackScore, section.GetProperty("targetLanguageTrackScore").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.PreferredSourceLanguageScore, section.GetProperty("preferredSourceLanguageScore").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.TitleLanguageHintBonus, section.GetProperty("titleLanguageHintBonus").GetInt32());
         Assert.Equal(SubtitleLanguageRecommender.TitleScriptDominanceRatio, section.GetProperty("titleScriptDominanceRatio").GetDouble());

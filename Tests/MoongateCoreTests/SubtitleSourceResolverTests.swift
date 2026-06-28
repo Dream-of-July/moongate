@@ -24,7 +24,7 @@ final class SubtitleSourceResolverTests: XCTestCase {
         XCTAssertTrue(SubtitleIntent.burnSource.requiresBurnIn)
     }
 
-    func testQualityScorerPenalizesCJKHallucinationLikePhrases() throws {
+    func testQualityScorerPenalizesCJKShortCueFragmentationWithoutHardcodedPhrases() throws {
         let source = try writeSRT(
             name: "koopenchan.local-asr.ja.srt",
             texts: [
@@ -53,13 +53,66 @@ final class SubtitleSourceResolverTests: XCTestCase {
 
         let score = SubtitleQualityScorer.score(
             candidate: candidate,
-            requestedLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
             videoDurationSeconds: nil
         )
 
         XCTAssertLessThanOrEqual(score.verdict, .lowConfidence)
-        XCTAssertTrue(score.reasons.contains("hallucinationLikePhrase"))
         XCTAssertTrue(score.reasons.contains("shortCueFragmentation"))
+    }
+
+    func testNilLocalASRCandidateIsNotUsable() {
+        let score = SubtitleQualityScorer.score(
+            candidate: SubtitleSourceCandidate(
+                id: "pending-local",
+                kind: .localASR,
+                languageCode: "en",
+                displayName: "Local recognition",
+                fileURL: nil,
+                isGenerated: false,
+                provider: "whisper.cpp"
+            ),
+            requestedSourceLanguageCode: "en",
+            videoDurationSeconds: nil
+        )
+
+        XCTAssertEqual(score.score, 0)
+        XCTAssertEqual(score.verdict, .unusable)
+        XCTAssertTrue(score.reasons.contains("pendingGeneration"))
+        XCTAssertFalse(score.reasons.contains("notGeneratedYet"))
+    }
+
+    func testResolverNeverReturnsEmptySelectedFileForMissingCandidate() {
+        let resolved = SubtitleSourceResolver.resolve(SubtitleResolutionRequest(
+            languageIntent: .language("en"),
+            sourcePolicy: .autoBest,
+            candidates: [
+                SubtitleSourceCandidate(
+                    id: "pending-local",
+                    kind: .localASR,
+                    languageCode: "en",
+                    displayName: "Local recognition",
+                    fileURL: nil,
+                    isGenerated: false,
+                    provider: "whisper.cpp"
+                )
+            ],
+            videoDurationSeconds: nil
+        ))
+
+        XCTAssertNil(resolved)
+    }
+
+    func testProductionScorerDoesNotHardcodeObservedBadSamplePhrases() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MoongateCore/SubtitleQualityScorer.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        for phrase in ["世界の銀行が崩れた", "冥府より現れしいお酒", "偉いドクネストレード", "チョコナナナ", "ソスせんべい", "くじ引き野郎", "あいい行く"] {
+            XCTAssertFalse(source.contains(phrase), "Production scorer must use generic metrics, not hardcode \(phrase)")
+        }
     }
 
     func testLocalASRDetectsShortCueFragmentation() throws {
@@ -90,13 +143,12 @@ final class SubtitleSourceResolverTests: XCTestCase {
 
         let score = SubtitleQualityScorer.score(
             candidate: candidate,
-            requestedLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
             videoDurationSeconds: 120
         )
 
         XCTAssertLessThanOrEqual(score.verdict, .lowConfidence)
         XCTAssertTrue(score.reasons.contains("shortCueFragmentation"))
-        XCTAssertFalse(score.reasons.contains("hallucinationLikePhrase"))
     }
 
     func testQualityScorerPenalizesSoundEffectDominatedAndLongCueSources() throws {
@@ -116,14 +168,13 @@ final class SubtitleSourceResolverTests: XCTestCase {
 
         let score = SubtitleQualityScorer.score(
             candidate: candidate,
-            requestedLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
             videoDurationSeconds: 180
         )
 
         XCTAssertLessThanOrEqual(score.verdict, .lowConfidence)
         XCTAssertTrue(score.reasons.contains("garbledOrRepetitive"))
         XCTAssertTrue(score.reasons.contains("lowCoverage"))
-        XCTAssertTrue(score.reasons.contains("hallucinationLikePhrase"))
         let report = try XCTUnwrap(score.report)
         XCTAssertGreaterThanOrEqual(report.longCueCount, 2)
         XCTAssertGreaterThanOrEqual(report.soundEffectCueCount, 4)
@@ -141,7 +192,7 @@ final class SubtitleSourceResolverTests: XCTestCase {
 
         let score = SubtitleQualityScorer.score(
             candidate: candidate,
-            requestedLanguageCode: "ja",
+            requestedSourceLanguageCode: "ja",
             videoDurationSeconds: 120
         )
 

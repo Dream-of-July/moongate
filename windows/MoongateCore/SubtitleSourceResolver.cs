@@ -39,7 +39,7 @@ public static class SubtitleQualityScorer
 {
     public static SubtitleSourceScore Score(
         SubtitleSourceCandidate candidate,
-        string? requestedLanguageCode,
+        string? requestedSourceLanguageCode,
         double? videoDurationSeconds)
     {
         if (string.IsNullOrWhiteSpace(candidate.FilePath) || !File.Exists(candidate.FilePath))
@@ -49,9 +49,9 @@ public static class SubtitleQualityScorer
                 candidate.Id,
                 candidate.Kind,
                 NormalizeLanguage(candidate.LanguageCode),
-                generated ? 45 : 0,
-                generated ? SubtitleQualityVerdict.Usable : SubtitleQualityVerdict.Unusable,
-                generated ? ["notGeneratedYet"] : ["missingFile"],
+                0,
+                SubtitleQualityVerdict.Unusable,
+                [generated ? "pendingGeneration" : "missingFile"],
                 null);
         }
 
@@ -60,12 +60,12 @@ public static class SubtitleQualityScorer
         var cleaned = SrtTools.CleanCues(rawCues);
         var gate = PlatformSubtitleQualityGate.Assess(
             cleaned,
-            requestedLanguageCode,
+            requestedSourceLanguageCode,
             candidate.LanguageCode,
             videoDurationSeconds);
         var rawReport = PlatformSubtitleQualityGate.QualityReport(
             rawCues,
-            requestedLanguageCode,
+            requestedSourceLanguageCode,
             candidate.LanguageCode);
         var report = DiagnosticReport(gate.QualityReport, rawReport);
         var reasons = gate.Reasons.Select(ReasonCode).ToList();
@@ -92,8 +92,7 @@ public static class SubtitleQualityScorer
         value -= Math.Min(20, report.BadScalarRatio * 200);
         value -= Math.Min(18, report.RomanizedLoopTokenRatio * 40);
 
-        if (extraReasons.Contains("hallucinationLikePhrase")) value -= 45;
-        if (extraReasons.Contains("shortCueFragmentation")) value -= 16;
+        if (extraReasons.Contains("shortCueFragmentation")) value -= 30;
         reasons.AddRange(extraReasons);
 
         var clamped = Math.Clamp(value, 0, 100);
@@ -176,24 +175,12 @@ public static class SubtitleQualityScorer
     {
         var reasons = new List<string>();
         var texts = cues.Select(cue => cue.Text.Trim()).ToArray();
-        var joined = string.Join("\n", texts);
-        string[] hallucinationLikePhrases =
-        [
-            "世界の銀行が崩れた",
-            "冥府より現れしいお酒",
-            "偉いドクネストレード",
-            "ドクネストレード",
-        ];
-        if (hallucinationLikePhrases.Any(joined.Contains)) reasons.Add("hallucinationLikePhrase");
-
         var cjkShortCueCount = texts.Count(text =>
         {
             var visibleCount = text.EnumerateRunes().Count(rune => !Rune.IsWhiteSpace(rune));
             return visibleCount is > 0 and <= 6 && text.EnumerateRunes().Any(rune => IsCjkScalar(rune.Value));
         });
-        string[] knownFragmentLikePhrases = ["チョコナナナ", "くじ引き野郎", "ソスせんべい", "あいい行く"];
-        var hasKnownFragments = knownFragmentLikePhrases.Any(joined.Contains);
-        if (texts.Length > 0 && ((double)cjkShortCueCount / texts.Length >= 0.35 || hasKnownFragments))
+        if (texts.Length > 0 && (double)cjkShortCueCount / texts.Length >= 0.35)
         {
             reasons.Add("shortCueFragmentation");
         }
@@ -231,7 +218,13 @@ public static class SubtitleSourceResolver
         var scored = candidates
             .Select(candidate => SubtitleQualityScorer.Score(candidate, requestedLanguage, request.VideoDurationSeconds))
             .ToArray();
+        var selectableIds = candidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.FilePath) && File.Exists(candidate.FilePath))
+            .Select(candidate => candidate.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        if (selectableIds.Count == 0) return null;
         var winner = scored
+            .Where(score => selectableIds.Contains(score.CandidateId))
             .OrderByDescending(score => score.Score + PolicyBoost(score.Kind, request.SourcePolicy))
             .ThenBy(score => SourceKindRank(score.Kind))
             .First();

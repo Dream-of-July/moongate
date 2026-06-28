@@ -1738,8 +1738,26 @@ public sealed class QueueManager
         var verdict = PlatformSubtitleQualityGate.Assess(
             pickedSource, preferredLang, LangCode(pickedSource),
             videoDurationSeconds);
+        var platformCandidate = Candidate(
+            SubtitleSourceKind.PlatformAuto,
+            pickedSource,
+            primarySubtitleTrack?.Label,
+            primarySubtitleTrack?.Provider);
+        var platformScore = SubtitleQualityScorer.Score(
+            platformCandidate,
+            preferredLang,
+            videoDurationSeconds);
+        var platformOnlyResolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(
+            request.SourceLanguageIntent,
+            request.SubtitleSourcePolicy,
+            [platformCandidate],
+            videoDurationSeconds));
         var shouldCompareLocalAsr = request.SubtitleSourcePolicy == SubtitleSourcePolicy.CompareLocalAsr;
-        if (verdict.Usable && !shouldCompareLocalAsr)
+        var shouldGenerateLocalAsr = shouldCompareLocalAsr
+            || (request.SubtitleSourcePolicy == SubtitleSourcePolicy.AutoBest
+                ? platformScore.Verdict < SubtitleQualityVerdict.Good
+                : !verdict.Usable);
+        if (!shouldGenerateLocalAsr)
         {
             return new SubtitleSourceResolution(pickedSource, downloadFiles,
                 new ResolvedSubtitleSource
@@ -1747,8 +1765,9 @@ public sealed class QueueManager
                     LanguageCode = language,
                     SelectedFile = pickedSource,
                     SelectedKind = SubtitleSourceKind.PlatformAuto,
-                    QualityVerdict = verdict,
-                    CandidateReports = ArbitrationReports(verdict),
+                    QualityVerdict = platformOnlyResolved?.QualityVerdict ?? verdict,
+                    SourceQualityVerdict = platformOnlyResolved?.SourceQualityVerdict ?? platformScore.Verdict,
+                    CandidateReports = platformOnlyResolved?.CandidateReports ?? ArbitrationReports(verdict),
                 },
                 null);
         }
@@ -1763,17 +1782,19 @@ public sealed class QueueManager
                     LanguageCode = language,
                     SelectedFile = pickedSource,
                     SelectedKind = SubtitleSourceKind.PlatformAuto,
-                    QualityVerdict = verdict,
+                    QualityVerdict = platformOnlyResolved?.QualityVerdict ?? verdict,
+                    SourceQualityVerdict = platformOnlyResolved?.SourceQualityVerdict ?? platformScore.Verdict,
                     UsedLocalAsrFallback = false,
                     FallbackReasons = verdict.Reasons,
-                    CandidateReports = ArbitrationReports(verdict, false),
+                    CandidateReports = platformOnlyResolved?.CandidateReports ?? ArbitrationReports(verdict, false),
                 },
                 verdict.Usable
-                    ? L10n.T(
+                    && platformScore.Verdict >= SubtitleQualityVerdict.Usable
+                        ? L10n.T(
                         "本地识别未配置，无法比较；已保留平台字幕。",
                         "本機識別尚未設定，無法比較；已保留平台字幕。",
                         "Local recognition is not configured, so Moongate could not compare sources. Platform subtitles were kept.")
-                    : L10n.T(
+                        : L10n.T(
                         "平台字幕质量较差，可在设置中启用本地识别提升质量",
                         "平台字幕品質較差，可在設定中啟用本機識別提升品質",
                         "Platform subtitles are low quality; enable local recognition in Settings to improve"));
@@ -1813,11 +1834,7 @@ public sealed class QueueManager
             request.SourceLanguageIntent,
             request.SubtitleSourcePolicy,
             [
-                Candidate(
-                    SubtitleSourceKind.PlatformAuto,
-                    pickedSource,
-                    primarySubtitleTrack?.Label,
-                    primarySubtitleTrack?.Provider),
+                platformCandidate,
                 Candidate(
                     SubtitleSourceKind.LocalAsr,
                     sourceSrt,

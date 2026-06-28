@@ -1018,37 +1018,92 @@ public class QueueManagerTests
     [Fact]
     public async Task PrimaryPlatformSubtitleTrackUsesPlatformFileEvenWhenLocalAsrFileExists()
     {
-        var engine = new FakeEngine();
-        var translator = new FakeTranslator();
-        var asr = new FakeLocalAsrGenerator();
-        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
-        var platformAuto = SubtitleChoice.Create(
-            "ja",
-            "Japanese auto",
-            SubtitleSourceKind.PlatformAuto,
-            provider: "yt-dlp",
-            variant: "auto");
-        var localAsr = SubtitleChoice.Create(
-            "ja",
-            "Japanese local ASR",
-            SubtitleSourceKind.LocalAsr,
-            provider: "whisper.cpp",
-            variant: "local");
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-platform-primary-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            var localSrt = Path.Combine(dir, "v [a].local-asr.ja.srt");
+            File.WriteAllText(video, "fake");
+            WriteHealthyVtt(autoVtt, "今日はいい天気ですね");
+            File.WriteAllText(localSrt, "1\n00:00:00,000 --> 00:00:01,000\nlocal\n\n");
 
-        var id = queue.Enqueue(
-            Info("a"),
-            Request("a", subtitleTracks: [platformAuto, localAsr], primarySubtitleTrackId: platformAuto.Id),
-            ChineseSubtitleMode.SrtOnly,
-            Settings());
-        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
-        engine.Calls[0].Complete(
-            "/tmp/downloads/v [a].mp4",
-            "/tmp/downloads/v [a].local-asr.ja.srt",
-            "/tmp/downloads/v [a].ja.vtt");
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var platformAuto = SubtitleChoice.Create(
+                "ja",
+                "Japanese auto",
+                SubtitleSourceKind.PlatformAuto,
+                provider: "yt-dlp",
+                variant: "auto");
+            var localAsr = SubtitleChoice.Create(
+                "ja",
+                "Japanese local ASR",
+                SubtitleSourceKind.LocalAsr,
+                provider: "whisper.cpp",
+                variant: "local");
 
-        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
-        Assert.Equal(0, asr.CallCount);
-        Assert.Equal("/tmp/downloads/v [a].ja.vtt", translator.LastInput);
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [platformAuto, localAsr], primarySubtitleTrackId: platformAuto.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, localSrt, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            Assert.Equal(0, asr.CallCount);
+            Assert.Equal(autoVtt, translator.LastInput);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AutoBestKeepsGoodEnglishPlatformCaptionWithoutRunningAsr()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-good-platform-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].en.vtt");
+            File.WriteAllText(video, "fake");
+            WriteHealthyVtt(autoVtt, "This is a clear English subtitle line");
+
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var auto = SubtitleChoice.Create("en", "English auto", SubtitleSourceKind.PlatformAuto, provider: "yt-dlp", variant: "auto");
+
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [auto], primarySubtitleTrackId: auto.Id,
+                    preferredSubtitleLanguageCode: "en", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "完成");
+            var item = queue.Item(id)!;
+            Assert.False(item.PartialFailure, item.StatusText);
+            Assert.Equal(0, asr.CallCount);
+            Assert.Equal(autoVtt, translator.LastInput);
+            Assert.Equal(SubtitleSourceKind.PlatformAuto, item.ResolvedSubtitleSource?.SelectedKind);
+            Assert.True(item.ResolvedSubtitleSource?.SourceQualityVerdict >= SubtitleQualityVerdict.Good);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
@@ -1108,44 +1163,57 @@ public class QueueManagerTests
     [Fact]
     public async Task RetryWithLocalAsr_ReusesDownloadedVideoAndReplacesSubtitleSource()
     {
-        var engine = new FakeEngine();
-        var translator = new FakeTranslator();
-        var asr = new FakeLocalAsrGenerator();
-        var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
-        var autoJa = SubtitleChoice.Create(
-            "ja",
-            "Japanese auto",
-            SubtitleSourceKind.PlatformAuto,
-            provider: "yt-dlp",
-            variant: "auto");
+        var dir = Path.Combine(Path.GetTempPath(), "mg-queue-retry-local-asr-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "v [a].mp4");
+            var autoVtt = Path.Combine(dir, "v [a].ja.vtt");
+            File.WriteAllText(video, "fake");
+            WriteHealthyVtt(autoVtt, "今日はいい天気ですね");
 
-        var id = queue.Enqueue(
-            Info("a"),
-            Request("a", subtitleTracks: [autoJa]),
-            ChineseSubtitleMode.SrtOnly,
-            Settings());
-        await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
-        engine.Calls[0].Complete(
-            "/tmp/downloads/v [a].mp4",
-            "/tmp/downloads/v [a].ja.vtt");
-        await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "初次完成");
-        Assert.Equal(1, translator.CallCount);
-        Assert.Equal(0, asr.CallCount);
+            var engine = new FakeEngine();
+            var translator = new FakeTranslator();
+            var asr = new FakeLocalAsrGenerator();
+            var queue = new QueueManager(engine, _ => translator, localAsrGenerator: asr, settings: Settings());
+            var autoJa = SubtitleChoice.Create(
+                "ja",
+                "Japanese auto",
+                SubtitleSourceKind.PlatformAuto,
+                provider: "yt-dlp",
+                variant: "auto");
 
-        queue.RetryWithLocalAsr(id);
+            var id = queue.Enqueue(
+                Info("a", durationText: "1:00"),
+                Request("a", subtitleTracks: [autoJa], primarySubtitleTrackId: autoJa.Id,
+                    preferredSubtitleLanguageCode: "ja", destinationDirectory: dir),
+                ChineseSubtitleMode.SrtOnly,
+                Settings());
+            await WaitUntilAsync(() => engine.Calls.Count == 1, "开始下载");
+            engine.Calls[0].Complete(video, autoVtt);
+            await WaitUntilAsync(() => queue.Item(id)?.Stage.Kind == ItemStageKind.Done, "初次完成");
+            Assert.Equal(1, translator.CallCount);
+            Assert.Equal(0, asr.CallCount);
 
-        await WaitUntilAsync(
-            () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && asr.CallCount == 1,
-            "本地 ASR 重跑完成");
-        var source = AsrTranscriptMapper.LocalAsrSourceSrtPath("/tmp/downloads/v [a].mp4", "ja");
-        var translated = source[..^4] + ".zh-Hans.srt";
-        var item = queue.Item(id)!;
-        Assert.Single(engine.Calls);
-        Assert.Equal(2, translator.CallCount);
-        Assert.Equal(source, translator.LastInput);
-        Assert.Contains(source, item.ResultFiles);
-        Assert.Contains(translated, item.ResultFiles);
-        Assert.Contains(item.Request.RequestedSubtitleTracks, track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+            queue.RetryWithLocalAsr(id);
+
+            await WaitUntilAsync(
+                () => queue.Item(id)?.Stage.Kind == ItemStageKind.Done && asr.CallCount == 1,
+                "本地 ASR 重跑完成");
+            var source = AsrTranscriptMapper.LocalAsrSourceSrtPath(video, "ja");
+            var translated = source[..^4] + ".zh-Hans.srt";
+            var item = queue.Item(id)!;
+            Assert.Single(engine.Calls);
+            Assert.Equal(2, translator.CallCount);
+            Assert.Equal(source, translator.LastInput);
+            Assert.Contains(source, item.ResultFiles);
+            Assert.Contains(translated, item.ResultFiles);
+            Assert.Contains(item.Request.RequestedSubtitleTracks, track => track.SourceKind == SubtitleSourceKind.LocalAsr);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
@@ -1698,5 +1766,18 @@ public class QueueManagerTests
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    private static void WriteHealthyVtt(string path, string textPrefix, int count = 36)
+    {
+        var sb = new System.Text.StringBuilder("WEBVTT\n\n");
+        for (var i = 0; i < count; i++)
+        {
+            var start = TimeSpan.FromSeconds(i * 1.5);
+            var end = TimeSpan.FromSeconds(i * 1.5 + 1.1);
+            sb.Append($"{start:hh\\:mm\\:ss\\.fff} --> {end:hh\\:mm\\:ss\\.fff}\n");
+            sb.Append(textPrefix).Append(' ').Append(i).Append("\n\n");
+        }
+        File.WriteAllText(path, sb.ToString());
     }
 }

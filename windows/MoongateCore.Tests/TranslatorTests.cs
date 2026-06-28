@@ -571,7 +571,7 @@ public class ConfiguredTranslatorTests : IDisposable
     }
 
     [Fact]
-    public async Task Translate_RejectsSourceLanguageLeakageBeforeWritingOutput()
+    public async Task Translate_PreservesOutputWhenSourceLanguageLeakageRetryStillLooksBad()
     {
         var srt = WriteSrt("koopenchan.ja.srt",
         [
@@ -586,12 +586,56 @@ public class ConfiguredTranslatorTests : IDisposable
         };
         var translator = new ConfiguredTranslator(Settings, handler);
 
-        var ex = await Assert.ThrowsAsync<MoongateException>(() =>
-            translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { }));
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+        var cues = SrtTools.ParseSrt(File.ReadAllText(output));
 
-        Assert.Equal(MoongateErrorKind.TranslateFailed, ex.Kind);
-        Assert.Contains("源语言", ex.Detail);
-        Assert.False(File.Exists(Path.Combine(_tempDir, "koopenchan.ja.zh-Hans.srt")));
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(
+            ["チョコナナナ很好吃", "我们去くじ引き野郎吧", "世界の銀行が崩れ了"],
+            cues.Select(cue => cue.Text).ToArray());
+    }
+
+    [Fact]
+    public void TranslationQuality_AllowsChineseTechTranslationWithEnglishTerms()
+    {
+        var verdict = TranslationOutputQualityGate.Assess(
+        [
+            "这期讲 UI 的 Weird Future，以及 user interfaces 为什么会变得更像 AI agent",
+            "我们会看到 Starbucks、ChatGPT plugin、URL、API 和 Figma 如何影响 interface pattern",
+        ], "en", "zh-Hans");
+
+        Assert.True(verdict.Usable);
+        Assert.DoesNotContain(TranslationOutputQualityReason.SourceLanguageLeakage, verdict.Reasons);
+    }
+
+    [Fact]
+    public async Task Translate_RetriesOnceWhenEnglishSourceLeakageIsDetected()
+    {
+        var srt = WriteSrt("interfaces.en.srt",
+        [
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "This is the Starbucks app."),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "The ChatGPT plugin can do things for you."),
+        ]);
+        var attempts = 0;
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ =>
+            {
+                attempts++;
+                return attempts == 1
+                    ? FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|This is the Starbucks app.\n2|The ChatGPT plugin can do things for you."))
+                    : FakeHttpHandler.Json(200, AnthropicReply(
+                        "1|这是 Starbucks app\n2|ChatGPT plugin 可以替你完成操作"));
+            },
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var cues = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(["这是 Starbucks app", "ChatGPT plugin 可以替你完成操作"], cues.Select(c => c.Text));
+        Assert.Equal(2, attempts);
     }
 
     [Fact]
