@@ -147,15 +147,35 @@ public static partial class SrtTools
             blocks.Add(currentBlock);
             currentBlock = [];
         }
+        // VTT 块以真正的空行分隔。但 YouTube 自动字幕会在时间行与文本行之间插入仅含空格的行(" "),它是 cue
+        // 内部占位填充,不是块边界——若按 IsNullOrWhiteSpace 切块会把时间行与文本拆开、整条 cue 丢失(实测
+        // Antigravity 视频首句消失、次句时机从 9.96s 错位到 11.83s)。块内已出现时间行且正文未出现时,空格行作占位保留。镜像 Swift。
+        var currentBlockHasTiming = false;
+        var currentBlockHasBodyAfterTiming = false;
         foreach (var line in lines)
         {
             if (string.IsNullOrWhiteSpace(line))
             {
+                var isWhitespacePadding = line.Length > 0 && currentBlockHasTiming && !currentBlockHasBodyAfterTiming;
+                if (isWhitespacePadding)
+                {
+                    continue; // 丢弃空格占位行,但不结束当前块
+                }
                 FlushBlock();
+                currentBlockHasTiming = false;
+                currentBlockHasBodyAfterTiming = false;
             }
             else
             {
                 currentBlock.Add(line);
+                if (ParseVttTimeLine(line) is not null)
+                {
+                    currentBlockHasTiming = true;
+                }
+                else if (currentBlockHasTiming)
+                {
+                    currentBlockHasBodyAfterTiming = true;
+                }
             }
         }
         FlushBlock();
@@ -3212,17 +3232,61 @@ public sealed class ConfiguredTranslator : ISubtitleTranslator
         IReadOnlyList<SubtitleCue> cues,
         string? sourceLanguageCode)
     {
+        // 语言无关:先折叠 cue 内即时重复词组(whisper 口吃),改善源可读性与翻译输入。镜像 Swift。
+        var destuttered = cues.Select(cue => new SubtitleCue(
+            cue.Index, cue.Start, cue.End,
+            CollapseImmediatePhraseRepeats(cue.Text), cue.SourceFragments)).ToList();
         var normalizedSource = TranslationLanguage.NormalizedScript(sourceLanguageCode ?? "");
         var cjk = normalizedSource is "ja" or "ko" or "yue" || normalizedSource.StartsWith("zh", StringComparison.Ordinal);
-        if (!cjk) return cues.ToList();
-        var filtered = cues.Where(cue => !IsObviousCjkRomanizedGarbageCue(cue.Text)).ToList();
-        if (filtered.Count == 0) return cues.ToList();
+        if (!cjk) return destuttered;
+        var filtered = destuttered.Where(cue => !IsObviousCjkRomanizedGarbageCue(cue.Text)).ToList();
+        if (filtered.Count == 0) return destuttered;
         return filtered.Select((cue, offset) => new SubtitleCue(
             offset + 1,
             cue.Start,
             cue.End,
             StripParentheticalLatinGlossesForCjk(cue.Text),
             cue.SourceFragments)).ToList();
+    }
+
+    /// <summary>折叠 cue 内"即时重复词组"(whisper 口吃,连续 ≥3 次)。2 次重复保留。空白分词。镜像 Swift CollapseImmediatePhraseRepeats。</summary>
+    internal static string CollapseImmediatePhraseRepeats(string text)
+    {
+        var lines = text.Split('\n');
+        for (var li = 0; li < lines.Length; li++)
+        {
+            var tokens = lines[li].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 6) continue;
+            for (var phraseLen = 1; phraseLen <= tokens.Length / 3; phraseLen++)
+            {
+                var repeats = 1;
+                var idx = phraseLen;
+                while (idx + phraseLen <= tokens.Length)
+                {
+                    var same = true;
+                    for (var k = 0; k < phraseLen; k++)
+                    {
+                        if (!string.Equals(tokens[idx + k], tokens[k], StringComparison.OrdinalIgnoreCase))
+                        {
+                            same = false;
+                            break;
+                        }
+                    }
+                    if (!same) break;
+                    repeats++;
+                    idx += phraseLen;
+                }
+                if (repeats >= 3)
+                {
+                    var kept = new List<string>();
+                    for (var k = 0; k < phraseLen; k++) kept.Add(tokens[k]);
+                    for (var k = idx; k < tokens.Length; k++) kept.Add(tokens[k]);
+                    lines[li] = string.Join(" ", kept);
+                    break;
+                }
+            }
+        }
+        return string.Join("\n", lines);
     }
 
     private static string StripParentheticalLatinGlossesForCjk(string text)

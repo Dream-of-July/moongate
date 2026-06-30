@@ -90,6 +90,10 @@ public struct SubtitleSourceScore: Equatable, Sendable {
     public let verdict: SubtitleQualityVerdict
     public let reasons: [String]
     public let report: PlatformSubtitleQualityGate.SubtitleSourceQualityReport?
+    /// 门(PlatformSubtitleQualityGate)的权威可用性裁决——是"是否生成 Whisper"的唯一依据，
+    /// 与 `score`/`verdict`(用于多候选排名)分离，避免 QueueManager 里的双裁决冲突与二次跑门。
+    public let gateUsable: Bool
+    public let gateReasons: [PlatformSubtitleQualityGate.Reason]
 
     public init(
         candidateID: String,
@@ -98,7 +102,9 @@ public struct SubtitleSourceScore: Equatable, Sendable {
         score: Double,
         verdict: SubtitleQualityVerdict,
         reasons: [String],
-        report: PlatformSubtitleQualityGate.SubtitleSourceQualityReport?
+        report: PlatformSubtitleQualityGate.SubtitleSourceQualityReport?,
+        gateUsable: Bool = true,
+        gateReasons: [PlatformSubtitleQualityGate.Reason] = []
     ) {
         self.candidateID = candidateID
         self.kind = kind
@@ -107,6 +113,8 @@ public struct SubtitleSourceScore: Equatable, Sendable {
         self.verdict = verdict
         self.reasons = reasons
         self.report = report
+        self.gateUsable = gateUsable
+        self.gateReasons = gateReasons
     }
 }
 

@@ -6,8 +6,7 @@ final class DependencySetupTests: XCTestCase {
         let components = DependencySetup.components(
             ytDlpInstalled: true,
             subtitleRendererFfmpegInstalled: false,
-            jsRuntimeInstalled: true,
-            localWhisperInstalled: false
+            jsRuntimeInstalled: true
         )
 
         let ffmpeg = components.first { $0.id == "ffmpeg" }
@@ -20,36 +19,32 @@ final class DependencySetupTests: XCTestCase {
         let ready = DependencySetup.components(
             ytDlpInstalled: true,
             subtitleRendererFfmpegInstalled: true,
-            jsRuntimeInstalled: true,
-            localWhisperInstalled: false
+            jsRuntimeInstalled: true
         )
         let missingDeno = DependencySetup.components(
             ytDlpInstalled: true,
             subtitleRendererFfmpegInstalled: true,
-            jsRuntimeInstalled: false,
-            localWhisperInstalled: false
+            jsRuntimeInstalled: false
         )
 
         XCTAssertFalse(DependencySetup.needsSetup(ready))
         XCTAssertTrue(DependencySetup.needsSetup(missingDeno))
         XCTAssertEqual(DependencySetup.missingRequired(from: missingDeno).map(\.id), ["deno"])
-        XCTAssertEqual(DependencySetup.missingOptional(from: missingDeno).map(\.id), ["whisper-cli"])
+        XCTAssertEqual(DependencySetup.missingOptional(from: missingDeno).map(\.id), [])
     }
 
-    func testLocalWhisperDependencyIsOptionalAndUsesWhisperCppFormula() {
+    func testDependencySetupOnlyContainsRequiredDownloadChainComponents() {
         let components = DependencySetup.components(
             ytDlpInstalled: true,
             subtitleRendererFfmpegInstalled: true,
-            jsRuntimeInstalled: true,
-            localWhisperInstalled: false
+            jsRuntimeInstalled: true
         )
 
-        let whisper = components.first { $0.id == "whisper-cli" }
-        XCTAssertEqual(whisper?.formula, "whisper-cpp")
-        XCTAssertEqual(whisper?.isInstalled, false)
-        XCTAssertEqual(whisper?.isRequired, false)
+        XCTAssertEqual(components.map(\.id), ["yt-dlp", "ffmpeg", "deno"])
+        XCTAssertEqual(components.map(\.isRequired), [true, true, true])
+        XCTAssertFalse(components.contains { $0.id == "whisper-cli" })
         XCTAssertFalse(DependencySetup.needsSetup(components))
-        XCTAssertEqual(DependencySetup.missingOptional(from: components).map(\.id), ["whisper-cli"])
+        XCTAssertEqual(DependencySetup.missingOptional(from: components).map(\.id), [])
     }
 
     func testBurnerSkipsFfmpegWithoutSubtitleRenderer() {

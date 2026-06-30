@@ -4,6 +4,40 @@ import XCTest
 /// 译文清洗：去掉模型自加的行首对话破折号、兜底折叠分隔符（修复烧录字幕出现 "– …" 和 " / " 的脏输出）。
 final class TranslationSanitizeTests: XCTestCase {
 
+    // MARK: - 句内即时重复词组折叠(whisper 口吃)
+
+    func testCollapsesImmediatePhraseStutter() {
+        // whisper 口吃:连续 3+ 次同一短语 → 折叠为 1 次,保留其后文本。
+        XCTAssertEqual(
+            ConfiguredTranslator.collapseImmediatePhraseRepeats("I've got to leave I've got to leave I've got to leave Sorry"),
+            "I've got to leave Sorry"
+        )
+    }
+
+    func testCollapseLeavesLegitimateDoubleRepeat() {
+        // 仅 2 次重复(可能是强调)不折叠;且短句(<6 token)不动。
+        XCTAssertEqual(
+            ConfiguredTranslator.collapseImmediatePhraseRepeats("Hello hello"),
+            "Hello hello"
+        )
+        XCTAssertEqual(
+            ConfiguredTranslator.collapseImmediatePhraseRepeats("Never gonna give you up never gonna give you up"),
+            "Never gonna give you up never gonna give you up"
+        )
+    }
+
+    func testCollapseLeavesNonRepeatedTextUntouched() {
+        let s = "I was wondering if after all these years you would like to meet"
+        XCTAssertEqual(ConfiguredTranslator.collapseImmediatePhraseRepeats(s), s)
+    }
+
+    func testCollapseSingleWordStutter() {
+        XCTAssertEqual(
+            ConfiguredTranslator.collapseImmediatePhraseRepeats("you you you you you you I said"),
+            "you I said"
+        )
+    }
+
     func testStripsLeadingDialogueDash() {
         XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("– 几乎从来不取决于硬件本身"), "几乎从来不取决于硬件本身")
         XCTAssertEqual(ConfiguredTranslator.sanitizeTranslation("- 你好"), "你好")

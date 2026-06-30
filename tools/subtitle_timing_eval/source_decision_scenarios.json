@@ -1,0 +1,90 @@
+{
+  "_comment": "源决策(是否调用 Whisper)的可执行规格：每个场景给定已知输入与正确决策。M0 用 Python 镜像 predicted_decision_for_gate 打分；M1 落地后 Swift/C# SubtitleSourceDecisionEngine 必须在同一份场景上达到同样结果(交叉校验实现是否符合规格)。decision 取值：manual/platform/localASR/cloudASR/none。",
+  "scenarios": [
+    {
+      "id": "manual-trusted-always",
+      "desc": "存在人工字幕：永远直接信任,不跑门、不回退",
+      "manual_available": true,
+      "platform_available": true,
+      "platform_usable": false,
+      "local_asr_available": true,
+      "expected_decision": "manual"
+    },
+    {
+      "id": "clean-auto-keep-platform",
+      "desc": "平台自动字幕健康(过门)：保留平台,别白跑 Whisper",
+      "platform_available": true,
+      "platform_usable": true,
+      "local_asr_available": true,
+      "cloud_available": true,
+      "expected_decision": "platform"
+    },
+    {
+      "id": "garbled-auto-fallback-local",
+      "desc": "平台自动字幕乱码(不过门)+ 本地可用：回退 Whisper",
+      "platform_available": true,
+      "platform_usable": false,
+      "local_asr_available": true,
+      "expected_decision": "localASR"
+    },
+    {
+      "id": "garbled-auto-fallback-cloud",
+      "desc": "平台乱码 + 无本地但配了云端：用云端",
+      "platform_available": true,
+      "platform_usable": false,
+      "local_asr_available": false,
+      "cloud_available": true,
+      "expected_decision": "cloudASR"
+    },
+    {
+      "id": "garbled-auto-no-generator-keep-with-note",
+      "desc": "平台乱码 + 既无本地也无云端：沿用平台并提示(不阻塞)",
+      "platform_available": true,
+      "platform_usable": false,
+      "local_asr_available": false,
+      "cloud_available": false,
+      "expected_decision": "platform"
+    },
+    {
+      "id": "no-platform-local-available",
+      "desc": "无平台字幕 + 本地可用：直接 Whisper",
+      "platform_available": false,
+      "platform_usable": null,
+      "local_asr_available": true,
+      "expected_decision": "localASR"
+    },
+    {
+      "id": "no-platform-cloud-only",
+      "desc": "无平台字幕 + 仅云端：用云端",
+      "platform_available": false,
+      "local_asr_available": false,
+      "cloud_available": true,
+      "expected_decision": "cloudASR"
+    },
+    {
+      "id": "no-source-at-all",
+      "desc": "彻底没有任何源：none",
+      "platform_available": false,
+      "local_asr_available": false,
+      "cloud_available": false,
+      "expected_decision": "none"
+    },
+    {
+      "id": "manual-overrides-clean-auto",
+      "desc": "人工 + 健康自动同时在：仍选人工(信任 > 评分)",
+      "manual_available": true,
+      "platform_available": true,
+      "platform_usable": true,
+      "expected_decision": "manual"
+    },
+    {
+      "id": "clean-auto-no-generators",
+      "desc": "健康自动 + 无任何生成器：保留平台",
+      "platform_available": true,
+      "platform_usable": true,
+      "local_asr_available": false,
+      "cloud_available": false,
+      "expected_decision": "platform"
+    }
+  ]
+}

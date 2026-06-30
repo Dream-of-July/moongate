@@ -6,22 +6,23 @@ public enum SubtitleSourceResolver {
         let candidates = filterByLanguage(request.candidates, requestedLanguage: requestedLanguage)
         guard !candidates.isEmpty else { return nil }
 
-        let scored = candidates.map {
-            SubtitleQualityScorer.score(
+        // 评估 + 择优统一委托给 SubtitleSourceDecisionEngine（门每候选只跑一次、tie-break 单一口径）。
+        let assessments = candidates.map {
+            SubtitleSourceDecisionEngine.assess(
                 candidate: $0,
                 requestedSourceLanguageCode: requestedLanguage,
                 videoDurationSeconds: request.videoDurationSeconds
             )
         }
         let selectableIDs = Set(candidates.compactMap { $0.fileURL == nil ? nil : $0.id })
-        guard !selectableIDs.isEmpty else { return nil }
-        guard let winner = scored.filter({ selectableIDs.contains($0.candidateID) }).max(by: { lhs, rhs in
-            let lhsRank = lhs.score + policyBoost(lhs.kind, request.sourcePolicy)
-            let rhsRank = rhs.score + policyBoost(rhs.kind, request.sourcePolicy)
-            if lhsRank != rhsRank { return lhsRank < rhsRank }
-            return sourceKindRank(lhs.kind) > sourceKindRank(rhs.kind)
-        }),
-              let selected = candidates.first(where: { $0.id == winner.candidateID }) else {
+        guard !selectableIDs.isEmpty,
+              let winnerID = SubtitleSourceDecisionEngine.choose(
+                policy: request.sourcePolicy,
+                assessments: assessments,
+                selectableIDs: selectableIDs
+              ),
+              let winner = assessments.first(where: { $0.candidateID == winnerID }),
+              let selected = candidates.first(where: { $0.id == winnerID }) else {
             return nil
         }
 
@@ -38,54 +39,18 @@ public enum SubtitleSourceResolver {
             usedLocalASRFallback: selected.kind == .localASR
                 && candidates.contains { $0.kind != .localASR },
             fallbackReasons: [],
-            candidateReports: scored.map { score in
+            candidateReports: assessments.map { assessment in
                 SubtitleSourceCandidateReport(
-                    sourceKind: score.kind,
-                    languageCode: score.languageCode,
-                    available: candidates.contains { $0.id == score.candidateID && $0.fileURL != nil },
-                    selected: score.candidateID == winner.candidateID,
-                    usable: score.verdict >= .usable,
-                    qualityVerdict: score.verdict,
-                    reasons: score.reasons
+                    sourceKind: assessment.kind,
+                    languageCode: assessment.languageCode,
+                    available: candidates.contains { $0.id == assessment.candidateID && $0.fileURL != nil },
+                    selected: assessment.candidateID == winnerID,
+                    usable: assessment.verdict >= .usable,
+                    qualityVerdict: assessment.verdict,
+                    reasons: assessment.reasons
                 )
             }
         )
-    }
-
-    private static func policyBoost(_ kind: SubtitleSourceKind, _ policy: SubtitleSourcePolicy) -> Double {
-        switch policy {
-        case .autoBest:
-            return 0
-        case .preferPlatform:
-            return isPlatform(kind) ? 12 : 0
-        case .forcePlatform:
-            return isPlatform(kind) ? 10_000 : -10_000
-        case .preferLocalASR:
-            return kind == .localASR ? 12 : 0
-        case .forceLocalASR:
-            return kind == .localASR ? 10_000 : -10_000
-        case .compareLocalASR:
-            return 0
-        case .cloudASR:
-            return kind == .cloudASR ? 10_000 : -10_000
-        case .importedFile:
-            return kind == .importedFile ? 10_000 : -10_000
-        }
-    }
-
-    private static func isPlatform(_ kind: SubtitleSourceKind) -> Bool {
-        kind == .manual || kind == .platformAuto || kind == .hlsManifest
-    }
-
-    private static func sourceKindRank(_ kind: SubtitleSourceKind) -> Int {
-        switch kind {
-        case .manual: return 0
-        case .importedFile: return 1
-        case .hlsManifest: return 2
-        case .platformAuto: return 3
-        case .cloudASR: return 4
-        case .localASR: return 5
-        }
     }
 
     private static func normalizedLanguage(from intent: SourceLanguageIntent) -> String? {

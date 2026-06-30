@@ -14,6 +14,8 @@ struct ContentView: View {
     @FocusState private var urlFieldFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
+    @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
 
     init(model: ViewModel) {
         self.model = model
@@ -545,7 +547,7 @@ struct ContentView: View {
         )
     }
 
-    private func sourceLanguageRows(_ info: VideoInfo) -> some View {
+    private func sourceLanguageRows(_ info: VideoInfo, state: ReadySubtitleState? = nil) -> some View {
         let recommendation = model.sourceLanguageRecommendation(for: info)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -574,6 +576,65 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
+
+            if let warning = sourceLanguageMismatchWarning(for: recommendation, state: state) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            Button(localizer.t(L.Ready.sourceLanguageUseRecommended, recommendation.displayName)) {
+                                model.setReadySourceLanguagePreference(recommendation.code, for: info)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            Button(localizer.t(L.Ready.sourceLanguageResetAuto)) {
+                                model.setReadySourceLanguagePreference("auto", for: info)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(localizer.t(L.Ready.sourceLanguageMismatchAccessibility))
+                .accessibilityValue(warning)
+            }
+        }
+    }
+
+    private func sourceLanguageMismatchWarning(
+        for recommendation: SubtitleLanguageRecommender.SourceLanguageRecommendation,
+        state: ReadySubtitleState?
+    ) -> String? {
+        guard let track = state?.selectedTrack,
+              isPlatformSubtitleTrack(track),
+              recommendation.confidence >= .medium else { return nil }
+        let selectedCode = LanguageCatalog.normalize(track.languageCode)
+        let recommendedCode = LanguageCatalog.normalize(recommendation.code)
+        guard !selectedCode.isEmpty,
+              !recommendedCode.isEmpty,
+              selectedCode != "auto",
+              recommendedCode != "auto",
+              selectedCode != recommendedCode else { return nil }
+        let selectedName = subtitleDisplayLanguage(selectedCode)
+        return localizer.t(L.Ready.sourceLanguageMismatchWarning, selectedName, recommendation.displayName)
+    }
+
+    private func isPlatformSubtitleTrack(_ track: SubtitleChoice) -> Bool {
+        switch track.sourceKind {
+        case .manual, .platformAuto, .hlsManifest:
+            return true
+        case .localASR, .cloudASR, .importedFile:
+            return false
         }
     }
 
@@ -711,9 +772,11 @@ struct ContentView: View {
             }
 
             Divider().padding(.leading, 12)
-            DisclosureGroup(localizer.t(L.Ready.subtitleSourceMoreOptions)) {
+            sourceLanguageRows(info, state: state)
+
+            Divider().padding(.leading, 12)
+            DisclosureGroup(localizer.t(L.Ready.subtitleSourceMoreOptions), isExpanded: $subtitleMoreOptionsExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
-                    sourceLanguageRows(info)
                     importedSubtitleFileRow(info)
                 }
                 .padding(.top, 6)
@@ -726,26 +789,26 @@ struct ContentView: View {
 
     @ViewBuilder
     private func importedSubtitleFileRow(_ info: VideoInfo) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button(localizer.t(L.Ready.importSubtitleFile)) {
-                    importSubtitleFile(for: info)
-                }
-                .buttonStyle(.bordered)
-                if let url = model.importedSubtitleFileURL {
-                    Text(localizer.t(L.Ready.importedSubtitleSelected, url.lastPathComponent))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button(localizer.t(L.Ready.clearImportedSubtitle)) {
-                        model.clearImportedSubtitleFile(for: info)
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                }
+        HStack(spacing: 8) {
+            Button(localizer.t(L.Ready.importSubtitleFile)) {
+                importSubtitleFile(for: info)
             }
+            .buttonStyle(.bordered)
+            if let url = model.importedSubtitleFileURL {
+                Text(localizer.t(L.Ready.importedSubtitleSelected, url.lastPathComponent))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button(localizer.t(L.Ready.clearImportedSubtitle)) {
+                    model.clearImportedSubtitleFile(for: info)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func importSubtitleFile(for info: VideoInfo) {
@@ -836,7 +899,7 @@ struct ContentView: View {
         case .localASR:
             return localizer.t(L.Ready.localASR)
         case .cloudASR:
-            return localizer.t(L.Ready.localASR)
+            return localizer.t(L.Ready.cloudASR)
         case .importedFile:
             return localizer.t(L.Ready.importedSubtitle)
         }
@@ -1226,32 +1289,37 @@ private struct SourceLanguagePickerSheet: View {
     @State private var advancedExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(localizer.t(L.Ready.sourceLanguagePickerTitle))
                 .font(.headline)
-            languageButton(
-                title: localizer.t(L.Ready.sourceLanguageAuto),
-                detail: nil,
-                isSelected: model.readySourceLanguagePreference == "auto"
-            ) {
-                select("auto")
-            }
-            Divider()
-            ForEach(commonEntries, id: \.code) { entry in
-                languageButton(
-                    title: entry.displayName,
-                    detail: "\(entry.chineseName) · \(entry.code)",
-                    isSelected: selectedCode == entry.code
-                ) {
-                    select(entry.code)
-                }
-            }
+
+            // 搜索框置顶：直接过滤下方列表（旧版搜索框在列表下方，逻辑反直觉）。
             TextField(localizer.t(L.Ready.sourceLanguageSearchPlaceholder), text: $searchText)
                 .textFieldStyle(.roundedBorder)
-            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
+
+            // 单一、定高、可滚动的列表：搜索时只显示匹配项；未搜索时显示「自动 + 常用语言」。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if isSearching {
                         ForEach(searchResults, id: \.code) { entry in
+                            languageButton(
+                                title: entry.displayName,
+                                detail: "\(entry.chineseName) · \(entry.code)",
+                                isSelected: selectedCode == entry.code
+                            ) {
+                                select(entry.code)
+                            }
+                        }
+                    } else {
+                        languageButton(
+                            title: localizer.t(L.Ready.sourceLanguageAuto),
+                            detail: nil,
+                            isSelected: model.readySourceLanguagePreference == "auto"
+                        ) {
+                            select("auto")
+                        }
+                        Divider().padding(.vertical, 2)
+                        ForEach(commonEntries, id: \.code) { entry in
                             languageButton(
                                 title: entry.displayName,
                                 detail: "\(entry.chineseName) · \(entry.code)",
@@ -1262,8 +1330,10 @@ private struct SourceLanguagePickerSheet: View {
                         }
                     }
                 }
-                .frame(maxHeight: 180)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: 248)
+
             DisclosureGroup(localizer.t(L.Ready.sourceLanguageManualCode), isExpanded: $advancedExpanded) {
                 HStack(spacing: 8) {
                     TextField(localizer.t(L.Ready.sourceLanguageManualCodePlaceholder), text: $manualCode)
@@ -1277,13 +1347,19 @@ private struct SourceLanguagePickerSheet: View {
                 }
                 .padding(.top, 6)
             }
+
             HStack {
                 Spacer()
                 Button(localizer.t(L.Common.cancel)) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
         }
         .padding(20)
         .frame(width: 420)
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var selectedCode: String {
@@ -1470,17 +1546,18 @@ private struct OnboardingView: View {
         onboardingComponentRow(
             icon: "wrench.and.screwdriver",
             title: localizer.t(L.Onboarding.requiredComponentsTitle),
-            detail: localizer.t(L.Onboarding.requiredComponentsDetail)
+            detail: localizer.t(L.Onboarding.requiredComponentsDetail),
+            status: localizer.t(L.Onboarding.statusReadyToCheck),
+            tint: .secondary
         )
         onboardingComponentRow(
             icon: "captions.bubble",
             title: localizer.t(L.Onboarding.recommendedComponentsTitle),
-            detail: localizer.t(L.Onboarding.recommendedComponentsDetail)
-        )
-        onboardingComponentRow(
-            icon: "waveform.path.ecg",
-            title: localizer.t(L.Onboarding.optionalComponentsTitle),
-            detail: localizer.t(L.Onboarding.optionalComponentsDetail)
+            detail: localizer.t(L.Onboarding.recommendedComponentsDetail),
+            status: model.localASRReadyForDownload
+                ? localizer.t(L.Onboarding.statusReady)
+                : localizer.t(L.Onboarding.statusRecommended),
+            tint: model.localASRReadyForDownload ? .green : .orange
         )
 
         Toggle(isOn: $preferLocalSpeechRecognition) {
@@ -1508,11 +1585,25 @@ private struct OnboardingView: View {
         }
     }
 
-    private func onboardingComponentRow(icon: String, title: String, detail: String) -> some View {
+    private func onboardingComponentRow(
+        icon: String,
+        title: String,
+        detail: String,
+        status: String,
+        tint: Color
+    ) -> some View {
         Label {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.callout.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.callout.weight(.medium))
+                    Text(status)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(tint.opacity(0.12)))
+                }
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -68,6 +68,7 @@ def transcribe_words_whisper_cpp(
     prompt: Optional[str] = None,
     no_gpu: bool = False,
     max_context_tokens: Optional[int] = None,
+    dtw_preset: Optional[str] = None,
 ) -> Dict[str, object]:
     if not model_path:
         raise RuntimeError("whisper.cpp ASR requires --model-path pointing to a local ggml model.")
@@ -117,6 +118,10 @@ def transcribe_words_whisper_cpp(
         args.extend(["--prompt", prompt])
     if max_context_tokens is not None:
         args.extend(["-mc", str(max(0, max_context_tokens))])
+    # 与生产一致:DTW token 时间戳显著优于粗糙 offsets(记忆 M4 实测 accepted 0.22→0.58)。
+    # flash-attn 会静默禁用 DTW,故必须 -nfa。preset 用点号形(large.v3.turbo)。
+    if dtw_preset:
+        args.extend(["-dtw", dtw_preset, "-nfa"])
     if no_gpu:
         args.append("--no-gpu")
     subprocess.run(args, check=True)
@@ -289,6 +294,14 @@ def parse_whisper_cpp_words(root: Dict[str, Any]) -> List[Dict[str, object]]:
             words.append({"start": span[0], "end": span[1], "text": text})
 
     words.sort(key=lambda word: (float(word["start"]), float(word["end"])))
+    # 镜像生产 applyDTWTiming(ASR.swift:5468):词尾收到"下一个词起点"(连续语音)或保留声学时长(遇真停顿)。
+    # 仅缩短不延长(min),对非 DTW 输入近乎 no-op(其 end 通常已 <= 下一 start);对 DTW 输入修正退化词尾。
+    for i in range(len(words) - 1):
+        start = float(words[i]["start"])
+        acoustic_end = max(float(words[i]["end"]), start + 0.12)
+        nxt = float(words[i + 1]["start"])
+        end = min(nxt, acoustic_end) if nxt > start else acoustic_end
+        words[i]["end"] = max(start, end)
     return words
 
 
@@ -391,11 +404,20 @@ def _speech_text(value: Any) -> str:
 
 
 def _interval(value: Dict[str, Any]) -> Optional[tuple[float, float]]:
+    # 生产优先用 DTW 起点(t_dtw,厘秒,-1=未计算)替代粗糙 offsets 起点——DTW 词级对齐更准(ASR.swift:5392)。
+    dtw_start: Optional[float] = None
+    raw_dtw = value.get("t_dtw")
+    if isinstance(raw_dtw, (int, float)) and raw_dtw >= 0:
+        dtw_start = float(raw_dtw) / 100.0
+
     offsets = value.get("offsets")
     if isinstance(offsets, dict):
         start = _seconds(offsets.get("from"), values_are_ms=True)
         end = _seconds(offsets.get("to"), values_are_ms=True)
         if start is not None and end is not None and end >= start:
+            if dtw_start is not None:
+                # 用 DTW 精确起点,保留声学时长(end-start)。词尾的"下一onset收尾"由 parse_whisper_cpp_words 后处理统一做。
+                return dtw_start, dtw_start + (end - start)
             return start, end
 
     timestamps = value.get("timestamps")

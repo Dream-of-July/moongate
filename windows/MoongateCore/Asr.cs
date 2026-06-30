@@ -1376,6 +1376,16 @@ public static partial class LocalAsrSubtitleTimingPlanner
     // and is merged into the temporally-closest neighbour, within this same-utterance gap.
     private const int LoneMergeMaxVisibleChars = 3;
     private const double LoneMergeMaxGapSeconds = 1.0;
+
+    /// <summary>
+    /// 合并短孤儿组的有效间隙上限。仅 speech 档收紧到该档"大停顿断句阈值"(真实停顿是合法人工句边界,
+    /// 已断处不应被短组重并吞回,strong-recall 丢分);歌词/动漫档保持 1.0s(有专门跨演唱停顿重接逻辑,冻结)。
+    /// 镜像 Swift effectiveLoneMergeMaxGap。
+    /// </summary>
+    private static double EffectiveLoneMergeMaxGap(SubtitleTimingThresholds thresholds, SubtitleTimingProfile profile) =>
+        profile == SubtitleTimingProfile.Speech
+            ? Math.Min(LoneMergeMaxGapSeconds, thresholds.LargeSpeechGapSeconds)
+            : LoneMergeMaxGapSeconds;
     private const double JapaneseLyricParticleRejoinMaxGapSeconds = 1.35;
     private const double JapaneseLyricSemanticRejoinMaxGapSeconds = 0.75;
     private const double JapaneseLyricKanaVerbRejoinMaxGapSeconds = 0.9;
@@ -1447,7 +1457,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             }
         }
         FlushCurrent();
-        groups = MergeShortGroups(groups, thresholds);
+        groups = MergeShortGroups(groups, thresholds, profile);
         if (profile == SubtitleTimingProfile.JapaneseLyrics)
         {
             groups = RebalanceJapaneseLyricPhraseStarts(groups, thresholds);
@@ -2603,7 +2613,8 @@ public static partial class LocalAsrSubtitleTimingPlanner
     // cues like 「顔」 separated from 「洗って」). Mirrors the Swift MergeShortGroups.
     private static List<List<SubtitleCueSourceFragment>> MergeShortGroups(
         List<List<SubtitleCueSourceFragment>> groups,
-        SubtitleTimingThresholds thresholds)
+        SubtitleTimingThresholds thresholds,
+        SubtitleTimingProfile profile)
     {
         if (groups.Count <= 1) return groups;
         var result = new List<List<SubtitleCueSourceFragment>>();
@@ -2617,7 +2628,7 @@ public static partial class LocalAsrSubtitleTimingPlanner
             {
                 var leading = new List<SubtitleCueSourceFragment> { group[0] };
                 var gapPrev = leading[0].StartSeconds - result[^1][^1].EndSeconds;
-                if (gapPrev <= LoneMergeMaxGapSeconds
+                if (gapPrev <= EffectiveLoneMergeMaxGap(thresholds, profile)
                     && FitsMergedCue([.. result[^1], .. leading], thresholds, leading))
                 {
                     result[^1] = [.. result[^1], .. leading];
@@ -2636,10 +2647,10 @@ public static partial class LocalAsrSubtitleTimingPlanner
                 var gapNext = nextGroup is not null
                     ? nextGroup[0].StartSeconds - group[^1].EndSeconds
                     : double.MaxValue;
-                var canMergePrevious = gapPrev <= LoneMergeMaxGapSeconds
+                var canMergePrevious = gapPrev <= EffectiveLoneMergeMaxGap(thresholds, profile)
                     && result.Count > 0
                     && FitsMergedCue([.. result[^1], .. group], thresholds, group);
-                var canMergeNext = gapNext <= LoneMergeMaxGapSeconds
+                var canMergeNext = gapNext <= EffectiveLoneMergeMaxGap(thresholds, profile)
                     && nextGroup is not null
                     && FitsMergedCue([.. group, .. nextGroup], thresholds, group);
 
@@ -3706,6 +3717,8 @@ public static partial class LocalAsrSubtitleTimingPlanner
 public static class WhisperCueRetimer
 {
     public const double OnsetDelaySeconds = 0.2;
+    /// <summary>整段第一条字幕的 lead-in 阈值:首词在此秒数内(贴近视频开头)则首条从 0 起显,填掉开头空白。镜像 Swift。</summary>
+    public const double FirstCueLeadInSeconds = 0.3;
     public const double InterCueGuardSeconds = 0.08;
     public const double HoldToNextSeconds = 0.7;
     public const double MixedCjkLatinHoldToNextSeconds = 0.45;
@@ -3752,7 +3765,17 @@ public static class WhisperCueRetimer
             // Appearance: nudge the onset slightly later (DTW has a small early bias; window ideal
             // is slightly-late) so cues don't appear before speech. Bounded to keep a readable
             // minimum duration, never before the previous cue's end, never negative.
-            var start = starts[i] + thresholds.OnsetDelaySeconds;
+            // 例外:整段第一条不加 onsetDelay(避免视频开头首句"话说完才出现");首词贴近开头则从 0 起显填空白,
+            // 首词前有真实静音则用原始 onset(不提前进静音)。镜像 Swift。
+            double start;
+            if (i == 0)
+            {
+                start = starts[i] <= FirstCueLeadInSeconds ? 0 : starts[i];
+            }
+            else
+            {
+                start = starts[i] + thresholds.OnsetDelaySeconds;
+            }
             start = Math.Min(start, Math.Max(starts[i], ends[i] - MinimumCueSeconds));
             if (i > 0) start = Math.Max(start, previousEnd);
             start = Math.Max(start, 0);
@@ -4032,6 +4055,14 @@ public static class AsrPromptBuilder
         return result;
     }
 
+    /// <summary>
+    /// 是否对该识别档启用 whisper.cpp VAD。VAD 对演讲/对白安全（实测全程覆盖、转写几乎不变），但对歌唱/音乐
+    /// 灾难性失效——silero 把演唱人声+伴奏判为非语音、丢掉大部分音频（实测 群青 130s→仅 1 段 47s 残片）。
+    /// 故歌词高质量档关闭 VAD。
+    /// </summary>
+    public static bool VadEnabled(AsrRecognitionProfile recognitionProfile) =>
+        recognitionProfile != AsrRecognitionProfile.LyricsHighQuality;
+
     public static int? MaxTextContextTokens(
         string videoPath,
         string languageCode,
@@ -4308,10 +4339,9 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             transcript = await _recognizer.TranscribeAsync(request, progress, control, ct).ConfigureAwait(false);
             qualitySummary = QualitySummary(transcript, request, languageHintCode);
         }
-        if (qualitySummary.HasSevereQualityBlocker)
-        {
-            throw MoongateException.DownloadFailed(SevereAsrQualityMessage());
-        }
+        // 严重质量问题（重复循环 / 自动语言误判）不再让整个任务失败——whisper 是 fallback，硬失败只会让
+        // 用户一无所得（近期被感知为"识别变差"的回归）。改为照常产出字幕并透传 qualitySummary，由 Queue 给出
+        // 诚实的"识别可能不可靠"提示。
         progress(new AsrProgress { Phase = AsrProgressPhase.SubtitleSegment, CompletedUnits = 0, TotalUnits = 1 });
         var activity = await AudioActivityIfNeededAsync(transcript, videoFile, audioPath, control, ct).ConfigureAwait(false);
         var output = AsrTranscriptMapper.WriteLocalAsrSourceSrt(transcript, videoFile, activity);
@@ -4324,6 +4354,8 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
         var recognitionProfile = AsrPromptBuilder.RecognitionProfile(videoFile, languageCode);
         var prompt = _promptProvider?.Invoke(videoFile, languageCode);
         var maxTextContextTokens = AsrPromptBuilder.MaxTextContextTokens(videoFile, languageCode, recognitionProfile);
+        // VAD 对演讲/对白安全但对歌唱/音乐灾难性失效（silero 把演唱人声判为非语音、丢大部分音频）→ 歌词档关闭。
+        var vadEnabled = AsrPromptBuilder.VadEnabled(recognitionProfile);
         return new AsrRequest
         {
             AudioPath = audioPath,
@@ -4332,7 +4364,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             Prompt = prompt,
             RecognitionProfile = recognitionProfile,
             MaxTextContextTokens = maxTextContextTokens,
-            VadEnabled = true,
+            VadEnabled = vadEnabled,
             VadModelPath = _vadModelPath,
             WordTimestamps = true,
             CacheKey = CacheKey(
@@ -4342,7 +4374,7 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
                 recognitionProfile,
                 maxTextContextTokens,
                 AsrBackendKind.WhisperCpp,
-                vadEnabled: true,
+                vadEnabled: vadEnabled,
                 vadModelPath: _vadModelPath,
                 wordTimestamps: true,
                 dtwTokenTimestamps: true),
@@ -4372,12 +4404,6 @@ public sealed class WhisperCppLocalAsrSubtitleGenerator : ILocalAsrSubtitleGener
             || summary.QualityIssues.Contains("phraseLoop")
             || summary.QualityIssues.Contains("lowSegmentDiversity");
     }
-
-    private static string SevereAsrQualityMessage() =>
-        L10n.T(
-            "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
-            "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。",
-            "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.");
 
     private async Task<AsrAudioActivity?> AudioActivityIfNeededAsync(
         AsrTranscript transcript,

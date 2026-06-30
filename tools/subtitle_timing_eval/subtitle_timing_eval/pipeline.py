@@ -3606,6 +3606,7 @@ def transcribe_file(
     prompt: Optional[str] = None,
     whisper_cpp_no_gpu: bool = False,
     whisper_cpp_max_context_tokens: Optional[int] = None,
+    whisper_cpp_dtw_preset: Optional[str] = None,
 ) -> Dict[str, object]:
     if engine == "whisper-cpp":
         return transcribe_words_whisper_cpp(
@@ -3618,6 +3619,7 @@ def transcribe_file(
             prompt=prompt,
             no_gpu=whisper_cpp_no_gpu,
             max_context_tokens=whisper_cpp_max_context_tokens,
+            dtw_preset=whisper_cpp_dtw_preset,
         )
     if engine == "sensevoice-funasr":
         return transcribe_words_sensevoice_funasr(

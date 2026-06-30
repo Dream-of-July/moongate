@@ -2011,3 +2011,36 @@ public class ConfiguredTranslatorTests : IDisposable
         Assert.Equal("等等……", ConfiguredTranslator.SanitizeTranslation("等等……"));
     }
 }
+
+public class TranslatorDestutterTests
+{
+    [Fact]
+    public void CollapsesImmediatePhraseStutter()
+    {
+        Assert.Equal(
+            "I've got to leave Sorry",
+            ConfiguredTranslator.CollapseImmediatePhraseRepeats("I've got to leave I've got to leave I've got to leave Sorry"));
+    }
+
+    [Fact]
+    public void LeavesLegitimateDoubleRepeat()
+    {
+        Assert.Equal("Hello hello", ConfiguredTranslator.CollapseImmediatePhraseRepeats("Hello hello"));
+        Assert.Equal(
+            "Never gonna give you up never gonna give you up",
+            ConfiguredTranslator.CollapseImmediatePhraseRepeats("Never gonna give you up never gonna give you up"));
+    }
+
+    [Fact]
+    public void LeavesNonRepeatedTextUntouched()
+    {
+        const string s = "I was wondering if after all these years you would like to meet";
+        Assert.Equal(s, ConfiguredTranslator.CollapseImmediatePhraseRepeats(s));
+    }
+
+    [Fact]
+    public void CollapsesSingleWordStutter()
+    {
+        Assert.Equal("you I said", ConfiguredTranslator.CollapseImmediatePhraseRepeats("you you you you you you I said"));
+    }
+}

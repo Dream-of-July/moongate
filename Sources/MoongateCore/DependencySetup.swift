@@ -13,21 +13,41 @@ public enum DependencySetup {
         /// 一句话用途
         public let purpose: String
         public let isInstalled: Bool
-        /// 是否属于普通下载链路的必需组件；本地 whisper.cpp 是可选能力，不阻塞 onboarding。
+        /// 是否属于普通下载链路的必需组件。
         public let isRequired: Bool
+        /// 检测到的可执行文件路径；nil 表示未安装或不是本机可探测路径。
+        public let installPath: String?
+
+        public init(
+            id: String,
+            formula: String,
+            purpose: String,
+            isInstalled: Bool,
+            isRequired: Bool,
+            installPath: String? = nil
+        ) {
+            self.id = id
+            self.formula = formula
+            self.purpose = purpose
+            self.isInstalled = isInstalled
+            self.isRequired = isRequired
+            self.installPath = installPath
+        }
     }
 
     /// 依赖体检。ffmpeg 与 Burner 同口径：必须带 subtitles/libass 渲染能力；
     /// JS 运行时 deno/node 任一即可（yt-dlp 解 YouTube n-challenge 需要）。
-    /// whisper.cpp 为本地 ASR 可选组件，不阻塞普通下载。
     public static func check() -> [Component] {
-        components(
-            ytDlpInstalled: find("yt-dlp") != nil,
-            subtitleRendererFfmpegInstalled: FFmpegBurner.locateSubtitleRendererFFmpeg() != nil,
-            jsRuntimeInstalled: find("deno") != nil || find("node") != nil,
-            localWhisperInstalled: ASRRuntimeLocator(
-                extraSearchURLs: localASRRuntimeSearchURLs()
-            ).locate() != nil || find("whisper-cli") != nil
+        let ytDlpPath = find("yt-dlp")
+        let subtitleRendererFfmpegPath = FFmpegBurner.locateSubtitleRendererFFmpeg()
+        let jsRuntimePath = find("deno") ?? find("node")
+        return components(
+            ytDlpInstalled: ytDlpPath != nil,
+            subtitleRendererFfmpegInstalled: subtitleRendererFfmpegPath != nil,
+            jsRuntimeInstalled: jsRuntimePath != nil,
+            ytDlpPath: ytDlpPath,
+            subtitleRendererFfmpegPath: subtitleRendererFfmpegPath,
+            jsRuntimePath: jsRuntimePath
         )
     }
 
@@ -35,32 +55,31 @@ public enum DependencySetup {
         ytDlpInstalled: Bool,
         subtitleRendererFfmpegInstalled: Bool,
         jsRuntimeInstalled: Bool,
-        localWhisperInstalled: Bool = false
+        ytDlpPath: String? = nil,
+        subtitleRendererFfmpegPath: String? = nil,
+        jsRuntimePath: String? = nil
     ) -> [Component] {
         [
             Component(
                 id: "yt-dlp", formula: "yt-dlp",
                 purpose: CoreL10n.t(L.Dependency.purposeYtDlp),
                 isInstalled: ytDlpInstalled,
-                isRequired: true
+                isRequired: true,
+                installPath: ytDlpPath
             ),
             Component(
                 id: "ffmpeg", formula: "ffmpeg-full",
                 purpose: CoreL10n.t(L.Dependency.purposeFfmpeg),
                 isInstalled: subtitleRendererFfmpegInstalled,
-                isRequired: true
+                isRequired: true,
+                installPath: subtitleRendererFfmpegPath
             ),
             Component(
                 id: "deno", formula: "deno",
                 purpose: CoreL10n.t(L.Dependency.purposeDeno),
                 isInstalled: jsRuntimeInstalled,
-                isRequired: true
-            ),
-            Component(
-                id: "whisper-cli", formula: "whisper-cpp",
-                purpose: CoreL10n.t(L.Dependency.purposeWhisperCpp),
-                isInstalled: localWhisperInstalled,
-                isRequired: false
+                isRequired: true,
+                installPath: jsRuntimePath
             ),
         ]
     }
@@ -97,21 +116,5 @@ public enum DependencySetup {
         return nil
     }
 
-    private static func localASRRuntimeSearchURLs() -> [URL] {
-        let runtimeURL = AppSettings.supportDirectory
-            .appendingPathComponent("asr", isDirectory: true)
-            .appendingPathComponent("runtime", isDirectory: true)
-        var urls = [
-            runtimeURL,
-            runtimeURL.appendingPathComponent("bin", isDirectory: true),
-        ]
-        if let bundledRuntimeURL = Bundle.main.resourceURL?
-            .appendingPathComponent("asr", isDirectory: true)
-            .appendingPathComponent("runtime", isDirectory: true) {
-            urls.append(bundledRuntimeURL)
-            urls.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
-        }
-        return urls
-    }
 }
 #endif

@@ -600,6 +600,20 @@ public struct ASRModelManifest: Codable, Equatable, Sendable {
             sourceDescription: "ggerganov/whisper.cpp on Hugging Face"
         )
     ])
+
+    public static let recommendedWhisperCppVAD = ASRModelManifest(models: [
+        ASRModelInfo(
+            id: "whisper.cpp-vad:silero-v5_1_2",
+            displayName: "Silero voice boundary detector v5.1.2",
+            fileName: "ggml-silero-v5.1.2.bin",
+            downloadURL: URL(string: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin")!,
+            sizeBytes: 885_098,
+            sha256: "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+            memoryRequiredMB: 64,
+            license: "MIT",
+            sourceDescription: "ggml-org/whisper-vad on Hugging Face"
+        )
+    ])
 }
 
 public struct ASRModelInfo: Codable, Equatable, Sendable {
@@ -1589,6 +1603,15 @@ enum LocalASRSubtitleTimingPlanner {
     /// Only merge a lone short cue into a neighbour within this gap (same utterance), so merging
     /// never drags a word across a long pause (which would make it appear early).
     private static let loneMergeMaxGapSeconds = 1.0
+    /// 合并短孤儿组的有效间隙上限。**仅 speech 档**收紧到该档的"大停顿断句阈值":真实语音停顿是合法的人工句
+    /// 边界,若在此处已正确断开,短组重并会把它吞回去(实测 tedx_nagoya:0.86s 停顿处人工断句被 1.0s 重并覆盖,
+    /// strong-recall 丢分)。歌词/动漫档**保持 1.0s**——它们有专门的跨"演唱停顿"重接逻辑(0.75-1.35s),
+    /// 收紧会破坏已调好的副歌/乐句重接(冻结档,不动)。
+    private static func effectiveLoneMergeMaxGap(_ thresholds: SubtitleTimingThresholds, profile: SubtitleTimingProfile) -> Double {
+        profile == .speech
+            ? min(loneMergeMaxGapSeconds, thresholds.largeSpeechGapSeconds)
+            : loneMergeMaxGapSeconds
+    }
     private static let japaneseLyricParticleRejoinMaxGapSeconds = 1.35
     private static let japaneseLyricSemanticRejoinMaxGapSeconds = 0.75
     private static let japaneseLyricKanaVerbRejoinMaxGapSeconds = 0.9
@@ -1635,7 +1658,8 @@ enum LocalASRSubtitleTimingPlanner {
     /// jarring 1-character cues like 「顔」 separated from 「洗って」.
     private static func mergeShortGroups(
         _ groups: [[SubtitleCueSourceFragment]],
-        thresholds: SubtitleTimingThresholds
+        thresholds: SubtitleTimingThresholds,
+        profile: SubtitleTimingProfile
     ) -> [[SubtitleCueSourceFragment]] {
         // 入口过滤空组：下游多处取 first/last，空组会越界崩溃（BUG-D 防御）。正常分词不产空组，
         // 过滤后所有 first/last 访问都在“组恒非空”不变式下安全。
@@ -1651,7 +1675,7 @@ enum LocalASRSubtitleTimingPlanner {
                startsWithLeadingProhibited(group[0].text) {
                 let leading = [group[0]]
                 let gapPrev = leading[0].startSeconds - prevEnd
-                if gapPrev <= loneMergeMaxGapSeconds,
+                if gapPrev <= effectiveLoneMergeMaxGap(thresholds, profile: profile),
                    fitsMergedCue(previous + leading, absorbingShortGroup: leading, thresholds: thresholds) {
                     result[result.count - 1] = previous + leading
                     group.removeFirst()
@@ -1671,9 +1695,9 @@ enum LocalASRSubtitleTimingPlanner {
                 let gapNext = nextGroup.flatMap { $0.first?.startSeconds }.map { $0 - groupEnd }
                     ?? Double.greatestFiniteMagnitude
                 let previous = result.last
-                let canMergePrevious = gapPrev <= loneMergeMaxGapSeconds
+                let canMergePrevious = gapPrev <= effectiveLoneMergeMaxGap(thresholds, profile: profile)
                     && previous.map { fitsMergedCue($0 + group, absorbingShortGroup: group, thresholds: thresholds) } == true
-                let canMergeNext = gapNext <= loneMergeMaxGapSeconds
+                let canMergeNext = gapNext <= effectiveLoneMergeMaxGap(thresholds, profile: profile)
                     && nextGroup.map { fitsMergedCue(group + $0, absorbingShortGroup: group, thresholds: thresholds) } == true
 
                 if shouldPreferNextMerge(for: text), canMergeNext, let nextGroup {
@@ -2406,7 +2430,7 @@ enum LocalASRSubtitleTimingPlanner {
             }
         }
         flushCurrent()
-        groups = mergeShortGroups(groups, thresholds: thresholds)
+        groups = mergeShortGroups(groups, thresholds: thresholds, profile: profile)
         if profile == .japaneseLyrics {
             groups = rebalanceJapaneseLyricPhraseStarts(groups, thresholds: thresholds)
             groups = rebalanceJapaneseLyricSingleFragmentBoundaries(groups, thresholds: thresholds)
@@ -3910,6 +3934,9 @@ public enum WhisperCueRetimer {
     /// centred around +100..+200ms (slightly late reads better than early). A small delay keeps
     /// subtitles from appearing before speech. Bounded so short cues keep a readable duration.
     public static let onsetDelaySeconds = 0.2
+    /// 整段第一条字幕的提前量(lead-in):视频开头观众等在空屏前,首句早一点出现更自然(不像中途 cue 那样
+    /// 需要避让前一条/防早现)。仅作用于 index==0,clamp 到 ≥0。
+    public static let firstCueLeadInSeconds = 0.3
     /// Gap kept before the next cue's onset so adjacent cues never overlap.
     public static let interCueGuardSeconds = 0.08
     /// Maximum extra hold past the last spoken token. whisper ends words noticeably earlier
@@ -3975,7 +4002,21 @@ public enum WhisperCueRetimer {
             // Appearance: nudge the onset slightly later (DTW has a small early bias; the window's
             // ideal is slightly-late) so cues don't appear before speech. Bounded so the cue keeps
             // a readable minimum duration, never before the previous cue's end, never negative.
-            var start = raw.start + thresholds.onsetDelaySeconds
+            // 例外:**整段第一条**不加 onsetDelay。视频开头观众盯着空屏等,首句比首词再晚 0.2s 会明显"话快说完才
+            // 出现"。但也不能拉到首词之前(那会在静音里空显)——除非首词本就贴近视频开头(leadingSilence 很短),
+            // 才给一点 lead-in 提前量填掉开头那点空白。中途 cue 维持原 +onsetDelay(避让前条/防早现)。
+            var start: Double
+            if index == 0 {
+                if raw.start <= firstCueLeadInSeconds {
+                    // 首词贴近视频开头:从 0 起显,填掉开头空白。
+                    start = 0
+                } else {
+                    // 首词前有真实静音(如前奏/留白):用原始 onset,不加延迟、也不提前进静音。
+                    start = raw.start
+                }
+            } else {
+                start = raw.start + thresholds.onsetDelaySeconds
+            }
             start = min(start, max(raw.start, raw.end - baseMinimumCueSeconds))
             if index > 0 { start = max(start, previousEnd) }
             start = max(start, 0)
@@ -4356,6 +4397,13 @@ public enum ASRPromptBuilder {
             characters: ["コウペンちゃん", "邪エナガさん"],
             glossaryTerms: ["チョコバナナ", "ソースせんべい", "くじ引きやろう"]
         )
+    }
+
+    /// 是否对该识别档启用 whisper.cpp VAD。VAD 对演讲/对白安全（实测全程覆盖、转写几乎不变），但对
+    /// 歌唱/音乐**灾难性失效**——silero 把演唱人声+伴奏判为非语音、丢掉大部分音频（实测 群青 130s→仅
+    /// 1 段 47s 残片）。故歌词高质量档关闭 VAD。
+    public static func vadEnabled(for recognitionProfile: ASRRecognitionProfile) -> Bool {
+        recognitionProfile != .lyricsHighQuality
     }
 
     public static func maxTextContextTokens(
@@ -4739,9 +4787,9 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
                 languageHintCode: languageHintCode
             )
         }
-        guard !qualitySummary.hasSevereQualityBlocker else {
-            throw MoongateError.downloadFailed(Self.severeASRQualityMessage())
-        }
+        // 严重质量问题（重复循环 / 自动语言误判）**不再让整个任务失败**——whisper 是 fallback，
+        // 没有更好的源可换，硬失败只会让用户一无所得（这是近期被感知为"识别变差"的回归）。改为照常产出
+        // 字幕，并把 qualitySummary 透传出去，由 QueueManager 给出诚实的"识别可能不可靠"提示，让用户决定。
         progress(ASRProgress(phase: .subtitleSegment, completedUnits: 0, totalUnits: 1))
         let audioActivity = try await audioActivityIfNeeded(
             transcript: transcript,
@@ -4779,6 +4827,9 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             languageCode: languageCode,
             recognitionProfile: recognitionProfile
         )
+        // VAD 对**演讲/对白**安全（实测全程覆盖、转写几乎不变），但对**歌唱/音乐**灾难性失效——silero 把
+        // 演唱人声+伴奏判为非语音，丢掉大部分音频（实测 群青 130s→仅 1 段 47s 残片）。因此歌词档关闭 VAD。
+        let vadEnabled = ASRPromptBuilder.vadEnabled(for: recognitionProfile)
         return ASRRequest(
             audioURL: audioURL,
             languageCode: languageCode,
@@ -4786,7 +4837,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
             prompt: prompt,
             recognitionProfile: recognitionProfile,
             maxTextContextTokens: maxTextContextTokens,
-            vadEnabled: true,
+            vadEnabled: vadEnabled,
             vadModelPath: vadModelURL?.path,
             wordTimestamps: true,
             cacheKey: cacheKey(
@@ -4796,7 +4847,7 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
                 recognitionProfile: recognitionProfile,
                 maxTextContextTokens: maxTextContextTokens,
                 backendKind: .whisperCpp,
-                vadEnabled: true,
+                vadEnabled: vadEnabled,
                 vadModelPath: vadModelURL?.path,
                 wordTimestamps: true,
                 dtwTokenTimestamps: true
@@ -4834,14 +4885,6 @@ public struct WhisperCppLocalASRSubtitleGenerator: LocalASRSubtitleGenerator {
         return summary.qualityIssues.contains("autoLanguageMismatch")
             || summary.qualityIssues.contains("phraseLoop")
             || summary.qualityIssues.contains("lowSegmentDiversity")
-    }
-
-    private static func severeASRQualityMessage() -> String {
-        CoreL10n.text(
-            en: "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.",
-            zhHans: "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
-            zhHant: "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。"
-        )
     }
 
     private func audioActivityIfNeeded(

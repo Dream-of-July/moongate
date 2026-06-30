@@ -1696,6 +1696,36 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 2.0, accuracy: 0.001)
     }
 
+    /// YouTube 自动字幕在「时间行」和「文本行」之间插入仅含空格的行（" "）。这种空格占位不能当作块分隔，
+    /// 否则时间行与文本被拆成两个块、整条 cue 被丢弃（实测 Antigravity 视频首句「This video sponsored by…」
+    /// 整条消失、次句从 9.96s 变成 11.83s 才出现）。本测试用真实格式钉死修复。
+    func testParseVTTHandlesYouTubeSpacePaddingBetweenTimingAndText() {
+        // 用显式 \n 拼接,确保保留行内的单个空格(""" 字面量会被编辑器/工具去尾空格)。
+        let raw = [
+            "WEBVTT",
+            "Kind: captions",
+            "Language: en",
+            "",
+            "00:00:00.000 --> 00:00:09.950 align:start position:0%",
+            " ",
+            "This<00:00:00.160><c> video</c><00:00:00.400><c> sponsored</c><00:00:00.880><c> by</c><00:00:01.040><c> Anti-Gravity.</c>",
+            "",
+            "00:00:09.960 --> 00:00:11.830 align:start position:0%",
+            " ",
+            "So,<00:00:10.160><c> this</c><00:00:10.360><c> here</c>",
+        ].joined(separator: "\n")
+
+        let cues = parseVTT(raw)
+
+        // 首句必须保留,且从 0s 起。
+        XCTAssertGreaterThanOrEqual(cues.count, 2)
+        XCTAssertEqual(cues[0].text, "This video sponsored by Anti-Gravity.")
+        XCTAssertEqual(srtTimeToSeconds(cues[0].start) ?? -1, 0.0, accuracy: 0.001)
+        // 次句从 9.96s 起,而不是被错位到 11.83s。
+        XCTAssertEqual(cues[1].text, "So, this here")
+        XCTAssertEqual(srtTimeToSeconds(cues[1].start) ?? -1, 9.96, accuracy: 0.001)
+    }
+
     func testParseVTTDropsRollingTransitionAndDisplaysOnlyNewText() {
         let raw = """
         WEBVTT

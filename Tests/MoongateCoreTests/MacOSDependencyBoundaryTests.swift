@@ -45,10 +45,11 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
             hintExpression: "localizer.t(L.Dependency.installHint)"
         )
 
-        XCTAssertTrue(sheetBody.contains("installer.installOptional(component)"))
-        XCTAssertTrue(sheetBody.contains("model.openLocalASRSettings()"))
-        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.installOptional)"))
-        XCTAssertTrue(sheetBody.contains("localizer.t(L.Dependency.configureOptional)"))
+        XCTAssertFalse(sheetBody.contains("installer.installOptional(component)"))
+        XCTAssertFalse(sheetBody.contains("model.openLocalASRSettings()"))
+        XCTAssertFalse(sheetBody.contains("localizer.t(L.Dependency.installOptional)"))
+        XCTAssertFalse(sheetBody.contains("localizer.t(L.Dependency.configureOptional)"))
+        XCTAssertFalse(sheetBody.contains("whisper-cli"))
     }
 
     func testDependencySetupCloseButtonExplainsInstallCancellationScope() throws {
@@ -77,18 +78,15 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertFalse(helpBody.contains("installer.install()"))
     }
 
-    func testDependencyUninstallFeatureRemoved() throws {
-        // MAC-DEP-001：App 不应替用户管理全局 Homebrew 环境（检测到的 ffmpeg/JS 运行时
-        // 可能是用户为别的项目装的）。在 App 内提供「卸载依赖」会误伤其它工具，已整体移除。
+    func testDependencyInstallerExposesSingleComponentUninstallForStorageManagement() throws {
         let source = try dependencySetupSource()
-        XCTAssertFalse(source.contains("func uninstall()"))
-        XCTAssertFalse(source.contains("installer.uninstall()"))
+        XCTAssertTrue(source.contains("func uninstall(_ component: DependencySetup.Component)"))
+        XCTAssertTrue(source.contains("runBrew(subcommand: \"uninstall\", formulas: [component.formula])"))
+        XCTAssertTrue(source.contains("case uninstallIncomplete(Int32)"))
+        XCTAssertTrue(source.contains("localizer.t(L.Dependency.uninstallIncomplete"))
         XCTAssertFalse(source.contains("showUninstallConfirm"))
-        XCTAssertFalse(source.contains("brew uninstall"))
-        XCTAssertFalse(source.contains("uninstallIncomplete"))
         XCTAssertFalse(source.contains("L.Dependency.deleteDependencies"))
         XCTAssertFalse(source.contains("L.Dependency.uninstallAlertTitle"))
-        // 安装路径仍在。
         XCTAssertTrue(source.contains("func install()"))
         XCTAssertTrue(source.contains("subcommand: \"install\""))
     }
@@ -106,8 +104,9 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(componentRowBody.contains(".accessibilityElement(children: .combine)"))
         XCTAssertTrue(componentRowBody.contains(".accessibilityLabel(componentAccessibilityLabel(component))"))
         XCTAssertTrue(componentRowBody.contains(".accessibilityValue(componentStatusText(component))"))
-        XCTAssertTrue(componentRowBody.contains("localizer.t(L.Dependency.optionalBadge)"))
-        XCTAssertTrue(componentRowBody.contains("component.id == \"whisper-cli\""))
+        XCTAssertFalse(componentRowBody.contains("localizer.t(L.Dependency.optionalBadge)"))
+        XCTAssertFalse(componentRowBody.contains("component.id == \"whisper-cli\""))
+        XCTAssertFalse(componentRowBody.contains("installOptional"))
 
         let helperBody = try XCTUnwrap(
             functionBody(prefix: "private func componentAccessibilityLabel", in: source)
@@ -117,7 +116,10 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         XCTAssertTrue(helperBody.contains("localizer.t(L.Dependency.componentAccessibilityLabel"))
 
         let purposeBody = try XCTUnwrap(functionBody(prefix: "private func componentPurposeText", in: source))
-        XCTAssertTrue(purposeBody.contains("case \"whisper-cli\": return localizer.t(L.Dependency.purposeWhisperCpp)"))
+        XCTAssertTrue(purposeBody.contains("case \"yt-dlp\": return localizer.t(L.Dependency.purposeYtDlp)"))
+        XCTAssertTrue(purposeBody.contains("case \"ffmpeg\": return localizer.t(L.Dependency.purposeFfmpeg)"))
+        XCTAssertTrue(purposeBody.contains("case \"deno\": return localizer.t(L.Dependency.purposeDeno)"))
+        XCTAssertFalse(purposeBody.contains("purposeWhisperCpp"))
 
         XCTAssertTrue(sheetBody.contains(".accessibilityLabel(localizer.t(L.Dependency.logAccessibility))"))
 

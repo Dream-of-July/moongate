@@ -15,7 +15,9 @@ public enum SubtitleQualityScorer {
                 score: 0,
                 verdict: .unusable,
                 reasons: [localGenerated ? "pendingGeneration" : "missingFile"],
-                report: nil
+                report: nil,
+                gateUsable: false,
+                gateReasons: []
             )
         }
 
@@ -72,11 +74,14 @@ public enum SubtitleQualityScorer {
             score: clamped,
             verdict: verdict,
             reasons: Array(Set(reasons)).sorted(),
-            report: report
+            report: report,
+            gateUsable: gate.usable,
+            gateReasons: gate.reasons
         )
     }
 
-    private static func baseScore(for kind: SubtitleSourceKind) -> Double {
+    /// 来源出处先验分（fixture `subtitleSourceDecision.baseScore` 两端契约真值）。internal 供契约测试断言。
+    static func baseScore(for kind: SubtitleSourceKind) -> Double {
         switch kind {
         case .manual:
             return 85
@@ -93,11 +98,15 @@ public enum SubtitleQualityScorer {
         }
     }
 
+    /// score→5 档裁决的分界阈值（fixture `subtitleSourceDecision.verdictThresholds`）。
+    static let verdictThresholds: (excellent: Double, good: Double, usable: Double, lowConfidence: Double) =
+        (85, 72, 55, 35)
+
     private static func verdict(for score: Double) -> SubtitleQualityVerdict {
-        if score >= 85 { return .excellent }
-        if score >= 72 { return .good }
-        if score >= 55 { return .usable }
-        if score >= 35 { return .lowConfidence }
+        if score >= verdictThresholds.excellent { return .excellent }
+        if score >= verdictThresholds.good { return .good }
+        if score >= verdictThresholds.usable { return .usable }
+        if score >= verdictThresholds.lowConfidence { return .lowConfidence }
         return .unusable
     }
 

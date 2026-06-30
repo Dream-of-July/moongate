@@ -103,11 +103,30 @@ func parseVTT(_ raw: String) -> [SubtitleCue] {
         blocks.append(currentBlock)
         currentBlock = []
     }
+    // VTT 块以**真正的空行**分隔。但 YouTube 自动字幕会在「时间行」与「文本行」之间插入仅含空格的行
+    // （如 " "），它是 cue 内部的占位/对齐填充，不是块边界——若按"trim 后为空"切块，会把时间行与文本
+    // 拆成两个块，导致整条 cue 被丢弃（实测 Antigravity 视频首句「This video sponsored by…」因此整条消失，
+    // 字幕从第 9 秒变成第 11.8 秒才出现）。因此：块内已出现时间行且尚无正文时，空格行视为正文占位而非分隔。
+    var currentBlockHasTiming = false
+    var currentBlockHasBodyAfterTiming = false
     for line in lines {
-        if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            // 仅含空格（非完全空）的行：若紧跟在时间行后、正文尚未出现，则当作正文占位保留，不切块。
+            let isWhitespacePadding = !line.isEmpty && currentBlockHasTiming && !currentBlockHasBodyAfterTiming
+            if isWhitespacePadding {
+                continue // 丢弃这个空格占位行，但**不**结束当前块
+            }
             flushBlock()
+            currentBlockHasTiming = false
+            currentBlockHasBodyAfterTiming = false
         } else {
             currentBlock.append(line)
+            if parseVTTTimeLine(line) != nil {
+                currentBlockHasTiming = true
+            } else if currentBlockHasTiming {
+                currentBlockHasBodyAfterTiming = true
+            }
         }
     }
     flushBlock()
@@ -128,7 +147,9 @@ func parseVTT(_ raw: String) -> [SubtitleCue] {
             cueStart: timing.start,
             cueEnd: max(timing.end, timing.start),
             previousVisible: previousVisible
-        ) else { continue }
+        ) else {
+                continue
+        }
 
         cues.append(SubtitleCue(
             index: cues.count + 1,
@@ -3237,15 +3258,25 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         _ cues: [SubtitleCue],
         sourceLanguageCode: String?
     ) -> [SubtitleCue] {
+        // 先做语言无关的"句内即时重复词组折叠"(whisper 口吃artifact,如 "I've got to leave I've got to leave
+        // I've got to leave" → "I've got to leave")。这是无歧义的识别噪声(同一 cue 内连续重复),与跨 cue 的
+        // 合法副歌重复不同,折叠它能同时改善源可读性与翻译输入。对所有语言安全。
+        let destuttered = cues.map { cue in
+            SubtitleCue(
+                index: cue.index, start: cue.start, end: cue.end,
+                text: collapseImmediatePhraseRepeats(cue.text),
+                sourceFragments: cue.sourceFragments
+            )
+        }
         let normalizedSource = TranslationLanguage.normalizedScript(sourceLanguageCode ?? "")
         guard normalizedSource == "ja"
             || normalizedSource == "ko"
             || normalizedSource == "yue"
             || normalizedSource.hasPrefix("zh") else {
-            return cues
+            return destuttered
         }
-        let filtered = cues.filter { !isObviousCJKRomanizedGarbageCue($0.text) }
-        guard !filtered.isEmpty else { return cues }
+        let filtered = destuttered.filter { !isObviousCJKRomanizedGarbageCue($0.text) }
+        guard !filtered.isEmpty else { return destuttered }
         return filtered.enumerated().map { offset, cue in
             SubtitleCue(
                 index: offset + 1,
@@ -3255,6 +3286,33 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
                 sourceFragments: cue.sourceFragments
             )
         }
+    }
+
+    /// 折叠 cue 内"即时重复的词组"——whisper 口吃 artifact(连续 ≥3 次同一短语)。保守:仅当某词组从头连续
+    /// 重复 ≥3 次时把这串折叠为 1 次(其余文本保留)。2 次重复(可能是强调/合法副歌)不动。空白分词(拉丁)。
+    static func collapseImmediatePhraseRepeats(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let collapsedLines = lines.map { line -> String in
+            let tokens = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard tokens.count >= 6 else { return line }  // 太短不折叠,避免误伤
+            for phraseLen in 1...(tokens.count / 3) {
+                let phrase = Array(tokens[0..<phraseLen])
+                let lowerPhrase = phrase.map { $0.lowercased() }
+                var repeats = 1
+                var idx = phraseLen
+                while idx + phraseLen <= tokens.count
+                    && Array(tokens[idx..<(idx + phraseLen)]).map({ $0.lowercased() }) == lowerPhrase {
+                    repeats += 1
+                    idx += phraseLen
+                }
+                if repeats >= 3 {
+                    let remainder = Array(tokens[idx...])
+                    return (phrase + remainder).joined(separator: " ")
+                }
+            }
+            return line
+        }
+        return collapsedLines.joined(separator: "\n")
     }
 
     private static func strippingParentheticalLatinGlossesForCJK(_ text: String) -> String {
