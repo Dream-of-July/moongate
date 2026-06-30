@@ -5,7 +5,7 @@ set -euo pipefail
 
 PROJ_DIR="${0:a:h}"
 SCRATCH="$HOME/Library/Caches/vdl-build"
-VERSION="${MOONGATE_VERSION:-0.8.0}"
+VERSION="${MOONGATE_VERSION:-0.8.1}"
 BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-8005}"
 RELEASE_TAG="${RELEASE_TAG:-v$VERSION}"
 ZIP="${1:-$HOME/Downloads/Moongate-macOS-v$VERSION.zip}"

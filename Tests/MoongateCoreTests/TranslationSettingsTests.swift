@@ -104,6 +104,8 @@ final class TranslationSettingsTests: XCTestCase {
 
     func testLocalASRSettingsDefaultOffAndRoundTripThroughJSON() throws {
         let fresh = AppSettings()
+        XCTAssertEqual(fresh.subtitleRecognitionMode, .automatic)
+        XCTAssertEqual(fresh.localRecognitionQuality, .standard)
         XCTAssertFalse(fresh.localASREnabled)
         XCTAssertEqual(fresh.localASRRuntimePath, "")
         XCTAssertEqual(fresh.localASRModelPath, "")
@@ -111,19 +113,25 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(fresh.localASRPreciseModeEnabled)
         XCTAssertEqual(fresh.localASRSidecarRuntimePath, "")
         XCTAssertEqual(fresh.localASRSidecarModelPath, "")
+        XCTAssertEqual(fresh.localASRVADModelPath, "")
         XCTAssertFalse(fresh.isLocalASRSidecarConfigured)
 
         let settings = AppSettings(
+            subtitleRecognitionMode: .alwaysLocal,
+            localRecognitionQuality: .accurate,
             localASREnabled: true,
             localASRRuntimePath: " /opt/moongate/bin/whisper-cli\n",
             localASRModelPath: "\n/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin ",
             localASRModelID: " whisper.cpp:small-q5_1\n",
             localASRPreciseModeEnabled: true,
             localASRSidecarRuntimePath: " /opt/moongate/bin/faster-whisper-sidecar\n",
-            localASRSidecarModelPath: "\n/Users/me/Models/faster-whisper-small "
+            localASRSidecarModelPath: "\n/Users/me/Models/faster-whisper-small ",
+            localASRVADModelPath: " /Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin\n"
         )
         let encoded = try JSONEncoder().encode(settings)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["subtitleRecognitionMode"] as? String, "alwaysLocal")
+        XCTAssertEqual(object["localRecognitionQuality"] as? String, "accurate")
         XCTAssertEqual(object["localASREnabled"] as? Bool, true)
         XCTAssertEqual(object["localASRRuntimePath"] as? String, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(object["localASRModelPath"] as? String, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
@@ -131,8 +139,14 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(object["localASRPreciseModeEnabled"] as? Bool, true)
         XCTAssertEqual(object["localASRSidecarRuntimePath"] as? String, "/opt/moongate/bin/faster-whisper-sidecar")
         XCTAssertEqual(object["localASRSidecarModelPath"] as? String, "/Users/me/Models/faster-whisper-small")
+        XCTAssertEqual(
+            object["localASRVADModelPath"] as? String,
+            "/Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin"
+        )
 
         let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        XCTAssertEqual(decoded.subtitleRecognitionMode, .alwaysLocal)
+        XCTAssertEqual(decoded.localRecognitionQuality, .accurate)
         XCTAssertTrue(decoded.localASREnabled)
         XCTAssertEqual(decoded.localASRRuntimePath, "/opt/moongate/bin/whisper-cli")
         XCTAssertEqual(decoded.localASRModelPath, "/Users/me/Library/Application Support/Moongate/asr/ggml-small.bin")
@@ -140,7 +154,20 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertTrue(decoded.localASRPreciseModeEnabled)
         XCTAssertEqual(decoded.localASRSidecarRuntimePath, "/opt/moongate/bin/faster-whisper-sidecar")
         XCTAssertEqual(decoded.localASRSidecarModelPath, "/Users/me/Models/faster-whisper-small")
+        XCTAssertEqual(
+            decoded.localASRVADModelPath,
+            "/Users/me/Library/Application Support/Moongate/asr/vad/ggml-silero-vad-v5.1.2.bin"
+        )
         XCTAssertTrue(decoded.isLocalASRSidecarConfigured)
+
+        let unknownFutureValue = try decodeSettings("""
+        {
+          "subtitleRecognitionMode": "futureMode",
+          "localRecognitionQuality": "futureQuality"
+        }
+        """)
+        XCTAssertEqual(unknownFutureValue.subtitleRecognitionMode, .automatic)
+        XCTAssertEqual(unknownFutureValue.localRecognitionQuality, .standard)
     }
 
     func testCloudASRSettingsDefaultOffRequireConsentAndRoundTrip() throws {
@@ -574,6 +601,20 @@ final class TranslationSettingsTests: XCTestCase {
 
         XCTAssertFalse(leakedEnglish.usable)
         XCTAssertTrue(leakedEnglish.reasons.contains(.sourceLanguageLeakage))
+
+        let technicalChinese = TranslationOutputQualityGate.assess(
+            lines: [
+                "这期讲 UI 的 Weird Future，以及 user interfaces 为什么会变得更像 AI agent",
+                "我们会看到 Starbucks、ChatGPT plugin、URL、API 和 Figma 如何影响 interface pattern"
+            ],
+            sourceLanguageCode: "en",
+            targetLanguageCode: "zh-Hans"
+        )
+
+        XCTAssertTrue(
+            technicalChinese.usable,
+            "英文科技视频的正常中文译文会保留产品名和 UI/API 术语，不能按拉丁字母比例误判失败。"
+        )
     }
 
     func testSmartTranslationAdviceNormalizesSourceLanguageAndCapsLists() throws {
@@ -1653,6 +1694,36 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertEqual(cues[0].sourceFragments[1].endSeconds, 1.2, accuracy: 0.001)
         XCTAssertEqual(cues[0].sourceFragments[2].startSeconds, 1.2, accuracy: 0.001)
         XCTAssertEqual(cues[0].sourceFragments[2].endSeconds, 2.0, accuracy: 0.001)
+    }
+
+    /// YouTube 自动字幕在「时间行」和「文本行」之间插入仅含空格的行（" "）。这种空格占位不能当作块分隔，
+    /// 否则时间行与文本被拆成两个块、整条 cue 被丢弃（实测 Antigravity 视频首句「This video sponsored by…」
+    /// 整条消失、次句从 9.96s 变成 11.83s 才出现）。本测试用真实格式钉死修复。
+    func testParseVTTHandlesYouTubeSpacePaddingBetweenTimingAndText() {
+        // 用显式 \n 拼接,确保保留行内的单个空格(""" 字面量会被编辑器/工具去尾空格)。
+        let raw = [
+            "WEBVTT",
+            "Kind: captions",
+            "Language: en",
+            "",
+            "00:00:00.000 --> 00:00:09.950 align:start position:0%",
+            " ",
+            "This<00:00:00.160><c> video</c><00:00:00.400><c> sponsored</c><00:00:00.880><c> by</c><00:00:01.040><c> Anti-Gravity.</c>",
+            "",
+            "00:00:09.960 --> 00:00:11.830 align:start position:0%",
+            " ",
+            "So,<00:00:10.160><c> this</c><00:00:10.360><c> here</c>",
+        ].joined(separator: "\n")
+
+        let cues = parseVTT(raw)
+
+        // 首句必须保留,且从 0s 起。
+        XCTAssertGreaterThanOrEqual(cues.count, 2)
+        XCTAssertEqual(cues[0].text, "This video sponsored by Anti-Gravity.")
+        XCTAssertEqual(srtTimeToSeconds(cues[0].start) ?? -1, 0.0, accuracy: 0.001)
+        // 次句从 9.96s 起,而不是被错位到 11.83s。
+        XCTAssertEqual(cues[1].text, "So, this here")
+        XCTAssertEqual(srtTimeToSeconds(cues[1].start) ?? -1, 9.96, accuracy: 0.001)
     }
 
     func testParseVTTDropsRollingTransitionAndDisplaysOnlyNewText() {

@@ -59,7 +59,6 @@
     "latinScriptBonus": 30,
     "cjkPresenceBonus": 20,
     "platformAutoCJKPresenceBonus": 90,
-    "targetLanguageTrackScore": 260,
     "preferredSourceLanguageScore": 180,
     "titleLanguageHintBonus": 15,
     "titleScriptDominanceRatio": 0.18
@@ -88,5 +87,35 @@
     "lowConfidenceWordProbability": 0.5,
     "lowConfidenceWordRatioCeiling": 0.2,
     "minimumAssessableWordCount": 24
+  },
+  "subtitleSourceDecision": {
+    "_comment": "SubtitleSourceDecisionEngine 的排名/裁决常量唯一真值。Swift 与 C# 各断言本端引擎常量等于此处(SubtitleSourceDecisionEngineTests)。baseScore=按来源出处的转写可信度先验(不看时序,守铁律);sourceKindRank=平分 tie-break 顺序(越小越可信,manual<auto<local);policyBoost=各 policy 对相应来源的排名加成;verdictThresholds=score→5档裁决分界;autoBestRegenerateBelow=autoBest 下平台 verdict 低于此档即重生成 Whisper(具名质量地板,取代旧的双裁决 OR)。",
+    "baseScore": {
+      "manual": 85,
+      "importedFile": 82,
+      "hlsManifest": 76,
+      "cloudASR": 70,
+      "platformAuto": 58,
+      "localASR": 50
+    },
+    "sourceKindRank": {
+      "manual": 0,
+      "importedFile": 1,
+      "hlsManifest": 2,
+      "platformAuto": 3,
+      "cloudASR": 4,
+      "localASR": 5
+    },
+    "policyBoost": {
+      "prefer": 12,
+      "force": 10000
+    },
+    "verdictThresholds": {
+      "excellent": 85,
+      "good": 72,
+      "usable": 55,
+      "lowConfidence": 35
+    },
+    "autoBestRegenerateBelow": "usable"
   }
 }

@@ -313,11 +313,7 @@ public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
     /// Normalizes a subtitle language code to a stable bucket key: lowercased, first `-` segment.
     /// So "ja", "ja-JP", "ja-orig" all collapse to "ja".
     public static func normalizedLanguageCode(_ code: String) -> String {
-        let lower = code.lowercased()
-        if let dash = lower.firstIndex(of: "-") {
-            return String(lower[..<dash])
-        }
-        return lower
+        LanguageCatalog.normalize(code)
     }
 
     /// Sort rank for technical tracks within a language group.
@@ -371,6 +367,8 @@ public struct VideoInfo: Sendable {
     public let durationText: String?
     public let thumbnailURL: URL?
     public let uploader: String?
+    /// yt-dlp `language` field, normalized by `LanguageCatalog`; nil when the extractor does not know.
+    public let detectedLanguageCode: String?
     /// 视频简介（yt-dlp description）；无简介为 nil。用于 AI 总结的回退数据源。
     public let description: String?
     /// 按推荐顺序排列（第一个为推荐档），保证至少一个元素
@@ -381,6 +379,7 @@ public struct VideoInfo: Sendable {
     public init(
         sourceURL: String, videoID: String, title: String,
         durationText: String?, thumbnailURL: URL?, uploader: String?,
+        detectedLanguageCode: String? = nil,
         description: String? = nil,
         formats: [FormatChoice], subtitles: [SubtitleChoice]
     ) {
@@ -390,6 +389,10 @@ public struct VideoInfo: Sendable {
         self.durationText = durationText
         self.thumbnailURL = thumbnailURL
         self.uploader = uploader
+        self.detectedLanguageCode = {
+            let normalized = LanguageCatalog.normalize(detectedLanguageCode)
+            return normalized.isEmpty ? nil : normalized
+        }()
         self.description = description
         self.formats = formats
         self.subtitles = subtitles

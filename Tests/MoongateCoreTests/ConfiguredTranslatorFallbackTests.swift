@@ -72,38 +72,81 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(result.map(\.text), [".", "点火"])
     }
 
-    func testTranslatorRejectsSourceLanguageLeakageBeforeWritingOutput() async throws {
+    func testTranslatorPreservesOutputWhenSourceLanguageLeakageRetryStillLooksBad() async throws {
         let source = try writeSRT("koupen.ja.srt", [
             SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "チョコバナナ"),
             SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:04,000", text: "くじ引きやろう"),
             SubtitleCue(index: 3, start: "00:00:05,000", end: "00:00:06,000", text: "世界の銀行が崩れた")
         ])
+        let attempts = AttemptCounter()
         let translator = ConfiguredTranslator(
             settings: cloudSettings(),
             appleTranslationExecutor: DefaultAppleTranslationExecutor(),
             modelSender: { _, _, _, _, _ in
-                ModelReply(
+                _ = await attempts.next()
+                return ModelReply(
                     text: "1|チョコナナナ很好吃\n2|我们去くじ引き野郎吧\n3|世界の銀行が崩れ了",
                     reachedOutputLimit: false
                 )
             }
         )
 
-        do {
-            _ = try await translator.translate(
-                srtFile: source,
-                style: .chineseOnly,
-                context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
-                control: nil,
-                progress: { _ in }
-            )
-            XCTFail("混入大量日文假名的中文字幕不应写出")
-        } catch MoongateError.translateFailed(let message) {
-            XCTAssertTrue(message.contains("源语言"))
-        }
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "ja", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
 
-        let output = tempDir.appendingPathComponent("koupen.ja.zh-Hans.srt")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.map(\.text), [
+            "チョコナナナ很好吃",
+            "我们去くじ引き野郎吧",
+            "世界の銀行が崩れ了"
+        ])
+        let attemptCount = await attempts.value()
+        XCTAssertEqual(attemptCount, 2)
+    }
+
+    func testTranslatorRetriesOnceWhenEnglishSourceLeakageIsDetected() async throws {
+        let source = try writeSRT("interfaces.en.srt", [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "This is the Starbucks app."),
+            SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:04,000", text: "The ChatGPT plugin can do things for you.")
+        ])
+        let attempts = AttemptCounter()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                if await attempts.next() == 1 {
+                    return ModelReply(
+                        text: "1|This is the Starbucks app.\n2|The ChatGPT plugin can do things for you.",
+                        reachedOutputLimit: false
+                    )
+                }
+                return ModelReply(
+                    text: "1|这是 Starbucks app\n2|ChatGPT plugin 可以替你完成操作",
+                    reachedOutputLimit: false
+                )
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.map(\.text), [
+            "这是 Starbucks app",
+            "ChatGPT plugin 可以替你完成操作"
+        ])
+        let attemptCount = await attempts.value()
+        XCTAssertEqual(attemptCount, 2)
     }
 
     func testTransientChunkNetworkErrorRetriesInsideChunk() async throws {

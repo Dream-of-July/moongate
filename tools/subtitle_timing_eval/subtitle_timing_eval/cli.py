@@ -207,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     asr.add_argument("--prompt")
     asr.add_argument("--no-gpu", action="store_true", help="Pass --no-gpu to whisper.cpp.")
     asr.add_argument("--max-context", type=int, help="Pass -mc to whisper.cpp, e.g. 0 for music samples that should not carry prompt context.")
+    asr.add_argument("--dtw-preset", help="Pass -dtw <preset> -nfa to whisper.cpp (e.g. large.v3.turbo) for production-accurate DTW word timestamps.")
 
     vad = sub.add_parser("vad", help="Extract speech activity segments from audio using local energy VAD.")
     vad.add_argument("--audio", required=True)
@@ -705,6 +706,7 @@ def main() -> None:
             prompt=args.prompt,
             whisper_cpp_no_gpu=args.no_gpu,
             whisper_cpp_max_context_tokens=args.max_context,
+            whisper_cpp_dtw_preset=args.dtw_preset,
         )
         print("words: %d" % len(payload["words"]))
         return

@@ -14,6 +14,8 @@ struct ContentView: View {
     @FocusState private var urlFieldFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
+    @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
 
     init(model: ViewModel) {
         self.model = model
@@ -64,6 +66,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showDependencySetup) {
             DependencySetupSheet(model: model)
+        }
+        .sheet(isPresented: $model.showSourceLanguagePicker) {
+            if case .ready(let info) = model.stage {
+                SourceLanguagePickerSheet(model: model, info: info)
+                    .environmentObject(localizer)
+            }
         }
         .sheet(isPresented: loginSheetBinding) {
             if let site = model.loginSite {
@@ -328,12 +336,13 @@ struct ContentView: View {
                     }
                     outputOptionsSection(info)
                     let subtitleState = model.readySubtitleState(for: info)
-                    section(localizer.t(L.Ready.subtitleOutputSection)) {
-                        subtitleOutputRows(info, state: subtitleState)
-                    }
-                    if subtitleState.needsSubtitleSource {
-                        section(localizer.t(L.Ready.subtitleSourceSection)) {
-                            subtitleSourceRows(info, state: subtitleState)
+                    section(localizer.t(L.Ready.subtitlesSection)) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            subtitleOutputRows(info, state: subtitleState)
+                            if subtitleState.needsSubtitleSource {
+                                Divider().padding(.horizontal, 12)
+                                subtitleSourceRows(info, state: subtitleState)
+                            }
                         }
                     }
                 }
@@ -509,35 +518,26 @@ struct ContentView: View {
 
     // MARK: - Language-first subtitle selection
 
-    private func sourceLanguagePreferencePicker(_ info: VideoInfo) -> some View {
-        HStack {
-            Text(localizer.t(L.Ready.sourceLanguagePickerAccessibility))
-            Spacer(minLength: 8)
-            Picker(localizer.t(L.Ready.sourceLanguagePickerAccessibility), selection: $model.readySourceLanguagePreference) {
-                ForEach(ViewModel.sourceLanguagePreferenceOptions) { option in
-                    Text(sourceLanguagePreferenceLabel(option.code)).tag(option.code)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
-            .onChange(of: model.readySourceLanguagePreference) { _, _ in
-                if let recommended = model.recommendedLanguage(for: info) {
-                    model.selectLanguage(recommended)
-                }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(localizer.t(L.Ready.sourceLanguagePickerAccessibility))
+    private var userSubtitleSourcePolicies: [SubtitleSourcePolicy] {
+        [.autoBest, .forcePlatform, .forceLocalASR]
     }
 
-    private func subtitleSourcePolicyBinding(for info: VideoInfo) -> Binding<SubtitleSourcePolicy> {
+    private func subtitleSourceModeBinding(for info: VideoInfo) -> Binding<SubtitleSourcePolicy> {
         Binding(
-            get: { model.subtitleSourcePolicy },
+            get: { userFacingSubtitleSourcePolicy(model.subtitleSourcePolicy) },
             set: { model.setSubtitleSourcePolicy($0, for: info) }
         )
+    }
+
+    private func userFacingSubtitleSourcePolicy(_ policy: SubtitleSourcePolicy) -> SubtitleSourcePolicy {
+        switch policy {
+        case .forcePlatform, .preferPlatform:
+            return .forcePlatform
+        case .forceLocalASR, .preferLocalASR:
+            return .forceLocalASR
+        case .autoBest, .compareLocalASR, .cloudASR, .importedFile:
+            return .autoBest
+        }
     }
 
     private func subtitleIntentBinding(for info: VideoInfo) -> Binding<SubtitleIntent> {
@@ -547,72 +547,128 @@ struct ContentView: View {
         )
     }
 
-    private func sourceLanguagePreferenceLabel(_ code: String) -> String {
-        if code == "auto" {
-            return localizer.t(L.Ready.sourceLanguageAuto)
-        }
-        return TranslationLanguage.sourceDisplayName(for: code) ?? code
-    }
-
-    /// Main area: the single recommended language plus an explanation that the source is
-    /// auto-chosen. Technical source details only appear once expanded.
-    @ViewBuilder
-    private func subtitleLanguageRows(_ info: VideoInfo) -> some View {
-        let recommended = model.recommendedLanguage(for: info)
-        let others = model.otherLanguages(for: info)
-        if let recommended {
-            subtitleLanguageRow(recommended, isRecommended: true)
-            Text(localizer.t(L.Ready.autoSourceExplanation))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 2)
-        }
-        if !others.isEmpty {
-            DisclosureGroup(isExpanded: $model.languageSectionExpanded) {
-                ForEach(Array(others.enumerated()), id: \.element.id) { index, language in
-                    subtitleLanguageRow(language, isRecommended: false)
-                    if index < others.count - 1 {
-                        Divider().padding(.leading, 12)
+    private func sourceLanguageRows(_ info: VideoInfo, state: ReadySubtitleState? = nil) -> some View {
+        let recommendation = model.sourceLanguageRecommendation(for: info)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(sourceLanguageSummaryTitle(recommendation))
+                        .font(.body)
+                    Text(sourceLanguageEvidenceText(recommendation))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if recommendation.isRareLanguage && !recommendation.shouldAutoSelect {
+                        Text(localizer.t(
+                            L.Ready.sourceLanguageRareWarning,
+                            recommendation.displayName,
+                            recommendation.code
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     }
                 }
-            } label: {
-                Text(localizer.t(L.Ready.moreLanguages))
-                    .font(.callout)
+                Spacer(minLength: 8)
+                Button(localizer.t(L.Ready.sourceLanguageChange)) {
+                    model.showSourceLanguagePicker = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding(.horizontal, 12)
-            .padding(.top, 4)
+            .padding(.vertical, 9)
+
+            if let warning = sourceLanguageMismatchWarning(for: recommendation, state: state) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            Button(localizer.t(L.Ready.sourceLanguageUseRecommended, recommendation.displayName)) {
+                                model.setReadySourceLanguagePreference(recommendation.code, for: info)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            Button(localizer.t(L.Ready.sourceLanguageResetAuto)) {
+                                model.setReadySourceLanguagePreference("auto", for: info)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(localizer.t(L.Ready.sourceLanguageMismatchAccessibility))
+                .accessibilityValue(warning)
+            }
         }
     }
 
-    /// One language row: display label + optional "recommended" badge plus the actual source badge.
-    @ViewBuilder
-    private func subtitleLanguageRow(_ language: SubtitleLanguageChoice, isRecommended: Bool) -> some View {
-        let needsLocalASRConfig = !language.hasManualTrack && !language.hasAutoTrack
-            && language.supportsLocalASR && !model.localASRReadyForDownload
-        primarySubtitleSourceRow(
-            title: language.displayLabel,
-            detail: nil,
-            badge: isRecommended ? localizer.t(L.Ready.recommendedBadge) : nil,
-            sourceBadge: subtitleLanguageSourceBadge(language),
-            isSelected: model.isLanguageSelected(language),
-            trailingActionLabel: needsLocalASRConfig ? localizer.t(L.Ready.localASRConfigure) : nil,
-            action: {
-                if needsLocalASRConfig {
-                    model.openLocalASRSettings()
-                } else {
-                    model.selectLanguage(language)
-                }
-            }
-        )
+    private func sourceLanguageMismatchWarning(
+        for recommendation: SubtitleLanguageRecommender.SourceLanguageRecommendation,
+        state: ReadySubtitleState?
+    ) -> String? {
+        guard let track = state?.selectedTrack,
+              isPlatformSubtitleTrack(track),
+              recommendation.confidence >= .medium else { return nil }
+        let selectedCode = LanguageCatalog.normalize(track.languageCode)
+        let recommendedCode = LanguageCatalog.normalize(recommendation.code)
+        guard !selectedCode.isEmpty,
+              !recommendedCode.isEmpty,
+              selectedCode != "auto",
+              recommendedCode != "auto",
+              selectedCode != recommendedCode else { return nil }
+        let selectedName = subtitleDisplayLanguage(selectedCode)
+        return localizer.t(L.Ready.sourceLanguageMismatchWarning, selectedName, recommendation.displayName)
     }
 
-    /// Technical source badge for the expanded list: prefers manual (none), then auto, then local.
-    private func subtitleLanguageSourceBadge(_ language: SubtitleLanguageChoice) -> String? {
-        if language.hasManualTrack { return nil }
-        if language.hasAutoTrack { return localizer.t(L.Ready.autoGenerated) }
-        if language.supportsLocalASR { return localizer.t(L.Ready.localASR) }
-        return nil
+    private func isPlatformSubtitleTrack(_ track: SubtitleChoice) -> Bool {
+        switch track.sourceKind {
+        case .manual, .platformAuto, .hlsManifest:
+            return true
+        case .localASR, .cloudASR, .importedFile:
+            return false
+        }
+    }
+
+    private func sourceLanguageSummaryTitle(
+        _ recommendation: SubtitleLanguageRecommender.SourceLanguageRecommendation
+    ) -> String {
+        if model.readySourceLanguagePreference.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "auto" {
+            return recommendation.displayName
+        }
+        if recommendation.confidence == .unknown {
+            return localizer.t(L.Ready.sourceLanguageAutoAfterDownload)
+        }
+        if recommendation.isRareLanguage && !recommendation.shouldAutoSelect {
+            return localizer.t(L.Ready.sourceLanguageAutoUncertain)
+        }
+        return localizer.t(L.Ready.sourceLanguageAuto)
+    }
+
+    private func sourceLanguageEvidenceText(
+        _ recommendation: SubtitleLanguageRecommender.SourceLanguageRecommendation
+    ) -> String {
+        if recommendation.isRareLanguage && !recommendation.shouldAutoSelect {
+            return localizer.t(L.Ready.sourceLanguageUnstableEvidence)
+        }
+        switch recommendation.evidence {
+        case .platformManualTrack, .platformAutoTrack:
+            return localizer.t(L.Ready.sourceLanguagePlatformEvidence, recommendation.displayName)
+        case .titleScript, .titleKeyword:
+            return localizer.t(L.Ready.sourceLanguageTitleEvidence, recommendation.displayName)
+        case .userSelected, .previousSetting, .asrDetected:
+            return localizer.t(L.Ready.sourceLanguagePlatformEvidence, recommendation.displayName)
+        case .fallback:
+            return localizer.t(L.Ready.sourceLanguageUnknownEvidence)
+        }
     }
 
     private func primarySubtitleSourceRow(
@@ -677,37 +733,51 @@ struct ContentView: View {
 
     private func subtitleSourceRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            primarySubtitleSourceRow(
-                title: localizer.t(L.Ready.autoBestSubtitleSource),
-                detail: localizer.t(L.Ready.autoBestSubtitleSourceDetail),
-                badge: localizer.t(L.Ready.recommendedBadge),
-                isSelected: state.sourcePolicy == .autoBest,
-                action: { model.setSubtitleSourcePolicy(.autoBest, for: info) }
-            )
-            Divider().padding(.leading, 12)
-            sourceLanguagePreferencePicker(info)
-            DisclosureGroup(localizer.t(L.Ready.subtitleSourceAdvanced)) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker(localizer.t(L.Ready.subtitleSourcePolicyAccessibility),
-                           selection: subtitleSourcePolicyBinding(for: info)) {
-                        ForEach(SubtitleSourcePolicy.allCases, id: \.rawValue) { policy in
-                            Text(subtitleSourcePolicyLabel(policy)).tag(policy)
+            VStack(spacing: 0) {
+                ForEach(Array(userSubtitleSourcePolicies.enumerated()), id: \.element.rawValue) { index, policy in
+                    primarySubtitleSourceRow(
+                        title: subtitleSourceModeTitle(policy),
+                        detail: subtitleSourceModeDetail(for: policy),
+                        badge: policy == .autoBest ? localizer.t(L.Ready.recommendedBadge) : nil,
+                        isSelected: userFacingSubtitleSourcePolicy(model.subtitleSourcePolicy) == policy,
+                        action: {
+                            subtitleSourceModeBinding(for: info).wrappedValue = policy
                         }
+                    )
+                    if index < userSubtitleSourcePolicies.count - 1 {
+                        Divider().padding(.leading, 44)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(localizer.t(L.Ready.subtitleSourceModeAccessibility))
+
+            if let sourceSummary = subtitleSourceSummary(for: state) {
+                Text(sourceSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            } else {
+                Text(localizer.t(L.Ready.subtitleReasonNoUsableSource))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            }
+
+            if let reason = state.sourceDecision.map({ subtitleDecisionReasonLabel($0.userFacingReason) }) {
+                Text(localizer.t(L.Ready.subtitleSourceReason, reason))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+            }
+
+            Divider().padding(.leading, 12)
+            sourceLanguageRows(info, state: state)
+
+            Divider().padding(.leading, 12)
+            DisclosureGroup(localizer.t(L.Ready.subtitleSourceMoreOptions), isExpanded: $subtitleMoreOptionsExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
                     importedSubtitleFileRow(info)
-                    subtitleLanguageRows(info)
-                    if state.cloudASRRequiredButUnavailable {
-                        Text(localizer.t(L.Ready.cloudASRSetupRequired))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    if let sourceSummary = subtitleSourceSummary(for: state) {
-                        Text(sourceSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 .padding(.top, 6)
             }
@@ -719,26 +789,26 @@ struct ContentView: View {
 
     @ViewBuilder
     private func importedSubtitleFileRow(_ info: VideoInfo) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button(localizer.t(L.Ready.importSubtitleFile)) {
-                    importSubtitleFile(for: info)
-                }
-                .buttonStyle(.bordered)
-                if let url = model.importedSubtitleFileURL {
-                    Text(localizer.t(L.Ready.importedSubtitleSelected, url.lastPathComponent))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button(localizer.t(L.Ready.clearImportedSubtitle)) {
-                        model.clearImportedSubtitleFile(for: info)
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                }
+        HStack(spacing: 8) {
+            Button(localizer.t(L.Ready.importSubtitleFile)) {
+                importSubtitleFile(for: info)
             }
+            .buttonStyle(.bordered)
+            if let url = model.importedSubtitleFileURL {
+                Text(localizer.t(L.Ready.importedSubtitleSelected, url.lastPathComponent))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button(localizer.t(L.Ready.clearImportedSubtitle)) {
+                    model.clearImportedSubtitleFile(for: info)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func importSubtitleFile(for info: VideoInfo) {
@@ -759,13 +829,63 @@ struct ContentView: View {
         model.importSubtitleFile(url, for: info)
     }
 
+    private func subtitleSourceModeTitle(_ policy: SubtitleSourcePolicy) -> String {
+        switch policy {
+        case .autoBest:
+            return localizer.t(L.Ready.subtitleSourceModeAuto)
+        case .forcePlatform:
+            return localizer.t(L.Ready.subtitleSourceModeOriginal)
+        case .forceLocalASR:
+            return localizer.t(L.Ready.subtitleSourceModeEnhanced)
+        case .preferPlatform, .preferLocalASR, .compareLocalASR, .cloudASR, .importedFile:
+            return subtitleSourceModeTitle(userFacingSubtitleSourcePolicy(policy))
+        }
+    }
+
+    private func subtitleSourceModeDetail(for policy: SubtitleSourcePolicy) -> String {
+        switch policy {
+        case .autoBest:
+            return localizer.t(L.Ready.subtitleSourceModeAutoDetail)
+        case .forcePlatform:
+            return localizer.t(L.Ready.subtitleSourceModeOriginalDetail)
+        case .forceLocalASR:
+            return localizer.t(L.Ready.subtitleSourceModeEnhancedDetail)
+        case .preferPlatform, .preferLocalASR, .compareLocalASR, .cloudASR, .importedFile:
+            return subtitleSourceModeDetail(for: userFacingSubtitleSourcePolicy(policy))
+        }
+    }
+
     private func subtitleSourceSummary(for state: ReadySubtitleState) -> String? {
         guard let track = state.selectedTrack else { return nil }
         return localizer.t(
             L.Ready.subtitleSourceCurrent,
-            track.label,
+            subtitleSourceReadableName(for: track),
             subtitleLanguageSourceBadge(for: track.sourceKind)
         )
+    }
+
+    private func subtitleSourceReadableName(for track: SubtitleChoice) -> String {
+        let language = subtitleDisplayLanguage(track.languageCode)
+        switch track.sourceKind {
+        case .manual:
+            return localizer.t(L.Ready.subtitleSourceReadableManual, language)
+        case .platformAuto, .hlsManifest:
+            return localizer.t(L.Ready.subtitleSourceReadablePlatform, language)
+        case .localASR:
+            return localizer.t(L.Ready.subtitleSourceReadableEnhanced, language)
+        case .cloudASR:
+            return localizer.t(L.Ready.subtitleSourceReadableEnhanced, language)
+        case .importedFile:
+            return localizer.t(L.Ready.subtitleSourceReadableImported, language)
+        }
+    }
+
+    private func subtitleDisplayLanguage(_ code: String) -> String {
+        let normalized = LanguageCatalog.normalize(code)
+        if normalized.isEmpty || normalized == "auto" {
+            return localizer.t(L.Ready.sourceLanguageAutoAfterDownload)
+        }
+        return TranslationLanguage.sourceDisplayName(for: normalized) ?? normalized
     }
 
     private func subtitleLanguageSourceBadge(for kind: SubtitleSourceKind) -> String {
@@ -773,7 +893,7 @@ struct ContentView: View {
         case .manual:
             return localizer.t(L.Ready.manualSubtitle)
         case .platformAuto:
-            return localizer.t(L.Ready.autoGenerated)
+            return localizer.t(L.Ready.platformSubtitle)
         case .hlsManifest:
             return localizer.t(L.Ready.platformSubtitle)
         case .localASR:
@@ -785,24 +905,40 @@ struct ContentView: View {
         }
     }
 
-    private func subtitleSourcePolicyLabel(_ policy: SubtitleSourcePolicy) -> String {
-        switch policy {
-        case .autoBest:
-            return localizer.t(L.Ready.subtitleSourcePolicyAutoBest)
-        case .preferPlatform:
-            return localizer.t(L.Ready.subtitleSourcePolicyPreferPlatform)
-        case .forcePlatform:
-            return localizer.t(L.Ready.subtitleSourcePolicyForcePlatform)
-        case .preferLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyPreferLocalASR)
-        case .forceLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyForceLocalASR)
-        case .compareLocalASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyCompareLocalASR)
-        case .cloudASR:
-            return localizer.t(L.Ready.subtitleSourcePolicyCloudASR)
-        case .importedFile:
-            return localizer.t(L.Ready.subtitleSourcePolicyImportedFile)
+    private func subtitleDecisionReasonLabel(_ reason: SubtitleSourceDecisionReason) -> String {
+        switch reason {
+        case .importedSubtitleExplicit:
+            return localizer.t(L.Ready.subtitleReasonImported)
+        case .manualMatchesVideoLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualVideoLanguage)
+        case .manualMatchesUserLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualUserLanguage)
+        case .manualMatchesInferredLanguage:
+            return localizer.t(L.Ready.subtitleReasonManualInferredLanguage)
+        case .platformSubtitleMatchesVideoLanguage, .platformAutoMatchesVideoLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformVideoLanguage)
+        case .platformSubtitleMatchesUserLanguage, .platformAutoMatchesUserLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformUserLanguage)
+        case .platformSubtitleMatchesInferredLanguage, .platformAutoMatchesInferredLanguage:
+            return localizer.t(L.Ready.subtitleReasonPlatformInferredLanguage)
+        case .targetLanguageSubtitleNotSource:
+            return localizer.t(L.Ready.subtitleReasonTargetLanguageNotSource)
+        case .manualLanguageMismatch, .platformLanguageMismatch:
+            return localizer.t(L.Ready.subtitleReasonLanguageMismatch)
+        case .localRecognitionFallbackOnly:
+            return localizer.t(L.Ready.subtitleReasonLocalFallback)
+        case .localRecognitionForced:
+            return localizer.t(L.Ready.subtitleReasonLocalForced)
+        case .compareRequested:
+            return localizer.t(L.Ready.subtitleReasonCompareRequested)
+        case .cloudRecognitionForced:
+            return localizer.t(L.Ready.subtitleReasonCloudForced)
+        case .cloudRecognitionUnavailable:
+            return localizer.t(L.Ready.subtitleReasonCloudUnavailable)
+        case .noTrustedPlatformSubtitle:
+            return localizer.t(L.Ready.subtitleReasonNoTrustedSource)
+        case .noUsableSubtitleSource:
+            return localizer.t(L.Ready.subtitleReasonNoUsableSource)
         }
     }
 
@@ -1143,6 +1279,137 @@ struct ContentView: View {
     }
 }
 
+private struct SourceLanguagePickerSheet: View {
+    @ObservedObject var model: ViewModel
+    let info: VideoInfo
+    @EnvironmentObject private var localizer: Localizer
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var manualCode = ""
+    @State private var advancedExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(localizer.t(L.Ready.sourceLanguagePickerTitle))
+                .font(.headline)
+
+            // 搜索框置顶：直接过滤下方列表（旧版搜索框在列表下方，逻辑反直觉）。
+            TextField(localizer.t(L.Ready.sourceLanguageSearchPlaceholder), text: $searchText)
+                .textFieldStyle(.roundedBorder)
+
+            // 单一、定高、可滚动的列表：搜索时只显示匹配项；未搜索时显示「自动 + 常用语言」。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if isSearching {
+                        ForEach(searchResults, id: \.code) { entry in
+                            languageButton(
+                                title: entry.displayName,
+                                detail: "\(entry.chineseName) · \(entry.code)",
+                                isSelected: selectedCode == entry.code
+                            ) {
+                                select(entry.code)
+                            }
+                        }
+                    } else {
+                        languageButton(
+                            title: localizer.t(L.Ready.sourceLanguageAuto),
+                            detail: nil,
+                            isSelected: model.readySourceLanguagePreference == "auto"
+                        ) {
+                            select("auto")
+                        }
+                        Divider().padding(.vertical, 2)
+                        ForEach(commonEntries, id: \.code) { entry in
+                            languageButton(
+                                title: entry.displayName,
+                                detail: "\(entry.chineseName) · \(entry.code)",
+                                isSelected: selectedCode == entry.code
+                            ) {
+                                select(entry.code)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 248)
+
+            DisclosureGroup(localizer.t(L.Ready.sourceLanguageManualCode), isExpanded: $advancedExpanded) {
+                HStack(spacing: 8) {
+                    TextField(localizer.t(L.Ready.sourceLanguageManualCodePlaceholder), text: $manualCode)
+                        .textFieldStyle(.roundedBorder)
+                    Button(localizer.t(L.Ready.sourceLanguageManualCodeApply)) {
+                        let normalized = LanguageCatalog.normalize(manualCode)
+                        guard !normalized.isEmpty else { return }
+                        select(normalized)
+                    }
+                    .disabled(LanguageCatalog.normalize(manualCode).isEmpty)
+                }
+                .padding(.top, 6)
+            }
+
+            HStack {
+                Spacer()
+                Button(localizer.t(L.Common.cancel)) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var selectedCode: String {
+        model.readySourceLanguagePreference == "auto"
+            ? "auto"
+            : LanguageCatalog.normalize(model.readySourceLanguagePreference)
+    }
+
+    private var commonEntries: [LanguageCatalogEntry] {
+        LanguageCatalog.commonEntries()
+    }
+
+    private var searchResults: [LanguageCatalogEntry] {
+        LanguageCatalog.search(searchText)
+    }
+
+    private func languageButton(
+        title: String,
+        detail: String?,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            action()
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if let detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func select(_ code: String) {
+        model.setReadySourceLanguagePreference(code, for: info)
+        dismiss()
+    }
+}
+
 private enum OnboardingStep: String, CaseIterable, Identifiable {
     case language
     case subtitleSource
@@ -1276,12 +1543,22 @@ private struct OnboardingView: View {
 
     @ViewBuilder
     private var LocalASROnboardingOptionView: some View {
-        Label {
-            Text(localizer.t(L.Onboarding.platformSubtitlePreference))
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: "captions.bubble")
-        }
+        onboardingComponentRow(
+            icon: "wrench.and.screwdriver",
+            title: localizer.t(L.Onboarding.requiredComponentsTitle),
+            detail: localizer.t(L.Onboarding.requiredComponentsDetail),
+            status: localizer.t(L.Onboarding.statusReadyToCheck),
+            tint: .secondary
+        )
+        onboardingComponentRow(
+            icon: "captions.bubble",
+            title: localizer.t(L.Onboarding.recommendedComponentsTitle),
+            detail: localizer.t(L.Onboarding.recommendedComponentsDetail),
+            status: model.localASRReadyForDownload
+                ? localizer.t(L.Onboarding.statusReady)
+                : localizer.t(L.Onboarding.statusRecommended),
+            tint: model.localASRReadyForDownload ? .green : .orange
+        )
 
         Toggle(isOn: $preferLocalSpeechRecognition) {
             VStack(alignment: .leading, spacing: 3) {
@@ -1295,7 +1572,7 @@ private struct OnboardingView: View {
 
         HStack {
             Button {
-                model.openLocalASRSettings()
+                model.openSettings(paneID: "components")
             } label: {
                 Label(localizer.t(L.Onboarding.configureLocalSpeechOptional), systemImage: "waveform")
             }
@@ -1305,6 +1582,35 @@ private struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func onboardingComponentRow(
+        icon: String,
+        title: String,
+        detail: String,
+        status: String,
+        tint: Color
+    ) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.callout.weight(.medium))
+                    Text(status)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(tint.opacity(0.12)))
+                }
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } icon: {
+            Image(systemName: icon)
         }
     }
 

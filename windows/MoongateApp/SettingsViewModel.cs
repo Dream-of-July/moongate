@@ -79,6 +79,7 @@ public sealed class SettingsViewModel : ObservableObject
         _localAsrPreciseModeEnabled = current.LocalAsrPreciseModeEnabled;
         _localAsrSidecarRuntimePath = current.LocalAsrSidecarRuntimePath;
         _localAsrSidecarModelPath = current.LocalAsrSidecarModelPath;
+        _localAsrVadModelPath = current.LocalAsrVadModelPath;
         _cloudAsrEnabled = current.CloudAsrEnabled;
         _cloudAsrConsentAccepted = current.CloudAsrConsentAccepted;
         _cloudAsrBaseUrl = current.CloudAsrBaseUrl;
@@ -659,11 +660,7 @@ public sealed class SettingsViewModel : ObservableObject
     public string LocalAsrRuntimePath
     {
         get => _localAsrRuntimePath;
-        set
-        {
-            if (!SetProperty(ref _localAsrRuntimePath, value)) return;
-            RaisePropertyChanged(nameof(LocalAsrVADStatusText));
-        }
+        set => SetProperty(ref _localAsrRuntimePath, value);
     }
 
     private string _localAsrModelPath;
@@ -708,6 +705,17 @@ public sealed class SettingsViewModel : ObservableObject
     public string LocalAsrSidecarReadinessText => BuildSettings().IsLocalAsrSidecarConfigured
         ? Loc.S("L.Settings.LocalASRSidecarReady")
         : Loc.S("L.Settings.LocalASRSidecarNeedsSetup");
+
+    private string _localAsrVadModelPath;
+    public string LocalAsrVadModelPath
+    {
+        get => _localAsrVadModelPath;
+        set
+        {
+            if (!SetProperty(ref _localAsrVadModelPath, value)) return;
+            RaisePropertyChanged(nameof(LocalAsrVADStatusText));
+        }
+    }
 
     private bool _cloudAsrEnabled;
     public bool CloudAsrEnabled
@@ -787,8 +795,9 @@ public sealed class SettingsViewModel : ObservableObject
     {
         get
         {
-            var path = LocalAsrVADModelPath();
-            return path is null
+            var path = LocalAsrVadModelPath.Trim();
+            return path.Length == 0
+                || !File.Exists(path)
                 ? Loc.S("L.Settings.LocalASRVADMissing")
                 : string.Format(Loc.S("L.Settings.LocalASRVADReady"), Path.GetFileName(path));
         }
@@ -835,21 +844,6 @@ public sealed class SettingsViewModel : ObservableObject
         Path.Combine(AppContext.BaseDirectory, "asr", "runtime"),
         Path.Combine(AppContext.BaseDirectory, "asr", "runtime", "bin"),
     ];
-
-    private static IReadOnlyList<string> LocalAsrVADSearchPaths =>
-    [
-        Path.Combine(AppSettings.SupportDirectory, "asr", "vad"),
-        Path.Combine(AppContext.BaseDirectory, "asr", "vad"),
-    ];
-
-    private string? LocalAsrVADModelPath()
-    {
-        var runtimePath = LocalAsrRuntimePath.Trim();
-        var runtime = runtimePath.Length > 0
-            ? new AsrRuntimeInfo { ExecutablePath = runtimePath }
-            : new AsrRuntimeLocator(extraSearchPaths: LocalAsrRuntimeSearchPaths).Locate();
-        return runtime is null ? null : WhisperCppVADModelLocator.Locate(runtime, LocalAsrVADSearchPaths);
-    }
 
     private void AdoptLocalAsrRuntime()
     {
@@ -1349,6 +1343,7 @@ public sealed class SettingsViewModel : ObservableObject
         LocalAsrPreciseModeEnabled = LocalAsrPreciseModeEnabled,
         LocalAsrSidecarRuntimePath = LocalAsrSidecarRuntimePath,
         LocalAsrSidecarModelPath = LocalAsrSidecarModelPath,
+        LocalAsrVadModelPath = LocalAsrVadModelPath,
         CloudAsrEnabled = CloudAsrEnabled,
         CloudAsrConsentAccepted = CloudAsrConsentAccepted,
         CloudAsrBaseUrl = CloudAsrBaseUrl,

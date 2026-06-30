@@ -64,6 +64,33 @@ public enum SubtitleLanguageRecommender {
         }
     }
 
+    public struct SourceLanguageRecommendation: Equatable, Sendable {
+        public enum Evidence: Equatable, Sendable {
+            case userSelected
+            case platformManualTrack
+            case platformAutoTrack
+            case titleScript
+            case titleKeyword
+            case previousSetting
+            case asrDetected
+            case fallback
+        }
+
+        public enum Confidence: Equatable, Sendable, Comparable {
+            case unknown
+            case low
+            case medium
+            case high
+        }
+
+        public let code: String
+        public let displayName: String
+        public let evidence: Evidence
+        public let confidence: Confidence
+        public let isRareLanguage: Bool
+        public let shouldAutoSelect: Bool
+    }
+
     // Scoring constants. Single source of truth lives in the cross-platform fixture
     // (`languageRecommender` section); the Swift and C# copies are each asserted equal to it.
     public static let manualTrackScore = 100
@@ -79,9 +106,6 @@ public enum SubtitleLanguageRecommender {
     /// Stronger Han-script signal when a CJK language has a platform auto track. Local-ASR choices
     /// are synthetic per-language candidates in the UI, so they are not source-language evidence.
     public static let platformAutoCJKPresenceBonus = 90
-    /// Current output target wins when a real platform/manual subtitle already exists in that
-    /// target. This keeps "I already have Chinese subtitles" from being overridden by source hints.
-    public static let targetLanguageTrackScore = 260
     /// User/global source-language preference. This can make a local-ASR source candidate win over
     /// unrelated auto captions, while still letting manual target subtitles stay on top.
     public static let preferredSourceLanguageScore = 180
@@ -103,21 +127,16 @@ public enum SubtitleLanguageRecommender {
         guard !languages.isEmpty else { return Result(recommended: nil, others: []) }
         let titleProfile = ScriptDetector.profile(of: title)
         let lowerTitle = title.lowercased()
-        let normalizedTarget = normalizedTargetLanguage(targetLanguage)
         let normalizedPreferredSource = normalizedPreferredSourceLanguage(preferredSourceLanguage)
-        let targetAwareLanguages = languages.map {
-            prioritizeTargetTrack(in: $0, targetLanguage: normalizedTarget)
-        }
 
         // Score each language; keep original index for a stable, documented tie-break.
-        let scored = targetAwareLanguages.enumerated().map { index, language -> (language: SubtitleLanguageChoice, score: Int, index: Int) in
+        let scored = languages.enumerated().map { index, language -> (language: SubtitleLanguageChoice, score: Int, index: Int) in
             (
                 language,
                 score(
                     for: language,
                     titleProfile: titleProfile,
                     lowerTitle: lowerTitle,
-                    targetLanguage: normalizedTarget,
                     preferredSourceLanguage: normalizedPreferredSource
                 ),
                 index
@@ -134,6 +153,64 @@ public enum SubtitleLanguageRecommender {
         let recommended = ranked.first?.language
         let others = ranked.dropFirst().map(\.language)
         return Result(recommended: recommended, others: Array(others))
+    }
+
+    public static func sourceRecommendation(
+        title: String,
+        languages: [SubtitleLanguageChoice],
+        targetLanguage: String? = nil,
+        preferredSourceLanguage: String? = nil
+    ) -> SourceLanguageRecommendation {
+        let normalizedPreferredSource = normalizedPreferredSourceLanguage(preferredSourceLanguage)
+        let recommendation = recommend(
+            title: title,
+            languages: languages,
+            targetLanguage: targetLanguage,
+            preferredSourceLanguage: preferredSourceLanguage
+        )
+        guard let language = recommendation.recommended else {
+            return SourceLanguageRecommendation(
+                code: "auto",
+                displayName: CoreL10n.t(L.Ready.sourceLanguageAuto),
+                evidence: .fallback,
+                confidence: .unknown,
+                isRareLanguage: false,
+                shouldAutoSelect: false
+            )
+        }
+
+        let normalizedCode = LanguageCatalog.normalize(language.languageCode)
+        let evidence: SourceLanguageRecommendation.Evidence
+        let confidence: SourceLanguageRecommendation.Confidence
+        if normalizedPreferredSource == normalizedCode {
+            evidence = .userSelected
+            confidence = .high
+        } else if language.hasManualTrack {
+            evidence = .platformManualTrack
+            confidence = .high
+        } else if language.hasAutoTrack {
+            evidence = .platformAutoTrack
+            confidence = LanguageCatalog.isRareLanguage(normalizedCode) ? .low : .medium
+        } else if let inferred = inferredLocalASRLanguageCode(title: title),
+                  LanguageCatalog.normalize(inferred) == normalizedCode {
+            evidence = .titleKeyword
+            confidence = LanguageCatalog.isRareLanguage(normalizedCode) ? .low : .medium
+        } else {
+            let profile = ScriptDetector.profile(of: title)
+            evidence = scriptEvidence(for: normalizedCode, profile: profile)
+            confidence = evidence == .fallback || LanguageCatalog.isRareLanguage(normalizedCode) ? .low : .medium
+        }
+
+        let rare = LanguageCatalog.isRareLanguage(normalizedCode)
+        let shouldAutoSelect = confidence >= .medium || evidence == .platformManualTrack || evidence == .userSelected
+        return SourceLanguageRecommendation(
+            code: normalizedCode,
+            displayName: LanguageCatalog.displayName(for: normalizedCode),
+            evidence: evidence,
+            confidence: confidence,
+            isRareLanguage: rare,
+            shouldAutoSelect: shouldAutoSelect
+        )
     }
 
     /// Best-effort language lock for local-ASR-only pages. Used only when no platform subtitles
@@ -166,7 +243,6 @@ public enum SubtitleLanguageRecommender {
         for language: SubtitleLanguageChoice,
         titleProfile: ScriptDetector.Profile,
         lowerTitle: String,
-        targetLanguage: String? = nil,
         preferredSourceLanguage: String? = nil
     ) -> Int {
         var total = 0
@@ -178,11 +254,8 @@ public enum SubtitleLanguageRecommender {
         } else {
             total += localASROnlyScore
         }
-        if hasTargetLanguageTrack(language, targetLanguage: targetLanguage) {
-            total += targetLanguageTrackScore
-        }
         if let preferredSourceLanguage,
-           TranslationLanguage.normalizedScript(language.languageCode) == preferredSourceLanguage {
+           LanguageCatalog.normalize(language.languageCode) == preferredSourceLanguage {
             total += preferredSourceLanguageScore
         }
 
@@ -224,13 +297,13 @@ public enum SubtitleLanguageRecommender {
     static func normalizedTargetLanguage(_ targetLanguage: String?) -> String? {
         guard let targetLanguage else { return nil }
         let trimmed = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : TranslationLanguage.normalizedScript(trimmed)
+        return trimmed.isEmpty ? nil : LanguageCatalog.normalize(trimmed)
     }
 
     static func normalizedPreferredSourceLanguage(_ preferredSourceLanguage: String?) -> String? {
         guard let preferredSourceLanguage else { return nil }
         let normalized = AppSettings.normalizedPreferredSourceLanguage(preferredSourceLanguage)
-        return normalized == "auto" ? nil : normalized
+        return normalized == "auto" ? nil : LanguageCatalog.normalize(normalized)
     }
 
     static func prioritizeTargetTrack(
@@ -274,7 +347,23 @@ public enum SubtitleLanguageRecommender {
         guard track.sourceKind != .localASR,
               track.sourceKind != .cloudASR,
               track.sourceKind != .platformAuto else { return false }
-        return TranslationLanguage.normalizedScript(track.languageCode) == targetLanguage
+        return LanguageCatalog.normalize(track.languageCode) == targetLanguage
+    }
+
+    private static func scriptEvidence(
+        for code: String,
+        profile: ScriptDetector.Profile
+    ) -> SourceLanguageRecommendation.Evidence {
+        if isJapaneseCode(code), profile.kanaRatio >= titleScriptDominanceRatio { return .titleScript }
+        if isKoreanCode(code), profile.hangulRatio >= titleScriptDominanceRatio { return .titleScript }
+        if isLatinScriptLanguage(code),
+           profile.latinRatio >= titleScriptDominanceRatio,
+           profile.kanaRatio == 0,
+           profile.hangulRatio == 0,
+           profile.cjkRatio == 0 {
+            return .titleScript
+        }
+        return .fallback
     }
 
     static func isJapaneseCode(_ code: String) -> Bool {

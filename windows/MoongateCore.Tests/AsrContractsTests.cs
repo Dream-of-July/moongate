@@ -7,6 +7,14 @@ namespace MoongateCore.Tests;
 public class AsrContractsTests
 {
     [Fact]
+    public void VadDisabledForLyricsProfileButEnabledForSpeech()
+    {
+        // VAD 对歌唱/音乐灾难性失效（silero 丢大部分音频），故歌词档必须关闭、演讲档保留。实测见 M3。
+        Assert.False(AsrPromptBuilder.VadEnabled(AsrRecognitionProfile.LyricsHighQuality));
+        Assert.True(AsrPromptBuilder.VadEnabled(AsrRecognitionProfile.Speech));
+    }
+
+    [Fact]
     public void TranscriptModelManifestAndCacheRoundTripThroughJson()
     {
         var createdAt = DateTimeOffset.FromUnixTimeSeconds(1_785_000_000);
@@ -803,6 +811,49 @@ public class AsrContractsTests
     }
 
     [Fact]
+    public void SubtitleSourceDecisionConstantsMatchCrossPlatformFixture()
+    {
+        // ARCH-3：引擎排名/裁决常量两端共享 fixture subtitleSourceDecision 段为唯一真值。
+        var path = Path.Combine(RepoRoot(), "Tests", "fixtures", "whisper-timing-constants.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var s = doc.RootElement.GetProperty("subtitleSourceDecision");
+
+        var baseScore = s.GetProperty("baseScore");
+        var rank = s.GetProperty("sourceKindRank");
+        var kinds = new (SubtitleSourceKind Kind, string Key)[]
+        {
+            (SubtitleSourceKind.Manual, "manual"),
+            (SubtitleSourceKind.ImportedFile, "importedFile"),
+            (SubtitleSourceKind.HlsManifest, "hlsManifest"),
+            (SubtitleSourceKind.CloudAsr, "cloudASR"),
+            (SubtitleSourceKind.PlatformAuto, "platformAuto"),
+            (SubtitleSourceKind.LocalAsr, "localASR"),
+        };
+        foreach (var (kind, key) in kinds)
+        {
+            Assert.Equal(baseScore.GetProperty(key).GetDouble(), SubtitleQualityScorer.BaseScore(kind));
+            Assert.Equal(rank.GetProperty(key).GetInt32(), SubtitleSourceDecisionEngine.SourceKindRank(kind));
+        }
+
+        var boost = s.GetProperty("policyBoost");
+        var prefer = boost.GetProperty("prefer").GetDouble();
+        var force = boost.GetProperty("force").GetDouble();
+        Assert.Equal(prefer, SubtitleSourceDecisionEngine.PolicyBoost(SubtitleSourceKind.PlatformAuto, SubtitleSourcePolicy.PreferPlatform));
+        Assert.Equal(prefer, SubtitleSourceDecisionEngine.PolicyBoost(SubtitleSourceKind.LocalAsr, SubtitleSourcePolicy.PreferLocalAsr));
+        Assert.Equal(force, SubtitleSourceDecisionEngine.PolicyBoost(SubtitleSourceKind.LocalAsr, SubtitleSourcePolicy.ForceLocalAsr));
+
+        var vt = s.GetProperty("verdictThresholds");
+        Assert.Equal(vt.GetProperty("excellent").GetDouble(), SubtitleQualityScorer.VerdictThresholds.Excellent);
+        Assert.Equal(vt.GetProperty("good").GetDouble(), SubtitleQualityScorer.VerdictThresholds.Good);
+        Assert.Equal(vt.GetProperty("usable").GetDouble(), SubtitleQualityScorer.VerdictThresholds.Usable);
+        Assert.Equal(vt.GetProperty("lowConfidence").GetDouble(), SubtitleQualityScorer.VerdictThresholds.LowConfidence);
+
+        // autoBestRegenerateBelow（具名质量地板，取代旧双裁决 OR）
+        Assert.Equal("usable", s.GetProperty("autoBestRegenerateBelow").GetString());
+        Assert.Equal(SubtitleQualityVerdict.Usable, SubtitleSourceDecisionEngine.AutoBestRegenerateBelow);
+    }
+
+    [Fact]
     public void LocalAsrConfidenceConstantsMatchFixtureAndAssess()
     {
         var path = Path.Combine(RepoRoot(), "Tests", "fixtures", "whisper-timing-constants.json");
@@ -1111,7 +1162,7 @@ public class AsrContractsTests
         var japaneseLyrics = AsrTranscriptMapper.SourceCues(transcript, SubtitleTimingProfile.JapaneseLyrics);
         var speechStart = SrtTools.SrtTimeToSeconds(speech[0].Start)!.Value;
         var lyricsStart = SrtTools.SrtTimeToSeconds(japaneseLyrics[0].Start)!.Value;
-        Assert.Equal(1.0 + WhisperCueRetimer.OnsetDelaySeconds, speechStart, precision: 3);
+        Assert.Equal(1.0, speechStart, precision: 3); // 整段第一条前有静音:用原始 onset,不加 onsetDelay(镜像 Swift)
         Assert.Equal(1.0, lyricsStart, precision: 3);
     }
 
@@ -1703,7 +1754,7 @@ public class AsrContractsTests
     }
 
     [Fact]
-    public void WhisperCppCommandPlanUsesVADModelWhenAvailable()
+    public void WhisperCppCommandPlanUsesVADOnlyWithExplicitExistingModelPath()
     {
         var directory = Path.Combine(Path.GetTempPath(), "moongate-asr-vad-" + Guid.NewGuid().ToString("N"));
         try
@@ -1730,25 +1781,42 @@ public class AsrContractsTests
                 request,
                 Path.Combine(directory, "missing"));
             Assert.DoesNotContain("--vad", missingPlan.Arguments);
-            Assert.DoesNotContain("--vad-model", missingPlan.Arguments);
+            Assert.DoesNotContain("-vm", missingPlan.Arguments);
 
             var vadModel = Path.Combine(runtimeDirectory, "ggml-silero-v5.1.2.bin");
             File.WriteAllText(vadModel, "fake vad model");
-            var readyPlan = WhisperCppCommandPlan.Create(
+            var implicitLocatorPlan = WhisperCppCommandPlan.Create(
                 runtime,
                 model,
                 request,
+                Path.Combine(directory, "implicit"));
+            Assert.DoesNotContain("--vad", implicitLocatorPlan.Arguments);
+            Assert.DoesNotContain("-vm", implicitLocatorPlan.Arguments);
+
+            var readyPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request with { VadModelPath = vadModel },
                 Path.Combine(directory, "ready"));
             Assert.Contains("--vad", readyPlan.Arguments);
-            Assert.Equal(vadModel, ArgumentValueAfter("--vad-model", readyPlan.Arguments));
+            Assert.Equal(vadModel, ArgumentValueAfter("-vm", readyPlan.Arguments));
+            Assert.DoesNotContain("--vad-model", readyPlan.Arguments);
+
+            var missingExplicitPlan = WhisperCppCommandPlan.Create(
+                runtime,
+                model,
+                request with { VadModelPath = Path.Combine(runtimeDirectory, "missing-vad.bin") },
+                Path.Combine(directory, "missing-explicit"));
+            Assert.DoesNotContain("--vad", missingExplicitPlan.Arguments);
+            Assert.DoesNotContain("-vm", missingExplicitPlan.Arguments);
 
             var disabledPlan = WhisperCppCommandPlan.Create(
                 runtime,
                 model,
-                request with { VadEnabled = false },
+                request with { VadEnabled = false, VadModelPath = vadModel },
                 Path.Combine(directory, "disabled"));
             Assert.DoesNotContain("--vad", disabledPlan.Arguments);
-            Assert.DoesNotContain("--vad-model", disabledPlan.Arguments);
+            Assert.DoesNotContain("-vm", disabledPlan.Arguments);
         }
         finally
         {
@@ -2032,7 +2100,7 @@ public class AsrContractsTests
             Assert.Equal("video.local-asr.ja.srt", Path.GetFileName(output));
             var parsed = SrtTools.ParseSrt(File.ReadAllText(output));
             Assert.Equal(["梅雨が明ける。"], parsed.Select(cue => cue.Text).ToArray());
-            Assert.Equal("00:00:00,200", parsed[0].Start);
+            Assert.Equal("00:00:00,000", parsed[0].Start); // 首词贴近开头:第一条从 0 起显
             Assert.Equal("00:00:01,500", parsed[0].End);
         }
         finally
@@ -2065,7 +2133,7 @@ public class AsrContractsTests
 
         Assert.Equal(["コーペンちゃん梅だー！"], cues.Select(cue => cue.Text).ToArray());
         // leadIn=0 keeps the raw onset; the last cue holds HoldToNextSeconds past the last token (1.8s -> 2.5s).
-        Assert.Equal("00:00:00,300", cues[0].Start);
+        Assert.Equal("00:00:00,000", cues[0].Start); // 首词贴近开头:第一条从 0 起显
         Assert.Equal("00:00:02,500", cues[0].End);
         Assert.DoesNotContain(cues, cue => cue.Text.Contains("[_", StringComparison.Ordinal));
     }
@@ -3195,7 +3263,7 @@ public class AsrContractsTests
     {
         // Onset nudged later by onsetDelaySeconds (long cue, not bound-limited): 5.0 -> 5.2.
         var single = WhisperCueRetimer.Retime([RetimerCue(5.0, 9.0, "hello there", 8.8)], null);
-        Assert.Equal(5.0 + WhisperCueRetimer.OnsetDelaySeconds, SrtTools.SrtTimeToSeconds(single[0].Start)!.Value, 3);
+        Assert.Equal(5.0, SrtTools.SrtTimeToSeconds(single[0].Start)!.Value, 3); // 整段第一条前有静音:原始 onset,不加 delay
 
         // Short cue: delay bounded so the cue keeps a positive readable duration.
         var shortCue = WhisperCueRetimer.Retime([RetimerCue(5.0, 5.4, "hi", 5.4)], null);

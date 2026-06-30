@@ -7,8 +7,8 @@ set -euo pipefail
 PROJ_DIR="${0:a:h}"
 SCRATCH="$HOME/Library/Caches/vdl-build"
 APP_NAME="月之门"
-APP_VERSION="${MOONGATE_VERSION:-0.8.0}"
-APP_BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-8005}"
+APP_VERSION="${MOONGATE_VERSION:-0.8.1}"
+APP_BUILD_NUMBER="${MOONGATE_BUILD_NUMBER:-8101}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://dream-of-july.github.io/moongate/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_PUBLIC_ED_KEY_FILE="${SPARKLE_PUBLIC_ED_KEY_FILE:-$PROJ_DIR/sparkle-public-ed-key.txt}"
@@ -142,6 +142,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDevelopmentRegion</key>      <string>zh_CN</string>
     <key>CFBundleExecutable</key>             <string>Moongate</string>
     <key>CFBundleIdentifier</key>             <string>com.moongate.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>  <string>6.0</string>
     <key>CFBundleName</key>                   <string>月之门</string>
     <key>CFBundleDisplayName</key>            <string>月之门</string>
     <key>CFBundleIconFile</key>               <string>月之门</string>
@@ -152,6 +153,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key>         <string>14.0</string>
     <key>LSApplicationCategoryType</key>      <string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key>        <true/>
+    <key>NSPrincipalClass</key>               <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>       <string>MIT License</string>
     <key>SUFeedURL</key>                      <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>                  <string>$SPARKLE_PUBLIC_ED_KEY</string>
@@ -162,6 +164,7 @@ cat > "$TMP_APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+printf 'APPL????' > "$TMP_APP/Contents/PkgInfo"
 
 echo "==> ad-hoc 签名"
 codesign --force --deep --sign - "$TMP_APP/Contents/Frameworks/Sparkle.framework"

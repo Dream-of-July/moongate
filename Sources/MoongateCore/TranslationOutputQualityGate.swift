@@ -48,6 +48,10 @@ public enum TranslationOutputQualityGate {
             return Verdict(usable: true, reasons: [], report: emptyReport)
         }
 
+        if sourceScript == .latin {
+            return assessLatinSourceForChineseTarget(lines: lines, sourceScript: sourceScript)
+        }
+
         var visibleScalarCount = 0
         var sourceScriptScalarCount = 0
         var affectedLineCount = 0
@@ -85,6 +89,58 @@ public enum TranslationOutputQualityGate {
         return Verdict(usable: reasons.isEmpty, reasons: reasons, report: report)
     }
 
+    private static func assessLatinSourceForChineseTarget(
+        lines: [String],
+        sourceScript: SourceScript
+    ) -> Verdict {
+        var visibleScalarCount = 0
+        var sourceScriptScalarCount = 0
+        var affectedLineCount = 0
+        var affectedLatinWordCount = 0
+
+        for line in lines {
+            var lineVisible = 0
+            var lineSource = 0
+            var lineTarget = 0
+            for scalar in line.unicodeScalars where isVisibleScalar(scalar) {
+                lineVisible += 1
+                if sourceScript.contains(scalar) {
+                    lineSource += 1
+                }
+                if isHanScalar(scalar) {
+                    lineTarget += 1
+                }
+            }
+            guard lineVisible > 0 else { continue }
+            visibleScalarCount += lineVisible
+            sourceScriptScalarCount += lineSource
+
+            let latinWords = latinWordCount(in: line)
+            let targetRatio = Double(lineTarget) / Double(lineVisible)
+            let looksLikeUntranslatedEnglishLine = latinWords >= 5
+                && lineSource >= 18
+                && lineTarget < 2
+                && targetRatio < 0.10
+            if looksLikeUntranslatedEnglishLine {
+                affectedLineCount += 1
+                affectedLatinWordCount += latinWords
+            }
+        }
+
+        let ratio = visibleScalarCount == 0
+            ? 0
+            : Double(sourceScriptScalarCount) / Double(visibleScalarCount)
+        let report = Report(
+            visibleScalarCount: visibleScalarCount,
+            sourceScriptScalarCount: sourceScriptScalarCount,
+            sourceScriptScalarRatio: ratio,
+            affectedLineCount: affectedLineCount
+        )
+        let leaking = affectedLineCount >= 2 || affectedLatinWordCount >= 10
+        let reasons: [Reason] = leaking ? [.sourceLanguageLeakage] : []
+        return Verdict(usable: reasons.isEmpty, reasons: reasons, report: report)
+    }
+
     private static let emptyReport = Report(
         visibleScalarCount: 0,
         sourceScriptScalarCount: 0,
@@ -96,6 +152,32 @@ public enum TranslationOutputQualityGate {
         !CharacterSet.whitespacesAndNewlines.contains(scalar)
             && !CharacterSet.punctuationCharacters.contains(scalar)
             && !CharacterSet.symbols.contains(scalar)
+    }
+
+    private static func isHanScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3400...0x4DBF).contains(scalar.value)
+            || (0x4E00...0x9FFF).contains(scalar.value)
+            || (0xF900...0xFAFF).contains(scalar.value)
+            || (0x20000...0x2FA1F).contains(scalar.value)
+    }
+
+    private static func latinWordCount(in line: String) -> Int {
+        var count = 0
+        var inWord = false
+        for scalar in line.unicodeScalars {
+            let isLatin = (0x0041...0x005A).contains(scalar.value)
+                || (0x0061...0x007A).contains(scalar.value)
+                || (0x00C0...0x024F).contains(scalar.value)
+            if isLatin {
+                if !inWord {
+                    count += 1
+                    inWord = true
+                }
+            } else {
+                inWord = false
+            }
+        }
+        return count
     }
 
     private enum SourceScript {

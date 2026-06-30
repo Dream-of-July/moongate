@@ -4,11 +4,32 @@
 
 This project follows semantic versioning (major.minor.patch).
 
-## Unreleased
+## 0.8.1
 
-Language-first subtitle selection on the ready page. You now pick a language instead of a technical source, and the best source is chosen automatically after download.
+A subtitle quality release: language-first subtitle selection, a unified subtitle-source decision, more reliable local recognition, and several real timing/parsing fixes for when the first subtitle appears. macOS and Windows keep their core logic in lockstep, with a new quantifiable quality scorecard.
 
-### Added / Changed
+### Subtitle source decision
+
+- **Unified decision engine**: the "which source — platform caption / local Whisper / cloud" decision is now a single authority shared by the ready-page prediction and the post-download executor, so the UI and the actual result no longer disagree. The quality gate runs exactly once per candidate (it previously ran two–three times), and the old "boolean gate OR 5-level score" double-verdict is replaced by one named quality floor. Cross-platform scoring/ranking constants are pinned in the shared fixture and asserted on both ends.
+
+### Local recognition (Whisper)
+
+- **Voice-boundary detection no longer breaks music**: the optional VAD component was found to drop most of the audio on sung/music content (it classifies vocals as non-speech). It is now disabled for the music/lyrics profile and kept only for speech, where it helps.
+- **Low-quality recognition no longer fails the whole task**: a transcript with a repetition loop or mis-detected language used to abort the download; it now still produces subtitles with an honest "recognition may be unreliable" note, so you keep something and decide for yourself.
+- **Optional cloud recognition rescue (opt-in)**: when local recognition is low-confidence and you have explicitly configured and consented to cloud recognition, Moongate can use it for that clip. It never uploads audio unless you have opted in.
+
+### Subtitle timing & parsing fixes
+
+- **First subtitle appears on time**: fixed a YouTube auto-caption parsing bug where a space-padding line between the timestamp and the text caused the opening caption to be dropped entirely and the next one to be shifted late — the first subtitle now appears when the speech actually starts.
+- **First cue lead-in**: the very first subtitle of a video is no longer pushed slightly later by the global onset nudge.
+- **Better sentence splitting for speech**: a real pause that should end a line is no longer re-merged away, so speech subtitles break closer to where a human would (verified against human captions). Music/anime line-breaking is unchanged.
+- **Whisper stutter cleanup**: an immediately-repeated phrase from recognition (e.g. "I've got to leave I've got to leave I've got to leave") is collapsed before translation, in all languages.
+
+### Quality measurement
+
+- **Quantifiable scorecard**: a four-dimension subtitle quality standard (recognition / segmentation / translation / source-decision, each 0–100 with an ≥80 "excellent" gate) built on real cached samples, distinguishing model-confidence heuristics from gold-standard (human reference / acoustic / judged) verification.
+
+### Language-first ready page
 
 - **Language-first ready page**: the ready page shows a single recommended subtitle language (chosen deterministically from the video title and available tracks — e.g. Japanese for a Japanese MV, English for an English interview, Korean for a Korean MV), with other languages and source details tucked into a "More languages" disclosure.
 - **Automatic source resolution after download**: once a language is picked, the best source is chosen automatically. Manual/official captions are trusted; a platform auto-caption is checked for usability (language match, cue density, coverage, garbling/repetition — never by timing), and when it is low quality and local recognition is available, Moongate falls back to local Whisper and labels the real source in the disclosure area. When local recognition is unavailable it does not block — the auto-caption is kept and an "enable local recognition" hint is shown.
@@ -16,7 +37,7 @@ Language-first subtitle selection on the ready page. You now pick a language ins
 
 ### Tests
 
-- New cross-platform pure-logic suites for the language recommender and the platform subtitle quality gate (including a regression that timing is never used to judge the gate), plus queue fallback and ready-page wiring tests. Scoring/threshold constants are pinned in the shared cross-platform fixture and asserted on both ends.
+- New cross-platform suites for the decision engine (with a fixture contract on both ends), the VTT space-padding parse fix, first-cue timing, the speech-only merge-gap fix, the cloud-escalation flow, and phrase-stutter collapse, plus the language recommender and platform subtitle quality gate (including a regression that timing is never used to judge the gate). All existing iron-law and timing regressions stay green.
 
 ## 0.7.6
 

@@ -17,7 +17,7 @@ public sealed class SubtitleSourceResolverTests : IDisposable
     }
 
     [Fact]
-    public void QualityScorerPenalizesCjkHallucinationLikePhrases()
+    public void QualityScorerPenalizesCjkShortCueFragmentationWithoutHardcodedPhrases()
     {
         var file = WriteSrt("bad.ja.srt",
         [
@@ -35,8 +35,72 @@ public sealed class SubtitleSourceResolverTests : IDisposable
 
         Assert.True(score.Score < 55, $"Expected low score, got {score.Score}");
         Assert.True((int)score.Verdict <= (int)SubtitleQualityVerdict.LowConfidence);
-        Assert.Contains("hallucinationLikePhrase", score.Reasons);
         Assert.Contains("shortCueFragmentation", score.Reasons);
+    }
+
+    [Fact]
+    public void NilLocalAsrCandidateIsNotUsable()
+    {
+        var score = SubtitleQualityScorer.Score(
+            new SubtitleSourceCandidate(
+                "pending-local",
+                SubtitleSourceKind.LocalAsr,
+                "en",
+                "Local recognition",
+                null,
+                false,
+                "whisper.cpp"),
+            "en",
+            null);
+
+        Assert.Equal(0, score.Score);
+        Assert.Equal(SubtitleQualityVerdict.Unusable, score.Verdict);
+        Assert.Contains("pendingGeneration", score.Reasons);
+        Assert.DoesNotContain("notGeneratedYet", score.Reasons);
+    }
+
+    [Fact]
+    public void ResolverNeverReturnsEmptySelectedFileForMissingCandidate()
+    {
+        var resolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(
+            SourceLanguageIntent.Language("en"),
+            SubtitleSourcePolicy.AutoBest,
+            [
+                new SubtitleSourceCandidate(
+                    "pending-local",
+                    SubtitleSourceKind.LocalAsr,
+                    "en",
+                    "Local recognition",
+                    null,
+                    false,
+                    "whisper.cpp"),
+            ],
+            null));
+
+        Assert.Null(resolved);
+    }
+
+    [Fact]
+    public void ProductionScorerDoesNotHardcodeObservedBadSamplePhrases()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            SubtitleLanguageRecommenderTests.RepoRoot(),
+            "windows",
+            "MoongateCore",
+            "SubtitleSourceResolver.cs"));
+        foreach (var phrase in new[]
+        {
+            "世界の銀行が崩れた",
+            "冥府より現れしいお酒",
+            "偉いドクネストレード",
+            "チョコナナナ",
+            "ソスせんべい",
+            "くじ引き野郎",
+            "あいい行く",
+        })
+        {
+            Assert.DoesNotContain(phrase, source);
+        }
     }
 
     [Fact]

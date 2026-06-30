@@ -79,18 +79,18 @@ public static class PlatformSubtitleQualityGate
 
     public static Verdict Assess(
         IReadOnlyList<SubtitleCue> cues,
-        string? requestedLanguageCode,
-        string? subtitleLanguageCode,
+        string? requestedSourceLanguageCode,
+        string? candidateLanguageCode,
         double? videoDurationSeconds)
     {
         var reasons = new List<Reason>();
-        var report = QualityReport(cues, requestedLanguageCode, subtitleLanguageCode);
+        var report = QualityReport(cues, requestedSourceLanguageCode, candidateLanguageCode);
 
         // 1) Language match (fatal). Normalize both sides to language buckets.
-        if (!string.IsNullOrEmpty(requestedLanguageCode) && !string.IsNullOrEmpty(subtitleLanguageCode))
+        if (!string.IsNullOrEmpty(requestedSourceLanguageCode) && !string.IsNullOrEmpty(candidateLanguageCode))
         {
-            var r = SubtitleLanguageChoice.NormalizedLanguageCode(requestedLanguageCode);
-            var a = SubtitleLanguageChoice.NormalizedLanguageCode(subtitleLanguageCode);
+            var r = SubtitleLanguageChoice.NormalizedLanguageCode(requestedSourceLanguageCode);
+            var a = SubtitleLanguageChoice.NormalizedLanguageCode(candidateLanguageCode);
             if (r != a) reasons.Add(Reason.LanguageMismatch);
         }
 
@@ -129,14 +129,14 @@ public static class PlatformSubtitleQualityGate
 
     public static SubtitleSourceQualityReport QualityReport(
         IReadOnlyList<SubtitleCue> cues,
-        string? requestedLanguageCode,
-        string? subtitleLanguageCode)
+        string? requestedSourceLanguageCode,
+        string? candidateLanguageCode)
     {
         if (cues.Count == 0) return SubtitleSourceQualityReport.Empty;
 
-        var cjkLanguage = IsCjkLanguageCode(requestedLanguageCode) || IsCjkLanguageCode(subtitleLanguageCode);
-        var romanizedLoopSensitiveLanguage = IsRomanizedLoopSensitiveLanguageCode(requestedLanguageCode)
-            || IsRomanizedLoopSensitiveLanguageCode(subtitleLanguageCode);
+        var cjkLanguage = IsCjkLanguageCode(requestedSourceLanguageCode) || IsCjkLanguageCode(candidateLanguageCode);
+        var romanizedLoopSensitiveLanguage = IsRomanizedLoopSensitiveLanguageCode(requestedSourceLanguageCode)
+            || IsRomanizedLoopSensitiveLanguageCode(candidateLanguageCode);
         int identical = 0, comparable = 0, visibleScalars = 0, badScalars = 0, cjkScalars = 0, latinScalars = 0;
         string? previous = null;
         var uniqueTexts = new HashSet<string>(StringComparer.Ordinal);
@@ -366,8 +366,8 @@ public static class PlatformSubtitleQualityGate
     /// </summary>
     public static Verdict Assess(
         string subtitleFilePath,
-        string? requestedLanguageCode,
-        string? subtitleLanguageCode,
+        string? requestedSourceLanguageCode,
+        string? candidateLanguageCode,
         double? videoDurationSeconds)
     {
         string raw;
@@ -375,7 +375,7 @@ public static class PlatformSubtitleQualityGate
         catch { return new Verdict(true, []); }
         var isVtt = Path.GetExtension(subtitleFilePath).TrimStart('.').ToLowerInvariant() == "vtt";
         var cleaned = SrtTools.CleanCues(isVtt ? SrtTools.ParseVtt(raw) : SrtTools.ParseSrt(raw));
-        return Assess(cleaned, requestedLanguageCode, subtitleLanguageCode, videoDurationSeconds);
+        return Assess(cleaned, requestedSourceLanguageCode, candidateLanguageCode, videoDurationSeconds);
     }
 
     /// <summary>

@@ -987,6 +987,7 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             durationText: durationText,
             thumbnailURL: thumbnailURL,
             uploader: uploader,
+            detectedLanguageCode: json["language"] as? String,
             description: (description?.isEmpty == false) ? description : nil,
             formats: formats,
             subtitles: subtitles
@@ -1141,8 +1142,13 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
 
         let realDict = (json["subtitles"] as? [String: Any]) ?? [:]
         let realCodes = realDict.keys.filter { $0 != "live_chat" && $0 != "rechat" }
-        var real = realCodes.map {
-            SubtitleChoice(languageCode: $0, label: subtitleLabel(for: $0), sourceKind: .manual)
+        var real = realCodes.map { code in
+            SubtitleChoice(
+                languageCode: code,
+                label: subtitleLabel(for: code),
+                sourceKind: .manual,
+                metadata: subtitleMetadata(kind: "manual", code: code, entries: realDict[code] as? [[String: Any]])
+            )
         }
         real.sort { subtitleSortKey($0.languageCode) < subtitleSortKey($1.languageCode) }
 
@@ -1156,10 +1162,43 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             return false
         }
         autoCodes.sort { subtitleSortKey($0) < subtitleSortKey($1) }
-        let auto = autoCodes.prefix(8).map {
-            SubtitleChoice(languageCode: $0, label: subtitleLabel(for: $0), sourceKind: .platformAuto)
+        let auto = autoCodes.prefix(8).map { code in
+            SubtitleChoice(
+                languageCode: code,
+                label: subtitleLabel(for: code),
+                sourceKind: .platformAuto,
+                variant: code.lowercased().contains("-orig") ? "orig" : nil,
+                metadata: subtitleMetadata(kind: "automatic", code: code, entries: autoDict[code] as? [[String: Any]])
+            )
         }
         return real + auto
+    }
+
+    private static func subtitleMetadata(
+        kind: String,
+        code: String,
+        entries: [[String: Any]]?
+    ) -> [String: String] {
+        var metadata: [String: String] = [
+            "ytDlpKind": kind,
+            "ytDlpLanguageCode": code,
+        ]
+        if let first = entries?.first {
+            for key in ["name", "ext", "protocol"] {
+                if let value = first[key] as? String, !value.isEmpty {
+                    metadata["ytDlp.\(key)"] = value
+                }
+            }
+        }
+        let exts = entries?.compactMap { $0["ext"] as? String }.filter { !$0.isEmpty } ?? []
+        if !exts.isEmpty {
+            metadata["ytDlpExts"] = Array(Set(exts)).sorted().joined(separator: ",")
+        }
+        let name = entries?.compactMap { $0["name"] as? String }.first ?? ""
+        if code.lowercased().contains("-orig") || name.lowercased().contains("orig") {
+            metadata["isOrig"] = "true"
+        }
+        return metadata
     }
 
     private static func subtitleLabel(for code: String) -> String {

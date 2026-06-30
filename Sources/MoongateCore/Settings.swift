@@ -3,6 +3,17 @@ import Foundation
 
 /// App 设置。持久化在 ~/Library/Application Support/月之门/settings.json（0600）。
 /// 注意：authToken 属于敏感凭证，只落在本地配置文件，绝不写入代码、日志或版本库。
+public enum SubtitleRecognitionMode: String, Codable, Sendable, Equatable, CaseIterable {
+    case automatic
+    case alwaysLocal
+    case platformOnly
+}
+
+public enum LocalRecognitionQuality: String, Codable, Sendable, Equatable, CaseIterable {
+    case standard
+    case accurate
+}
+
 public struct AppSettings: Codable, Sendable, Equatable {
     /// 翻译接口协议
     public var translationProvider: TranslationProvider
@@ -68,6 +79,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var translationTargetLanguage: String
     /// 默认原声/源字幕语言。"auto"=按标题和平台字幕判断；也可锁定 ja/en/ko/zh-Hans/zh-Hant/yue。
     public var preferredSourceLanguage: String
+    /// 字幕识别策略。普通用户看到的是“自动 / 始终离线 / 关闭”，内部仍兼容 localASREnabled。
+    public var subtitleRecognitionMode: SubtitleRecognitionMode
+    /// 本地识别质量偏好。普通 UI 使用“标准 / 更准确”，不暴露 sidecar 或模型细节。
+    public var localRecognitionQuality: LocalRecognitionQuality
     /// 首启引导是否已完成。
     public var onboardingCompleted: Bool
     /// 开启后，字幕翻译前会先用总结模型分析内容类型，再选择更合适的翻译提示词预设。
@@ -88,6 +103,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var localASRSidecarRuntimePath: String
     /// 本地精准识别 sidecar 模型或模型目录路径。
     public var localASRSidecarModelPath: String
+    /// 本地语音边界检测模型路径。缺失或文件不可用时必须降级为普通识别。
+    public var localASRVADModelPath: String
 
     // MARK: 云端精准识别（默认关闭）
     /// 是否允许下载流水线调用云端音频转写。默认关闭；只有用户明确同意后才可用。
@@ -153,6 +170,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         appLanguage: String = "auto",
         translationTargetLanguage: String = "zh-Hans",
         preferredSourceLanguage: String = "auto",
+        subtitleRecognitionMode: SubtitleRecognitionMode = .automatic,
+        localRecognitionQuality: LocalRecognitionQuality = .standard,
         onboardingCompleted: Bool = false,
         smartTranslationPromptsEnabled: Bool = false,
         localASREnabled: Bool = false,
@@ -162,6 +181,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         localASRPreciseModeEnabled: Bool = false,
         localASRSidecarRuntimePath: String = "",
         localASRSidecarModelPath: String = "",
+        localASRVADModelPath: String = "",
         cloudASREnabled: Bool = false,
         cloudASRConsentAccepted: Bool = false,
         cloudASRBaseURL: String = "https://api.openai.com",
@@ -205,6 +225,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.appLanguage = appLanguage
         self.translationTargetLanguage = translationTargetLanguage
         self.preferredSourceLanguage = Self.normalizedPreferredSourceLanguage(preferredSourceLanguage)
+        self.subtitleRecognitionMode = subtitleRecognitionMode
+        self.localRecognitionQuality = localRecognitionQuality
         self.onboardingCompleted = onboardingCompleted
         self.smartTranslationPromptsEnabled = smartTranslationPromptsEnabled
         self.localASREnabled = localASREnabled
@@ -214,6 +236,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.localASRPreciseModeEnabled = localASRPreciseModeEnabled
         self.localASRSidecarRuntimePath = Self.normalizedSingleLineField(localASRSidecarRuntimePath)
         self.localASRSidecarModelPath = Self.normalizedSingleLineField(localASRSidecarModelPath)
+        self.localASRVADModelPath = Self.normalizedSingleLineField(localASRVADModelPath)
         self.cloudASREnabled = cloudASREnabled
         self.cloudASRConsentAccepted = cloudASRConsentAccepted
         self.cloudASRBaseURL = Self.normalizedSingleLineField(cloudASRBaseURL)
@@ -263,9 +286,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
         case lastSubtitleMode, lastSubtitleLangs, lastPrimarySubtitleTrackID, lastOutputFormat, lastPreferHDR
-        case appLanguage, translationTargetLanguage, preferredSourceLanguage, onboardingCompleted, smartTranslationPromptsEnabled
+        case appLanguage, translationTargetLanguage, preferredSourceLanguage, subtitleRecognitionMode, localRecognitionQuality
+        case onboardingCompleted, smartTranslationPromptsEnabled
         case localASREnabled, localASRRuntimePath, localASRModelPath, localASRModelID
-        case localASRPreciseModeEnabled, localASRSidecarRuntimePath, localASRSidecarModelPath
+        case localASRPreciseModeEnabled, localASRSidecarRuntimePath, localASRSidecarModelPath, localASRVADModelPath
         case cloudASREnabled, cloudASRConsentAccepted, cloudASRBaseURL, cloudASRModel, cloudASRAuthToken
         case completionNotificationsEnabled, completionSoundEnabled
     }
@@ -345,6 +369,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         preferredSourceLanguage = Self.normalizedPreferredSourceLanguage(
             try c.decodeIfPresent(String.self, forKey: .preferredSourceLanguage) ?? "auto"
         )
+        let rawSubtitleRecognitionMode = try c.decodeIfPresent(String.self, forKey: .subtitleRecognitionMode)
+        subtitleRecognitionMode = rawSubtitleRecognitionMode.flatMap(SubtitleRecognitionMode.init(rawValue:)) ?? .automatic
+        let rawLocalRecognitionQuality = try c.decodeIfPresent(String.self, forKey: .localRecognitionQuality)
+        localRecognitionQuality = rawLocalRecognitionQuality.flatMap(LocalRecognitionQuality.init(rawValue:)) ?? .standard
         onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
         smartTranslationPromptsEnabled = try c.decodeIfPresent(Bool.self, forKey: .smartTranslationPromptsEnabled) ?? false
         localASREnabled = try c.decodeIfPresent(Bool.self, forKey: .localASREnabled) ?? false
@@ -363,6 +391,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         )
         localASRSidecarModelPath = Self.normalizedSingleLineField(
             try c.decodeIfPresent(String.self, forKey: .localASRSidecarModelPath) ?? ""
+        )
+        localASRVADModelPath = Self.normalizedSingleLineField(
+            try c.decodeIfPresent(String.self, forKey: .localASRVADModelPath) ?? ""
         )
         cloudASREnabled = try c.decodeIfPresent(Bool.self, forKey: .cloudASREnabled) ?? false
         cloudASRConsentAccepted = try c.decodeIfPresent(Bool.self, forKey: .cloudASRConsentAccepted) ?? false
@@ -419,6 +450,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(appLanguage, forKey: .appLanguage)
         try c.encode(translationTargetLanguage, forKey: .translationTargetLanguage)
         try c.encode(Self.normalizedPreferredSourceLanguage(preferredSourceLanguage), forKey: .preferredSourceLanguage)
+        try c.encode(subtitleRecognitionMode, forKey: .subtitleRecognitionMode)
+        try c.encode(localRecognitionQuality, forKey: .localRecognitionQuality)
         try c.encode(onboardingCompleted, forKey: .onboardingCompleted)
         try c.encode(smartTranslationPromptsEnabled, forKey: .smartTranslationPromptsEnabled)
         try c.encode(localASREnabled, forKey: .localASREnabled)
@@ -428,6 +461,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(localASRPreciseModeEnabled, forKey: .localASRPreciseModeEnabled)
         try c.encode(Self.normalizedSingleLineField(localASRSidecarRuntimePath), forKey: .localASRSidecarRuntimePath)
         try c.encode(Self.normalizedSingleLineField(localASRSidecarModelPath), forKey: .localASRSidecarModelPath)
+        try c.encode(Self.normalizedSingleLineField(localASRVADModelPath), forKey: .localASRVADModelPath)
         try c.encode(cloudASREnabled, forKey: .cloudASREnabled)
         try c.encode(cloudASRConsentAccepted, forKey: .cloudASRConsentAccepted)
         try c.encode(Self.normalizedSingleLineField(cloudASRBaseURL), forKey: .cloudASRBaseURL)

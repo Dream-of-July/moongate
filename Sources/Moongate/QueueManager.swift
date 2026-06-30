@@ -1551,40 +1551,65 @@ final class QueueManager: ObservableObject {
                 note: nil)
         }
 
-        // Platform auto-caption: assess intrinsic usability.
-        let verdict = Self.assessPlatformSubtitle(
-            fileURL: pickedSource, requestedLanguageCode: preferredLang, info: info)
-        let shouldCompareLocalASR = request.subtitleSourcePolicy == .compareLocalASR
-        if verdict.usable && !shouldCompareLocalASR {
+        // Platform auto-caption: assess intrinsic usability ONCE via the unified decision engine.
+        // No separate gate + scorer double-run, and no "门(布尔) || 评分器(枚举)" 双裁决 OR —
+        // the engine's gate verdict is the sole authority for "should we generate Whisper".
+        let platformCandidate = candidate(
+            kind: .platformAuto,
+            fileURL: pickedSource,
+            displayName: primarySubtitleTrack?.label,
+            provider: primarySubtitleTrack?.provider
+        )
+        let platformAssessment = SubtitleSourceDecisionEngine.assess(
+            candidate: platformCandidate,
+            requestedSourceLanguageCode: preferredLang,
+            videoDurationSeconds: videoDurationSeconds
+        )
+        let generatorUnavailableNote = platformAssessment.gateUsable && platformAssessment.verdict >= .usable
+            ? CoreL10n.t(L.Queue.subtitleSourceCompareLocalASRUnavailable)
+            : CoreL10n.t(L.Queue.subtitleSourceLowQualityEnableLocalASR)
+        switch SubtitleSourceDecisionEngine.generationPlan(
+            policy: request.subtitleSourcePolicy,
+            platform: platformAssessment,
+            localASRAvailable: localASRGenerator != nil,
+            cloudASRAvailable: cloudASRGenerator != nil
+        ) {
+        case .none:
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
                 resolved: resolvedSource(
                     selectedFile: pickedSource,
                     selectedKind: .platformAuto,
-                    candidates: [
-                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
-                    ]),
+                    candidates: [platformCandidate]),
                 note: nil)
+        case .keepPlatformRecordReasons(let reasons):
+            // Policy wanted local ASR but no generator is configured: keep the auto-caption
+            // (non-blocking) and record reasons for the UI.
+            return SubtitleSourceResolution(
+                selectedFile: pickedSource,
+                resolved: resolvedSource(
+                    selectedFile: pickedSource,
+                    selectedKind: .platformAuto,
+                    candidates: [platformCandidate],
+                    fallbackReasons: reasons),
+                note: generatorUnavailableNote)
+        case .generateLocalASRThenChoose:
+            break
         }
 
-        // Not usable, or explicit local comparison requested. Generate Whisper when available.
+        // Engine planned local ASR generation. Need a generator and a downloaded video file.
         guard let localASRGenerator,
               let videoFile = downloadFiles.first(where: {
                   Self.videoExtensions.contains($0.pathExtension.lowercased())
               }) else {
-            // Local ASR unavailable: keep the auto-caption (non-blocking), record reasons for the UI.
             return SubtitleSourceResolution(
                 selectedFile: pickedSource,
                 resolved: resolvedSource(
                     selectedFile: pickedSource,
                     selectedKind: .platformAuto,
-                    candidates: [
-                        candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label)
-                    ],
-                    fallbackReasons: verdict.reasons),
-                note: verdict.usable
-                    ? CoreL10n.t(L.Queue.subtitleSourceCompareLocalASRUnavailable)
-                    : CoreL10n.t(L.Queue.subtitleSourceLowQualityEnableLocalASR))
+                    candidates: [platformCandidate],
+                    fallbackReasons: platformAssessment.gateReasons),
+                note: generatorUnavailableNote)
         }
 
         // Generate Whisper for this language and let the resolver compare it with the platform source.
@@ -1613,6 +1638,31 @@ final class QueueManager: ObservableObject {
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
         if !downloadFiles.contains(sourceSRT) { downloadFiles.append(sourceSRT) }
+
+        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果低置信，
+        // 且用户已配置并同意云端识别（cloudASRGenerator != nil 已隐含 cloudASREnabled && consentAccepted），
+        // 则用云端重识别取代本地源。绝不自动上传——没配置/没同意就保持本地结果。
+        var finalSourceSRT = sourceSRT
+        var finalConfidence = generated.confidence
+        var usedCloudEscalation = false
+        if request.subtitleSourcePolicy == .autoBest,
+           generated.confidence?.isLowQuality == true,
+           cloudASRGenerator != nil {
+            if let cloudSRT = try? await generateCloudASRSourceSubtitle(
+                videoFile: videoFile,
+                languageCode: language.isEmpty ? "auto" : language,
+                promptMetadata: Self.localASRPromptMetadata(info: info),
+                control: control
+            ) {
+                finalSourceSRT = cloudSRT.url
+                finalConfidence = nil
+                usedCloudEscalation = true
+                if !downloadFiles.contains(cloudSRT.url) { downloadFiles.append(cloudSRT.url) }
+            }
+        }
+        // 云端识别可能耗时数秒；与本地路径(1636)一致,await 后重查 generation,避免取消后仍按陈旧结果继续。
+        guard item(id)?.generation == generation else { throw MoongateError.cancelled }
+
         let snapshot = downloadFiles
         update(id, generation: generation) {
             $0.resultFiles = snapshot
@@ -1620,12 +1670,26 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
         }
+        if usedCloudEscalation {
+            // 云端救场成功：直接用云端源，附诚实来源说明。
+            return SubtitleSourceResolution(
+                selectedFile: finalSourceSRT,
+                resolved: resolvedSource(
+                    selectedFile: finalSourceSRT,
+                    selectedKind: .cloudASR,
+                    candidates: [candidate(kind: .cloudASR, fileURL: finalSourceSRT, provider: "OpenAI-compatible")],
+                    fallbackReasons: platformAssessment.gateReasons),
+                note: CoreL10n.text(
+                    en: "Local recognition was low-confidence, so Moongate used cloud recognition you enabled.",
+                    zhHans: "本地识别置信度较低，已改用你启用的云端精准识别。",
+                    zhHant: "本機識別置信度較低，已改用你啟用的雲端精準識別。"))
+        }
         let resolved = resolverResult(candidates: [
-            candidate(kind: .platformAuto, fileURL: pickedSource, displayName: primarySubtitleTrack?.label),
-            candidate(kind: .localASR, fileURL: sourceSRT, provider: "whisper.cpp")
+            platformCandidate,
+            candidate(kind: .localASR, fileURL: finalSourceSRT, provider: "whisper.cpp")
         ])
         let selectedKind = resolved?.selectedKind ?? .localASR
-        let selectedFile = selectedKind == .localASR ? sourceSRT : pickedSource
+        let selectedFile = selectedKind == .localASR ? finalSourceSRT : pickedSource
         return SubtitleSourceResolution(
             selectedFile: selectedFile,
             resolved: ResolvedSubtitleSource(
@@ -1635,24 +1699,11 @@ final class QueueManager: ObservableObject {
                 qualityVerdict: resolved?.qualityVerdict,
                 sourceQualityVerdict: resolved?.sourceQualityVerdict,
                 usedLocalASRFallback: selectedKind == .localASR,
-                fallbackReasons: verdict.reasons,
+                fallbackReasons: platformAssessment.gateReasons,
                 candidateReports: resolved?.candidateReports ?? []),
             note: selectedKind == .localASR
-                ? Self.localASRSourceNote(fallbackReasons: verdict.reasons, confidence: generated.confidence)
+                ? Self.localASRSourceNote(fallbackReasons: platformAssessment.gateReasons, confidence: finalConfidence)
                 : nil)
-    }
-
-    /// Parses an auto-caption file and runs the quality gate against it.
-    private static func assessPlatformSubtitle(
-        fileURL: URL,
-        requestedLanguageCode: String?,
-        info: VideoInfo
-    ) -> PlatformSubtitleQualityGate.Verdict {
-        PlatformSubtitleQualityGate.assess(
-            subtitleFileURL: fileURL,
-            requestedLanguageCode: requestedLanguageCode,
-            subtitleLanguageCode: langCode(of: fileURL),
-            videoDurationSeconds: PlatformSubtitleQualityGate.parseDurationSeconds(info.durationText))
     }
 
     /// Maps gate reasons to the user-facing fallback note.
@@ -1671,9 +1722,19 @@ final class QueueManager: ObservableObject {
         confidence: LocalASRConfidenceSummary?
     ) -> String? {
         let fallback = fallbackReasons.map { fallbackNote(for: $0) }
-        let lowConfidence = confidence?.isLowQuality == true
-            ? CoreL10n.t(L.Queue.subtitleSourceLowConfidenceLocalASR) : nil
-        switch (fallback, lowConfidence) {
+        let qualityCaveat: String?
+        if confidence?.hasSevereQualityBlocker == true {
+            // 重复循环 / 语言误判：识别可能彻底不可靠（不再硬失败，诚实告警 + 让用户决定）。
+            qualityCaveat = CoreL10n.text(
+                en: "Local recognition may have looped or mis-detected the language, so these subtitles can be unreliable. Set the source language and retry, or use a platform subtitle if available.",
+                zhHans: "本地识别可能发生重复循环或语言误判，这份字幕可能不可靠。可指定源语言后重试，或改用平台字幕。",
+                zhHant: "本機識別可能發生重複循環或語言誤判，這份字幕可能不可靠。可指定來源語言後重試，或改用平台字幕。")
+        } else if confidence?.isLowQuality == true {
+            qualityCaveat = CoreL10n.t(L.Queue.subtitleSourceLowConfidenceLocalASR)
+        } else {
+            qualityCaveat = nil
+        }
+        switch (fallback, qualityCaveat) {
         case let (reason?, caveat?): return "\(reason) · \(caveat)"
         case let (reason?, nil): return reason
         case let (nil, caveat?): return caveat
@@ -1773,9 +1834,8 @@ final class QueueManager: ObservableObject {
             }
         }
         let sourceSRT = generated.url
-        if generated.confidence?.hasSevereQualityBlocker == true {
-            throw MoongateError.downloadFailed(Self.severeLocalASRQualityMessage())
-        }
+        // 严重质量问题(重复循环/语言误判)**不再让整个任务失败**——whisper 是用户显式选择的源,没有更好的可换,
+        // 硬失败只会让用户一无所得。与 autoBest 路径一致:照常产出字幕,由下方 localASRSourceNote 附诚实告警。
         guard item(id)?.generation == generation else { return files }
         completeProgressPhase(id, generation: generation, phase: .audioExtract)
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
@@ -1875,14 +1935,6 @@ final class QueueManager: ObservableObject {
             languageHintCode: languageHintCode
         )
         return !summary.hasSevereQualityBlocker
-    }
-
-    private static func severeLocalASRQualityMessage() -> String {
-        CoreL10n.text(
-            en: "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.",
-            zhHans: "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
-            zhHant: "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。"
-        )
     }
 
     private func applyASRProgress(id: UUID, generation: Int, _ progress: ASRProgress) {

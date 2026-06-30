@@ -1735,11 +1735,39 @@ public sealed class QueueManager
                 null);
         }
 
-        var verdict = PlatformSubtitleQualityGate.Assess(
-            pickedSource, preferredLang, LangCode(pickedSource),
-            videoDurationSeconds);
-        var shouldCompareLocalAsr = request.SubtitleSourcePolicy == SubtitleSourcePolicy.CompareLocalAsr;
-        if (verdict.Usable && !shouldCompareLocalAsr)
+        var platformCandidate = Candidate(
+            SubtitleSourceKind.PlatformAuto,
+            pickedSource,
+            primarySubtitleTrack?.Label,
+            primarySubtitleTrack?.Provider);
+        // 是否生成 Whisper 统一走 SubtitleSourceDecisionEngine（门每候选只跑一次，无"门(布尔) || 评分器(枚举)"双裁决）。
+        var platformAssessment = SubtitleSourceDecisionEngine.Assess(
+            platformCandidate, preferredLang, videoDurationSeconds);
+        var platformVerdict = new PlatformSubtitleQualityGate.Verdict(
+            platformAssessment.GateUsable,
+            platformAssessment.GateReasons,
+            platformAssessment.Report ?? PlatformSubtitleQualityGate.SubtitleSourceQualityReport.Empty);
+        var platformOnlyResolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(
+            request.SourceLanguageIntent,
+            request.SubtitleSourcePolicy,
+            [platformCandidate],
+            videoDurationSeconds));
+        var generatorUnavailableNote = platformAssessment.GateUsable
+            && platformAssessment.Verdict >= SubtitleQualityVerdict.Usable
+                ? L10n.T(
+                "本地识别未配置，无法比较；已保留平台字幕。",
+                "本機識別尚未設定，無法比較；已保留平台字幕。",
+                "Local recognition is not configured, so Moongate could not compare sources. Platform subtitles were kept.")
+                : L10n.T(
+                "平台字幕质量较差，可在设置中启用本地识别提升质量",
+                "平台字幕品質較差，可在設定中啟用本機識別提升品質",
+                "Platform subtitles are low quality; enable local recognition in Settings to improve");
+        var plan = SubtitleSourceDecisionEngine.GenerationPlan(
+            request.SubtitleSourcePolicy,
+            platformAssessment,
+            _localAsrGenerator is not null,
+            _cloudAsrGenerator is not null);
+        if (plan.Kind == SubtitleSourceDecisionEngine.AsrPlanKind.None)
         {
             return new SubtitleSourceResolution(pickedSource, downloadFiles,
                 new ResolvedSubtitleSource
@@ -1747,36 +1775,32 @@ public sealed class QueueManager
                     LanguageCode = language,
                     SelectedFile = pickedSource,
                     SelectedKind = SubtitleSourceKind.PlatformAuto,
-                    QualityVerdict = verdict,
-                    CandidateReports = ArbitrationReports(verdict),
+                    QualityVerdict = platformOnlyResolved?.QualityVerdict ?? platformVerdict,
+                    SourceQualityVerdict = platformOnlyResolved?.SourceQualityVerdict ?? platformAssessment.Verdict,
+                    CandidateReports = platformOnlyResolved?.CandidateReports ?? ArbitrationReports(platformVerdict),
                 },
                 null);
         }
 
         var videoFile = downloadFiles.FirstOrDefault(file => VideoExtensions.Contains(ExtensionOf(file)));
-        if (_localAsrGenerator is null || videoFile is null)
+        if (plan.Kind == SubtitleSourceDecisionEngine.AsrPlanKind.KeepPlatformRecordReasons
+            || _localAsrGenerator is null || videoFile is null)
         {
-            // Local ASR unavailable: keep the auto-caption (non-blocking), record reasons for the UI.
+            // Policy wanted local ASR but no generator/video file: keep the auto-caption (non-blocking),
+            // record reasons for the UI.
             return new SubtitleSourceResolution(pickedSource, downloadFiles,
                 new ResolvedSubtitleSource
                 {
                     LanguageCode = language,
                     SelectedFile = pickedSource,
                     SelectedKind = SubtitleSourceKind.PlatformAuto,
-                    QualityVerdict = verdict,
+                    QualityVerdict = platformOnlyResolved?.QualityVerdict ?? platformVerdict,
+                    SourceQualityVerdict = platformOnlyResolved?.SourceQualityVerdict ?? platformAssessment.Verdict,
                     UsedLocalAsrFallback = false,
-                    FallbackReasons = verdict.Reasons,
-                    CandidateReports = ArbitrationReports(verdict, false),
+                    FallbackReasons = platformAssessment.GateReasons,
+                    CandidateReports = platformOnlyResolved?.CandidateReports ?? ArbitrationReports(platformVerdict, false),
                 },
-                verdict.Usable
-                    ? L10n.T(
-                        "本地识别未配置，无法比较；已保留平台字幕。",
-                        "本機識別尚未設定，無法比較；已保留平台字幕。",
-                        "Local recognition is not configured, so Moongate could not compare sources. Platform subtitles were kept.")
-                    : L10n.T(
-                        "平台字幕质量较差，可在设置中启用本地识别提升质量",
-                        "平台字幕品質較差，可在設定中啟用本機識別提升品質",
-                        "Platform subtitles are low quality; enable local recognition in Settings to improve"));
+                generatorUnavailableNote);
         }
 
         Update(id, generation, item =>
@@ -1801,6 +1825,67 @@ public sealed class QueueManager
         CompleteProgressPhase(id, generation, QueueProgressPhase.SubtitleSegment);
         var nextFiles = downloadFiles.ToList();
         if (!nextFiles.Contains(sourceSrt)) nextFiles.Add(sourceSrt);
+
+        // B3 弱语言云端救场（opt-in）：本地 whisper 对 sung 中/粤/韩有转写硬上限。若本地结果低置信，且用户已配置并
+        // 同意云端识别（_cloudAsrGenerator != null 已隐含 cloudASREnabled && consentAccepted），用云端重识别取代本地源。
+        // 绝不自动上传——没配置/没同意就保持本地结果。
+        if (request.SubtitleSourcePolicy == SubtitleSourcePolicy.AutoBest
+            && generated.Confidence is { IsLowQuality: true }
+            && _cloudAsrGenerator is not null)
+        {
+            try
+            {
+                var cloud = await _cloudAsrGenerator.GenerateSourceSubtitleAsync(
+                    videoFile,
+                    string.IsNullOrEmpty(language) ? "auto" : language,
+                    control,
+                    ct).ConfigureAwait(false);
+                // 云端识别可能耗时数秒;成功后立即重查 generation(取消则不按陈旧结果返回)。
+                if (GenerationOf(id) != generation) throw new OperationCanceledException();
+                if (!nextFiles.Contains(cloud.Url)) nextFiles.Add(cloud.Url);
+                Update(id, generation, item =>
+                {
+                    item.ResultFiles = nextFiles;
+                    item.ClearProgress();
+                    item.IsPostDownloadProcessing = false;
+                    item.PostDownloadProcessingKind = PostDownloadProcessingKind.None;
+                });
+                // candidate reports 经引擎评估 platform + cloud,与 Swift 一致(避免 Windows 端缺质量分解的 parity drift)。
+                var cloudResolved = SubtitleSourceResolver.Resolve(new SubtitleResolutionRequest(
+                    request.SourceLanguageIntent,
+                    request.SubtitleSourcePolicy,
+                    [
+                        platformCandidate,
+                        Candidate(SubtitleSourceKind.CloudAsr, cloud.Url, primarySubtitleTrack?.Label, "OpenAI-compatible"),
+                    ],
+                    videoDurationSeconds));
+                return new SubtitleSourceResolution(cloud.Url, nextFiles,
+                    new ResolvedSubtitleSource
+                    {
+                        LanguageCode = language,
+                        SelectedFile = cloud.Url,
+                        SelectedKind = SubtitleSourceKind.CloudAsr,
+                        QualityVerdict = cloudResolved?.QualityVerdict,
+                        SourceQualityVerdict = cloudResolved?.SourceQualityVerdict,
+                        UsedLocalAsrFallback = false,
+                        FallbackReasons = platformAssessment.GateReasons,
+                        CandidateReports = cloudResolved?.CandidateReports ?? [],
+                    },
+                    L10n.T(
+                        "本地识别置信度较低，已改用你启用的云端精准识别。",
+                        "本機識別置信度較低，已改用你啟用的雲端精準識別。",
+                        "Local recognition was low-confidence, so Moongate used cloud recognition you enabled."));
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // 取消必须上抛,不可被云端失败的静默回退吞掉。
+            }
+            catch
+            {
+                // 云端失败：静默退回本地结果（不阻塞），下方正常流程继续。
+            }
+        }
+
         Update(id, generation, item =>
         {
             item.ResultFiles = nextFiles;
@@ -1813,11 +1898,7 @@ public sealed class QueueManager
             request.SourceLanguageIntent,
             request.SubtitleSourcePolicy,
             [
-                Candidate(
-                    SubtitleSourceKind.PlatformAuto,
-                    pickedSource,
-                    primarySubtitleTrack?.Label,
-                    primarySubtitleTrack?.Provider),
+                platformCandidate,
                 Candidate(
                     SubtitleSourceKind.LocalAsr,
                     sourceSrt,
@@ -1825,12 +1906,12 @@ public sealed class QueueManager
                     "whisper.cpp"),
             ],
             videoDurationSeconds));
-        var selectedKind = resolved?.SelectedKind ?? (verdict.Usable ? SubtitleSourceKind.PlatformAuto : SubtitleSourceKind.LocalAsr);
+        var selectedKind = resolved?.SelectedKind ?? (platformAssessment.GateUsable ? SubtitleSourceKind.PlatformAuto : SubtitleSourceKind.LocalAsr);
         var selectedSource = selectedKind == SubtitleSourceKind.PlatformAuto ? pickedSource : sourceSrt;
-        var candidateReports = resolved?.CandidateReports ?? ArbitrationReports(verdict, true);
-        var qualityVerdict = resolved?.QualityVerdict ?? verdict;
+        var candidateReports = resolved?.CandidateReports ?? ArbitrationReports(platformVerdict, true);
+        var qualityVerdict = resolved?.QualityVerdict ?? platformVerdict;
         var sourceQualityVerdict = resolved?.SourceQualityVerdict;
-        var fallbackReasons = selectedKind == SubtitleSourceKind.LocalAsr ? verdict.Reasons : [];
+        var fallbackReasons = selectedKind == SubtitleSourceKind.LocalAsr ? platformAssessment.GateReasons : [];
         return new SubtitleSourceResolution(selectedSource, nextFiles,
             new ResolvedSubtitleSource
             {
@@ -1844,7 +1925,7 @@ public sealed class QueueManager
                 CandidateReports = candidateReports,
             },
             selectedKind == SubtitleSourceKind.LocalAsr
-                ? LocalAsrSourceNote(verdict.Reasons, generated.Confidence)
+                ? LocalAsrSourceNote(platformAssessment.GateReasons, generated.Confidence)
                 : null);
     }
 
@@ -1853,18 +1934,30 @@ public sealed class QueueManager
         L10n.T("本地识别质量较低，字幕仅供参考", "本機識別品質較低，字幕僅供參考",
             "Local recognition quality is low; subtitles are for reference only");
 
-    /// <summary>Platform-fallback reason (if any) plus a low-confidence caveat when warranted.</summary>
+    /// <summary>Platform-fallback reason (if any) plus a quality caveat (severe or low-confidence) when warranted.</summary>
     private static string? LocalAsrSourceNote(
         IReadOnlyList<PlatformSubtitleQualityGate.Reason>? fallbackReasons,
         LocalAsrConfidenceSummary? confidence)
     {
         var fallback = fallbackReasons is null ? null : FallbackNote(fallbackReasons);
-        var lowConfidence = confidence is { IsLowQuality: true } ? LowConfidenceLocalAsrNote() : null;
-        return (fallback, lowConfidence) switch
+        string? caveat = null;
+        if (confidence is { HasSevereQualityBlocker: true })
         {
-            ({ } reason, { } caveat) => $"{reason} · {caveat}",
+            // 重复循环 / 语言误判：不再硬失败，照常产出 + 诚实告警，让用户决定。
+            caveat = L10n.T(
+                "本地识别可能发生重复循环或语言误判，这份字幕可能不可靠。可指定源语言后重试，或改用平台字幕。",
+                "本機識別可能發生重複循環或語言誤判，這份字幕可能不可靠。可指定來源語言後重試，或改用平台字幕。",
+                "Local recognition may have looped or mis-detected the language, so these subtitles can be unreliable. Set the source language and retry, or use a platform subtitle if available.");
+        }
+        else if (confidence is { IsLowQuality: true })
+        {
+            caveat = LowConfidenceLocalAsrNote();
+        }
+        return (fallback, caveat) switch
+        {
+            ({ } reason, { } c) => $"{reason} · {c}",
             ({ } reason, null) => reason,
-            (null, { } caveat) => caveat,
+            (null, { } c) => c,
             (null, null) => null,
         };
     }
@@ -1932,10 +2025,8 @@ public sealed class QueueManager
             progress => ApplyAsrProgress(id, generation, progress),
             ct).ConfigureAwait(false);
         var sourceSrt = generated.Url;
-        if (generated.Confidence?.HasSevereQualityBlocker == true)
-        {
-            throw MoongateException.DownloadFailed(SevereLocalAsrQualityMessage());
-        }
+        // 严重质量问题(重复循环/语言误判)不再让整个任务失败——whisper 是用户显式选择的源,硬失败让用户一无所得。
+        // 与 autoBest 路径一致:照常产出字幕,由下方 LocalAsrSourceNote 附诚实告警。
         if (GenerationOf(id) != generation) return files;
 
         CompleteProgressPhase(id, generation, QueueProgressPhase.AudioExtract);
@@ -1982,12 +2073,6 @@ public sealed class QueueManager
             languageHintCode);
         return !summary.HasSevereQualityBlocker;
     }
-
-    private static string SevereLocalAsrQualityMessage() =>
-        L10n.T(
-            "本地识别发生重复循环，月之门已停止使用这份字幕，避免继续翻译或烧录错误内容。请指定正确源语言后重试，或保留可用的平台字幕。",
-            "本機識別發生重複循環，月之門已停止使用這份字幕，避免繼續翻譯或燒錄錯誤內容。請指定正確來源語言後重試，或保留可用的平台字幕。",
-            "Local speech recognition produced a repeated-loop transcript, so Moongate stopped before translating or burning it. Specify the source language and retry, or keep a platform subtitle if available.");
 
     private async Task<List<string>> PrepareCloudAsrSourceSubtitleIfNeededAsync(
         List<string> files,

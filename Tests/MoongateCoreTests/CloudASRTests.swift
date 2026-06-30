@@ -192,6 +192,13 @@ final class CloudASRTests: XCTestCase {
 
     func testCloudASRGeneratorFactoryRequiresExplicitConfiguration() {
         XCTAssertNil(CloudASRGeneratorFactory.make(settings: AppSettings()))
+        XCTAssertNil(CloudASRGeneratorFactory.make(settings: AppSettings(
+            cloudASREnabled: true,
+            cloudASRConsentAccepted: false,
+            cloudASRBaseURL: "https://api.openai.com",
+            cloudASRModel: "whisper-1",
+            cloudASRAuthToken: "sk-test"
+        )))
         XCTAssertNotNil(CloudASRGeneratorFactory.make(settings: AppSettings(
             cloudASREnabled: true,
             cloudASRConsentAccepted: true,

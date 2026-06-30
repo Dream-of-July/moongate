@@ -138,6 +138,8 @@ public sealed record AppSettings
     public string LocalAsrSidecarRuntimePath { get; init; } = "";
     /// <summary>本地精准识别 sidecar 模型或模型目录路径。</summary>
     public string LocalAsrSidecarModelPath { get; init; } = "";
+    /// <summary>本地语音边界检测模型路径。缺失或文件不可用时必须降级为普通识别。</summary>
+    public string LocalAsrVadModelPath { get; init; } = "";
     /// <summary>是否允许上传音频到用户配置的云端转写服务。默认关闭，避免隐式上传。</summary>
     public bool CloudAsrEnabled { get; init; }
     /// <summary>用户是否已确认云端识别会上传音频且可能产生 API 费用。</summary>
@@ -411,6 +413,7 @@ public sealed record AppSettings
             && lapme.ValueKind == JsonValueKind.True;
         var localAsrSidecarRuntimePath = SingleLineField(StringField(root, "localASRSidecarRuntimePath") ?? "");
         var localAsrSidecarModelPath = SingleLineField(StringField(root, "localASRSidecarModelPath") ?? "");
+        var localAsrVadModelPath = SingleLineField(StringField(root, "localASRVADModelPath") ?? "");
         var cloudAsrEnabled = root.TryGetProperty("cloudASREnabled", out var cloudAsrEnabledValue)
             && cloudAsrEnabledValue.ValueKind == JsonValueKind.True;
         var cloudAsrConsentAccepted = root.TryGetProperty("cloudASRConsentAccepted", out var casca)
@@ -486,6 +489,7 @@ public sealed record AppSettings
             LocalAsrPreciseModeEnabled = localAsrPreciseModeEnabled,
             LocalAsrSidecarRuntimePath = localAsrSidecarRuntimePath,
             LocalAsrSidecarModelPath = localAsrSidecarModelPath,
+            LocalAsrVadModelPath = localAsrVadModelPath,
             CloudAsrEnabled = cloudAsrEnabled,
             CloudAsrConsentAccepted = cloudAsrConsentAccepted,
             CloudAsrBaseUrl = cloudAsrBaseUrl,
@@ -542,6 +546,7 @@ public sealed record AppSettings
             ["localASRPreciseModeEnabled"] = LocalAsrPreciseModeEnabled,
             ["localASRSidecarRuntimePath"] = SingleLineField(LocalAsrSidecarRuntimePath),
             ["localASRSidecarModelPath"] = SingleLineField(LocalAsrSidecarModelPath),
+            ["localASRVADModelPath"] = SingleLineField(LocalAsrVadModelPath),
             ["cloudASREnabled"] = CloudAsrEnabled,
             ["cloudASRConsentAccepted"] = CloudAsrConsentAccepted,
             ["cloudASRBaseURL"] = SingleLineField(CloudAsrBaseUrl),

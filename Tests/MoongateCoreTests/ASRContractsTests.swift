@@ -4,6 +4,12 @@ import XCTest
 @testable import MoongateCore
 
 final class ASRContractsTests: XCTestCase {
+    func testVADDisabledForLyricsProfileButEnabledForSpeech() {
+        // VAD 对歌唱/音乐灾难性失效（silero 丢大部分音频），故歌词档必须关闭、演讲档保留。实测见 M3。
+        XCTAssertFalse(ASRPromptBuilder.vadEnabled(for: .lyricsHighQuality))
+        XCTAssertTrue(ASRPromptBuilder.vadEnabled(for: .speech))
+    }
+
     func testTranscriptAndManifestsRoundTripThroughJSON() throws {
         let createdAt = Date(timeIntervalSince1970: 1_785_000_000)
         let transcript = ASRTranscript(
@@ -158,6 +164,21 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(turbo.sha256, "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2")
         XCTAssertEqual(turbo.downloadURL.absoluteString, "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")
         XCTAssertGreaterThanOrEqual(turbo.memoryRequiredMB, 3_072)
+    }
+
+    func testRecommendedWhisperCppVADManifestUsesVerifiedHuggingFaceMetadata() throws {
+        let manifest = ASRModelManifest.recommendedWhisperCppVAD
+
+        XCTAssertEqual(manifest.models.map(\.id), ["whisper.cpp-vad:silero-v5_1_2"])
+        let vad = try XCTUnwrap(manifest.models.first)
+        XCTAssertEqual(vad.displayName, "Silero voice boundary detector v5.1.2")
+        XCTAssertEqual(vad.fileName, "ggml-silero-v5.1.2.bin")
+        XCTAssertEqual(vad.downloadURL.absoluteString, "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin")
+        XCTAssertEqual(vad.sizeBytes, 885_098)
+        XCTAssertEqual(vad.sha256, "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf")
+        XCTAssertEqual(vad.memoryRequiredMB, 64)
+        XCTAssertEqual(vad.license, "MIT")
+        XCTAssertTrue(vad.sourceDescription.contains("ggml-org/whisper-vad"))
     }
 
     func testRuntimeBundleManifestRejectsDownloadURLsAndPathEscapes() throws {
@@ -535,7 +556,9 @@ final class ASRContractsTests: XCTestCase {
         let japaneseLyrics = ASRTranscriptMapper.sourceCues(from: transcript, profile: .japaneseLyrics)
         let speechStart = try XCTUnwrap(srtTimeToSeconds(speech[0].start))
         let lyricsStart = try XCTUnwrap(srtTimeToSeconds(japaneseLyrics[0].start))
-        XCTAssertEqual(speechStart, 1.0 + WhisperCueRetimer.onsetDelaySeconds, accuracy: 0.0015)
+        // 首词在 1.0s(前有真实静音):整段第一条不加 onsetDelay,用原始 onset,既不晚显也不提前进静音。
+        // speech 与 lyrics 首条都应等于原始 onset 1.0(中途 cue 才有 +onsetDelay 差异)。
+        XCTAssertEqual(speechStart, 1.0, accuracy: 0.0015)
         XCTAssertEqual(lyricsStart, 1.0, accuracy: 0.0015)
     }
 
@@ -1042,6 +1065,18 @@ final class ASRContractsTests: XCTestCase {
         let requestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
         XCTAssertEqual(requestObject["audioPath"] as? String, "/tmp/moongate/audio.wav")
         XCTAssertFalse(requestJSON.contains("audioUrl"))
+        let vadRequest = ASRRequest(
+            audioURL: URL(fileURLWithPath: "/tmp/moongate/audio.wav"),
+            languageCode: "ja",
+            modelID: "whisper.cpp:base",
+            vadEnabled: true,
+            vadModelPath: " /tmp/moongate/vad.bin\n",
+            cacheKey: "wire-vad"
+        )
+        let vadRequestData = try encoder.encode(vadRequest)
+        let vadRequestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: vadRequestData) as? [String: Any])
+        XCTAssertEqual(vadRequestObject["vadModelPath"] as? String, "/tmp/moongate/vad.bin")
+        XCTAssertEqual(vadRequest.vadModelPath, "/tmp/moongate/vad.bin")
         XCTAssertEqual(request, try decoder.decode(ASRRequest.self, from: Data("""
         {
           "audioUrl": "file:///tmp/moongate/audio.wav",
@@ -1052,6 +1087,7 @@ final class ASRContractsTests: XCTestCase {
           "cacheKey": "wire"
         }
         """.utf8)))
+        XCTAssertNil(request.vadModelPath)
 
         let runtime = ASRRuntimeInfo(executableURL: URL(fileURLWithPath: "/opt/moongate/whisper-cli"))
         let runtimeData = try encoder.encode(runtime)
@@ -1265,6 +1301,49 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(progressEvents.last?.fraction, 1)
     }
 
+    func testManagedVADInstallerUsesStagedDownloadAndProgressContract() async throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory
+            .appendingPathComponent("moongate-asr-vad-installer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: directory) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let payload = Data("verified vad payload".utf8)
+        let hashSource = directory.appendingPathComponent("hash-source.bin")
+        try payload.write(to: hashSource)
+        let expectedSha = try ASRModelStore.sha256(of: hashSource)
+        try fm.removeItem(at: hashSource)
+        let vad = try ASRModelInfo(
+            id: "whisper.cpp-vad:test",
+            displayName: "Silero VAD test",
+            fileName: "ggml-silero-v5.1.2.bin",
+            downloadURL: XCTUnwrap(URL(string: "https://example.com/ggml-silero-v5.1.2.bin")),
+            sizeBytes: Int64(payload.count),
+            sha256: expectedSha,
+            memoryRequiredMB: 64,
+            license: "MIT",
+            sourceDescription: "fixture"
+        )
+
+        let store = ASRModelStore(directoryURL: directory, availableCapacityProvider: { _ in 1024 * 1024 })
+        let downloader = FakeASRModelDownloadClient(payload: payload)
+        let installer = ASRModelInstaller(
+            manifest: ASRModelManifest(models: [vad]),
+            store: store,
+            downloader: downloader
+        )
+        let progressRecorder = ProgressRecorder()
+
+        let status = try await installer.installModel(id: vad.id) { progressRecorder.append($0) }
+
+        XCTAssertEqual(status.state, .installed)
+        XCTAssertEqual(status.installedURL, store.installedURL(for: vad))
+        XCTAssertEqual(try Data(contentsOf: store.installedURL(for: vad)), payload)
+        XCTAssertFalse(fm.fileExists(atPath: store.stagedURL(for: vad).path))
+        XCTAssertEqual(downloader.requests.map(\.modelID), [vad.id])
+        XCTAssertEqual(progressRecorder.events.last?.fraction, 1)
+    }
+
     func testModelInstallerCleansStagingAndFailsOnHashMismatch() async throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory
@@ -1473,7 +1552,7 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertFalse(plan.arguments.contains("auto"))
     }
 
-    func testWhisperCppCommandPlanUsesVADOnlyWhenSileroModelExists() throws {
+    func testWhisperCppCommandPlanUsesVADOnlyWithExplicitExistingModelPath() throws {
         let fm = FileManager.default
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("moongate-vad-plan-\(UUID().uuidString)", isDirectory: true)
@@ -1500,21 +1579,52 @@ final class ASRContractsTests: XCTestCase {
             outputBaseURL: directory.appendingPathComponent("missing")
         )
         XCTAssertFalse(missingPlan.arguments.contains("--vad"))
-        XCTAssertFalse(missingPlan.arguments.contains("--vad-model"))
+        XCTAssertFalse(missingPlan.arguments.contains("-vm"))
 
         let vadModel = runtimeDirectory.appendingPathComponent("ggml-silero-v5.1.2.bin")
         try Data("fake vad model".utf8).write(to: vadModel)
-        let readyPlan = WhisperCppCommandPlan(
+        let implicitLocatorPlan = WhisperCppCommandPlan(
             runtime: ASRRuntimeInfo(executableURL: runtimeURL),
             modelURL: model,
             request: request,
+            outputBaseURL: directory.appendingPathComponent("implicit")
+        )
+        XCTAssertFalse(implicitLocatorPlan.arguments.contains("--vad"))
+        XCTAssertFalse(implicitLocatorPlan.arguments.contains("-vm"))
+
+        let readyPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: ASRRequest(
+                audioURL: audio,
+                languageCode: "ja",
+                modelID: "whisper.cpp:small",
+                vadEnabled: true,
+                vadModelPath: vadModel.path
+            ),
             outputBaseURL: directory.appendingPathComponent("ready")
         )
         XCTAssertTrue(readyPlan.arguments.contains("--vad"))
         XCTAssertEqual(
-            argumentValue(after: "--vad-model", in: readyPlan.arguments),
+            argumentValue(after: "-vm", in: readyPlan.arguments),
             vadModel.path
         )
+        XCTAssertFalse(readyPlan.arguments.contains("--vad-model"))
+
+        let missingExplicitPlan = WhisperCppCommandPlan(
+            runtime: ASRRuntimeInfo(executableURL: runtimeURL),
+            modelURL: model,
+            request: ASRRequest(
+                audioURL: audio,
+                languageCode: "ja",
+                modelID: "whisper.cpp:small",
+                vadEnabled: true,
+                vadModelPath: runtimeDirectory.appendingPathComponent("missing-vad.bin").path
+            ),
+            outputBaseURL: directory.appendingPathComponent("missing-explicit")
+        )
+        XCTAssertFalse(missingExplicitPlan.arguments.contains("--vad"))
+        XCTAssertFalse(missingExplicitPlan.arguments.contains("-vm"))
 
         let disabledPlan = WhisperCppCommandPlan(
             runtime: ASRRuntimeInfo(executableURL: runtimeURL),
@@ -1523,12 +1633,13 @@ final class ASRContractsTests: XCTestCase {
                 audioURL: audio,
                 languageCode: "ja",
                 modelID: "whisper.cpp:small",
-                vadEnabled: false
+                vadEnabled: false,
+                vadModelPath: vadModel.path
             ),
             outputBaseURL: directory.appendingPathComponent("disabled")
         )
         XCTAssertFalse(disabledPlan.arguments.contains("--vad"))
-        XCTAssertFalse(disabledPlan.arguments.contains("--vad-model"))
+        XCTAssertFalse(disabledPlan.arguments.contains("-vm"))
     }
 
     func testDefaultLocalASRPromptOmitsLanguageHintForAutoDetect() {
@@ -1793,7 +1904,8 @@ final class ASRContractsTests: XCTestCase {
         let raw = try String(contentsOf: outputURL, encoding: .utf8)
         let parsed = parseSRT(raw)
         XCTAssertEqual(parsed.map(\.text), ["梅雨が明ける。"])
-        XCTAssertEqual(parsed.first?.start, "00:00:00,200")
+        // 首词在 0.0s(贴近视频开头):整段第一条从 0 起显,填掉开头空白(不再 +0.2s 延迟)。
+        XCTAssertEqual(parsed.first?.start, "00:00:00,000")
         XCTAssertEqual(parsed.first?.end, "00:00:01,500")
     }
 
@@ -1816,8 +1928,8 @@ final class ASRContractsTests: XCTestCase {
         let cues = ASRTranscriptMapper.sourceCues(from: transcript)
 
         XCTAssertEqual(cues.map(\.text), ["コーペンちゃん梅だー！"])
-        // Onset nudged later by onsetDelaySeconds (raw 0.1s -> 0.3s); end holds to lastTokenEnd+hold.
-        XCTAssertEqual(cues.first?.start, "00:00:00,300")
+        // 整段第一条:首词贴近视频开头(0.1s ≤ lead-in),从 0 起显填掉开头空白;end 仍 holds 到 lastTokenEnd+hold。
+        XCTAssertEqual(cues.first?.start, "00:00:00,000")
         XCTAssertEqual(cues.first?.end, "00:00:02,500")
         XCTAssertFalse(cues.contains { $0.text.contains("[_") })
     }
@@ -2814,6 +2926,26 @@ final class ASRContractsTests: XCTestCase {
         XCTAssertEqual(transcript.words[0].endSeconds, 0.7, accuracy: 0.0001)
     }
 
+    func testFirstCueAppearsPromptlyAtVideoStart() throws {
+        // 整段第一条:首词贴近视频开头(≤lead-in)→ 从 0 起显填空白;首词前有真实静音 → 用原始 onset(不加 delay,
+        // 也不提前进静音);中途 cue 维持 +onsetDelay。这条防"视频开头首句话说完才出现"回归。
+        // 首词在 0.1s(贴近开头):第一条从 0 起。
+        let nearStart = WhisperCueRetimer.retime(
+            [retimerCue(0.1, 2.0, "hello", lastTokenEnd: 1.8)],
+            transcriptDurationSeconds: nil)
+        XCTAssertEqual(try XCTUnwrap(srtTimeToSeconds(nearStart[0].start)), 0.0, accuracy: 0.0015)
+        // 首词在 5.0s(前有静音):第一条用原始 onset 5.0,不加 onsetDelay。
+        let afterSilence = WhisperCueRetimer.retime(
+            [retimerCue(5.0, 7.0, "later", lastTokenEnd: 6.8)],
+            transcriptDurationSeconds: nil)
+        XCTAssertEqual(try XCTUnwrap(srtTimeToSeconds(afterSilence[0].start)), 5.0, accuracy: 0.0015)
+        // 第二条(中途)仍 +onsetDelay。
+        let pair = WhisperCueRetimer.retime(
+            [retimerCue(0.1, 1.0, "one", lastTokenEnd: 0.9), retimerCue(3.0, 4.0, "two", lastTokenEnd: 3.9)],
+            transcriptDurationSeconds: nil)
+        XCTAssertEqual(try XCTUnwrap(srtTimeToSeconds(pair[1].start)), 3.0 + WhisperCueRetimer.onsetDelaySeconds, accuracy: 0.0015)
+    }
+
     private func retimerCue(_ start: Double, _ end: Double, _ text: String, lastTokenEnd: Double? = nil) -> SubtitleCue {
         SubtitleCue(
             index: 0,
@@ -2825,13 +2957,14 @@ final class ASRContractsTests: XCTestCase {
     }
 
     func testWhisperCueRetimerDelaysOnsetAndHoldsTowardNextCue() throws {
-        // Onset is nudged later by onsetDelaySeconds (long cue, not bound-limited): 5.0 -> 5.2.
+        // 整段第一条(此处单条)前有静音(raw 5.0 > lead-in 阈值):用原始 onset 5.0,不加 onsetDelay
+        // (避免视频/段落开头首句"话说完才出现")。中途 cue 才 +onsetDelay。
         let single = WhisperCueRetimer.retime(
             [retimerCue(5.0, 9.0, "hello there", lastTokenEnd: 8.8)],
             transcriptDurationSeconds: nil
         )
         let start0 = try XCTUnwrap(srtTimeToSeconds(single[0].start))
-        XCTAssertEqual(start0, 5.0 + WhisperCueRetimer.onsetDelaySeconds, accuracy: 0.0015)
+        XCTAssertEqual(start0, 5.0, accuracy: 0.0015)
 
         // Short cue: the delay is bounded so the cue keeps at least the minimum readable duration.
         let shortCue = WhisperCueRetimer.retime(

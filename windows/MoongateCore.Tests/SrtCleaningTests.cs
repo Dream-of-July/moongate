@@ -1889,4 +1889,28 @@ public class CleanCuesTests
         Assert.Equal(2, reparsed.Count);
         Assert.Equal("hello\nworld", reparsed[0].Text);
     }
+    /// YouTube 自动字幕在时间行和文本行之间插空格行(" "),不能当块分隔,否则整条 cue 丢失、时机错位。镜像 Swift。
+    [Fact]
+    public void ParseVttHandlesYouTubeSpacePaddingBetweenTimingAndText()
+    {
+        var raw = string.Join("\n", new[]
+        {
+            "WEBVTT", "Kind: captions", "Language: en", "",
+            "00:00:00.000 --> 00:00:09.950 align:start position:0%",
+            " ",
+            "This<00:00:00.160><c> video</c><00:00:00.400><c> sponsored</c><00:00:00.880><c> by</c><00:00:01.040><c> Anti-Gravity.</c>",
+            "",
+            "00:00:09.960 --> 00:00:11.830 align:start position:0%",
+            " ",
+            "So,<00:00:10.160><c> this</c><00:00:10.360><c> here</c>",
+        });
+
+        var cues = SrtTools.ParseVtt(raw);
+
+        Assert.True(cues.Count >= 2);
+        Assert.Equal("This video sponsored by Anti-Gravity.", cues[0].Text);
+        Assert.Equal(0.0, SrtTools.SrtTimeToSeconds(cues[0].Start)!.Value, 3);
+        Assert.Equal("So, this here", cues[1].Text);
+        Assert.Equal(9.96, SrtTools.SrtTimeToSeconds(cues[1].Start)!.Value, 3);
+    }
 }

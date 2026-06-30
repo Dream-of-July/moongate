@@ -50,6 +50,34 @@ public static class SubtitleLanguageRecommender
 {
     public sealed record Result(SubtitleLanguageChoice? Recommended, IReadOnlyList<SubtitleLanguageChoice> Others);
 
+    public enum SourceLanguageEvidence
+    {
+        UserSelected,
+        PlatformManualTrack,
+        PlatformAutoTrack,
+        TitleScript,
+        TitleKeyword,
+        PreviousSetting,
+        AsrDetected,
+        Fallback,
+    }
+
+    public enum SourceLanguageConfidence
+    {
+        Unknown,
+        Low,
+        Medium,
+        High,
+    }
+
+    public sealed record SourceLanguageRecommendation(
+        string Code,
+        string DisplayName,
+        SourceLanguageEvidence Evidence,
+        SourceLanguageConfidence Confidence,
+        bool IsRareLanguage,
+        bool ShouldAutoSelect);
+
     // Scoring constants. Single source of truth lives in the cross-platform fixture
     // (languageRecommender section); the Swift and C# copies are each asserted equal to it.
     public const int ManualTrackScore = 100;
@@ -69,11 +97,6 @@ public static class SubtitleLanguageRecommender
     /// are synthetic per-language candidates in the UI, so they are not source-language evidence.
     /// </summary>
     public const int PlatformAutoCjkPresenceBonus = 90;
-    /// <summary>
-    /// Current output target wins when a real platform/manual subtitle already exists in that
-    /// target. This keeps "I already have Chinese subtitles" from being overridden by source hints.
-    /// </summary>
-    public const int TargetLanguageTrackScore = 260;
     /// <summary>
     /// User/global source-language preference. This can make a local-ASR source candidate win over
     /// unrelated auto captions, while still letting manual target subtitles stay on top.
@@ -96,16 +119,12 @@ public static class SubtitleLanguageRecommender
         if (languages.Count == 0) return new Result(null, []);
         var titleProfile = ScriptDetector.Of(title);
         var lowerTitle = title.ToLowerInvariant();
-        var normalizedTarget = NormalizedTargetLanguage(targetLanguage);
         var normalizedPreferredSource = NormalizedPreferredSourceLanguage(preferredSourceLanguage);
-        var targetAwareLanguages = languages
-            .Select(language => PrioritizeTargetTrack(language, normalizedTarget))
-            .ToList();
 
-        var ranked = targetAwareLanguages
+        var ranked = languages
             .Select((language, index) => (
                 language,
-                score: Score(language, titleProfile, lowerTitle, normalizedTarget, normalizedPreferredSource),
+                score: Score(language, titleProfile, lowerTitle, normalizedPreferredSource),
                 index))
             .OrderByDescending(x => x.score)
             // Tie-break: manual track first, then language code ascending.
@@ -117,6 +136,75 @@ public static class SubtitleLanguageRecommender
         var recommended = ranked.FirstOrDefault();
         var others = ranked.Skip(1).ToList();
         return new Result(recommended, others);
+    }
+
+    public static SourceLanguageRecommendation SourceRecommendation(
+        string title,
+        IReadOnlyList<SubtitleLanguageChoice> languages,
+        string? targetLanguage = null,
+        string? preferredSourceLanguage = null)
+    {
+        var normalizedPreferredSource = NormalizedPreferredSourceLanguage(preferredSourceLanguage);
+        var recommendation = Recommend(title, languages, targetLanguage, preferredSourceLanguage);
+        if (recommendation.Recommended is null)
+        {
+            return new SourceLanguageRecommendation(
+                "auto",
+                "Auto",
+                SourceLanguageEvidence.Fallback,
+                SourceLanguageConfidence.Unknown,
+                false,
+                false);
+        }
+
+        var language = recommendation.Recommended;
+        var normalizedCode = LanguageCatalog.Normalize(language.LanguageCode);
+        SourceLanguageEvidence evidence;
+        SourceLanguageConfidence confidence;
+        if (normalizedPreferredSource == normalizedCode)
+        {
+            evidence = SourceLanguageEvidence.UserSelected;
+            confidence = SourceLanguageConfidence.High;
+        }
+        else if (language.HasManualTrack)
+        {
+            evidence = SourceLanguageEvidence.PlatformManualTrack;
+            confidence = SourceLanguageConfidence.High;
+        }
+        else if (language.HasAutoTrack)
+        {
+            evidence = SourceLanguageEvidence.PlatformAutoTrack;
+            confidence = LanguageCatalog.IsRareLanguage(normalizedCode)
+                ? SourceLanguageConfidence.Low
+                : SourceLanguageConfidence.Medium;
+        }
+        else if (InferredLocalAsrLanguageCode(title) is { } inferred
+                 && LanguageCatalog.Normalize(inferred) == normalizedCode)
+        {
+            evidence = SourceLanguageEvidence.TitleKeyword;
+            confidence = LanguageCatalog.IsRareLanguage(normalizedCode)
+                ? SourceLanguageConfidence.Low
+                : SourceLanguageConfidence.Medium;
+        }
+        else
+        {
+            var profile = ScriptDetector.Of(title);
+            evidence = ScriptEvidence(normalizedCode, profile);
+            confidence = evidence == SourceLanguageEvidence.Fallback || LanguageCatalog.IsRareLanguage(normalizedCode)
+                ? SourceLanguageConfidence.Low
+                : SourceLanguageConfidence.Medium;
+        }
+
+        var rare = LanguageCatalog.IsRareLanguage(normalizedCode);
+        var shouldAutoSelect = confidence >= SourceLanguageConfidence.Medium
+            || evidence is SourceLanguageEvidence.PlatformManualTrack or SourceLanguageEvidence.UserSelected;
+        return new SourceLanguageRecommendation(
+            normalizedCode,
+            LanguageCatalog.DisplayName(normalizedCode),
+            evidence,
+            confidence,
+            rare,
+            shouldAutoSelect);
     }
 
     /// <summary>
@@ -163,7 +251,6 @@ public static class SubtitleLanguageRecommender
         SubtitleLanguageChoice language,
         ScriptDetector.Profile titleProfile,
         string lowerTitle,
-        string? targetLanguage = null,
         string? preferredSourceLanguage = null)
     {
         var total = 0;
@@ -171,9 +258,8 @@ public static class SubtitleLanguageRecommender
         if (language.HasManualTrack) total += ManualTrackScore;
         else if (language.HasAutoTrack) total += AutoTrackScore;
         else total += LocalAsrOnlyScore;
-        if (HasTargetLanguageTrack(language, targetLanguage)) total += TargetLanguageTrackScore;
         if (preferredSourceLanguage is not null
-            && TranslationLanguage.NormalizedScript(language.LanguageCode) == preferredSourceLanguage)
+            && LanguageCatalog.Normalize(language.LanguageCode) == preferredSourceLanguage)
         {
             total += PreferredSourceLanguageScore;
         }
@@ -214,14 +300,14 @@ public static class SubtitleLanguageRecommender
     internal static string? NormalizedTargetLanguage(string? targetLanguage)
     {
         if (string.IsNullOrWhiteSpace(targetLanguage)) return null;
-        return TranslationLanguage.NormalizedScript(targetLanguage.Trim());
+        return LanguageCatalog.Normalize(targetLanguage.Trim());
     }
 
     internal static string? NormalizedPreferredSourceLanguage(string? preferredSourceLanguage)
     {
         if (string.IsNullOrWhiteSpace(preferredSourceLanguage)) return null;
         var normalized = AppSettings.NormalizePreferredSourceLanguage(preferredSourceLanguage);
-        return normalized == "auto" ? null : normalized;
+        return normalized == "auto" ? null : LanguageCatalog.Normalize(normalized);
     }
 
     internal static SubtitleLanguageChoice PrioritizeTargetTrack(
@@ -257,7 +343,22 @@ public static class SubtitleLanguageRecommender
         => !string.IsNullOrEmpty(targetLanguage)
             && track.SourceKind != SubtitleSourceKind.LocalAsr
             && track.SourceKind != SubtitleSourceKind.PlatformAuto
-            && TranslationLanguage.NormalizedScript(track.LanguageCode) == targetLanguage;
+            && LanguageCatalog.Normalize(track.LanguageCode) == targetLanguage;
+
+    private static SourceLanguageEvidence ScriptEvidence(string code, ScriptDetector.Profile profile)
+    {
+        if (IsJapaneseCode(code) && profile.KanaRatio >= TitleScriptDominanceRatio) return SourceLanguageEvidence.TitleScript;
+        if (IsKoreanCode(code) && profile.HangulRatio >= TitleScriptDominanceRatio) return SourceLanguageEvidence.TitleScript;
+        if (IsLatinScriptLanguage(code)
+            && profile.LatinRatio >= TitleScriptDominanceRatio
+            && profile.KanaRatio == 0
+            && profile.HangulRatio == 0
+            && profile.CjkRatio == 0)
+        {
+            return SourceLanguageEvidence.TitleScript;
+        }
+        return SourceLanguageEvidence.Fallback;
+    }
 
     internal static bool IsJapaneseCode(string code) => code == "ja" || code == "jpn";
 

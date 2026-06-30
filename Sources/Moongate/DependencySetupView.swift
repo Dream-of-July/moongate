@@ -7,13 +7,13 @@ import MoongateCore
 enum DependencyInstallFailure: Equatable {
     case brewLaunchFailed(String)
     case installCompletedButMissing
+    case uninstallCompletedButPresent
     case installIncomplete(Int32)
+    case uninstallIncomplete(Int32)
 }
 
 /// 依赖组件安装：体检 → `brew install` 缺失项（流式日志）→ 完成后回到业务流程。
 /// Homebrew 不存在时不静默装（curl|bash 不可接受），引导用户去 brew.sh。
-/// 注意（MAC-DEP-001）：刻意不提供「卸载依赖」入口——App 不应替用户管理全局开发环境，
-/// 检测到的 ffmpeg/JS 运行时可能是用户为别的项目装的，卸载会误伤其它工具。
 @MainActor
 final class DependencyInstaller: ObservableObject {
     // 初值为空：依赖体检会 spawn ffmpeg 子进程并 waitUntilExit（重入 runloop），
@@ -58,10 +58,9 @@ final class DependencyInstaller: ObservableObject {
         runBrew(subcommand: "install", formulas: formulas)
     }
 
-    func installOptional(_ component: DependencySetup.Component) {
-        guard !component.isRequired else { return }
-        let formulas = [component.formula]
-        runBrew(subcommand: "install", formulas: formulas)
+    func uninstall(_ component: DependencySetup.Component) {
+        guard component.isInstalled else { return }
+        runBrew(subcommand: "uninstall", formulas: [component.formula])
     }
 
     private func runBrew(subcommand: String, formulas: [String]) {
@@ -123,10 +122,18 @@ final class DependencyInstaller: ObservableObject {
         await refresh()
         inFlightFormulas = []
         let attemptedComponents = components.filter { attemptedFormulas.contains($0.formula) }
-        if status != 0 {
-            error = .installIncomplete(status)
-        } else if attemptedComponents.contains(where: { !$0.isInstalled }) || !allInstalled {
-            error = .installCompletedButMissing
+        if subcommand == "uninstall" {
+            if status != 0 {
+                error = .uninstallIncomplete(status)
+            } else if attemptedComponents.contains(where: { $0.isInstalled }) {
+                error = .uninstallCompletedButPresent
+            }
+        } else {
+            if status != 0 {
+                error = .installIncomplete(status)
+            } else if attemptedComponents.contains(where: { !$0.isInstalled }) || !allInstalled {
+                error = .installCompletedButMissing
+            }
         }
     }
 }
@@ -167,49 +174,16 @@ struct DependencySetupSheet: View {
                                 HStack(spacing: 6) {
                                     Text(component.id)
                                         .font(.body.monospaced())
-                                    if !component.isRequired {
-                                        Text(localizer.t(L.Dependency.optionalBadge))
-                                            .font(.caption2.weight(.semibold))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .foregroundStyle(.secondary)
-                                            .background(Capsule().fill(.quaternary))
-                                    }
                                 }
                                 Text(componentPurposeText(component))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if component.id == "whisper-cli" {
-                                HStack(spacing: 8) {
-                                    if !component.isInstalled {
-                                        Button(localizer.t(L.Dependency.installOptional)) {
-                                            installer.installOptional(component)
-                                        }
-                                        .buttonStyle(.borderless)
-                                        .help(localizer.t(L.Dependency.installOptional))
-                                        .accessibilityLabel(localizer.t(L.Dependency.installOptional))
-                                        .disabled(installer.isRunning || !installer.brewAvailable)
-                                    }
-                                    Button(localizer.t(L.Dependency.configureOptional)) {
-                                        model.closeDependencySetup()
-                                        model.openLocalASRSettings()
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .help(localizer.t(L.Dependency.configureOptional))
-                                    .accessibilityLabel(localizer.t(L.Dependency.configureOptional))
-                                    Text(componentStatusText(component))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .contentTransition(.opacity)
-                                }
-                            } else {
-                                Text(componentStatusText(component))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .contentTransition(.opacity)
-                            }
+                            Text(componentStatusText(component))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.opacity)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -351,7 +325,6 @@ struct DependencySetupSheet: View {
         case "yt-dlp": return localizer.t(L.Dependency.purposeYtDlp)
         case "ffmpeg": return localizer.t(L.Dependency.purposeFfmpeg)
         case "deno": return localizer.t(L.Dependency.purposeDeno)
-        case "whisper-cli": return localizer.t(L.Dependency.purposeWhisperCpp)
         default: return component.purpose
         }
     }
@@ -398,6 +371,10 @@ struct DependencySetupSheet: View {
             return localizer.t(L.Dependency.installCompletedButMissing)
         case .installIncomplete(let status):
             return localizer.t(L.Dependency.installIncomplete, Int(status))
+        case .uninstallCompletedButPresent:
+            return localizer.t(L.Dependency.uninstallCompletedButPresent)
+        case .uninstallIncomplete(let status):
+            return localizer.t(L.Dependency.uninstallIncomplete, Int(status))
         }
     }
 }
