@@ -53,6 +53,8 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - 关键流程:每轮改View源码→跑对应Boundary测试(MacOS{Content,Queue,Dependency,Login,ViewModel,App}BoundaryTests扫描源码字面量)。
 - R12 `40e3298`：loadingState/choosingState/failedState 统一到emptyState视觉语言(三级层级+hierarchical图标+token)。MacOSContentBoundaryTests 17绿。
 - **R13 三栏原型状态完善（进行中）**：SplitLayoutView detail statusText复用QueueItemView丰富逻辑(下载%·速度·剩余/ASR三子阶段/翻译烧录转码%/暂停/部分成功/failed)+detail进度条+sidebar行状态,复用L.Queue.*文案。让三栏原型可真实评估。
+- R13 `8cb53b1` 完成 / R14 `1ce16d6` 设置画质区行对齐修复(styleSection已理想不改) / **R15(进行中)** onboarding首启引导步骤指示器增强+token(第一体验),MacOSContentBoundaryTests验证。
+- 剩余候选:网页下载/性能(偏core慎)｜画质选择已够｜三栏"添加"真实流程(需先做ViewModel快速添加能力,是产品决策非小切片,暂缓)。
 
 ## 5. 风险与回滚
 

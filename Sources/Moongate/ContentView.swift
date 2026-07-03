@@ -1545,6 +1545,7 @@ private enum OnboardingStep: String, CaseIterable, Identifiable {
 private struct OnboardingView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appLanguage: AppLanguage
     @State private var translationTargetLanguage: String
     @State private var useLocalTranslation = true
@@ -1570,8 +1571,9 @@ private struct OnboardingView: View {
     }
 
     var body: some View {
+        // spacing 18：分步引导各区块的纵向节奏，off-grid（介于 xl=16 与 xxl=20），保留现值
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {   // 6 → sm：标题—副标题两级行距
                 Text(localizer.t(L.Onboarding.title))
                     .font(.title2.weight(.semibold))
                 Text(localizer.t(L.Onboarding.subtitle))
@@ -1590,7 +1592,7 @@ private struct OnboardingView: View {
 
             onboardingFooter
         }
-        .padding(24)
+        .padding(24)   // sheet 内容边距，off-grid（无对应 token，介于 xxl=20 与 xxxl=32），保留现值
         .frame(width: 520)
         .onDisappear {
             localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
@@ -1598,17 +1600,51 @@ private struct OnboardingView: View {
     }
 
     private var onboardingStepHeader: some View {
-        HStack(spacing: 8) {
+        // 当前步在 allCases 中的序号，用于区分「已完成 / 当前 / 待办」三态
+        let currentIndex = OnboardingStep.allCases.firstIndex(of: selectedStep) ?? 0
+        return HStack(spacing: Spacing.md) {   // 8 → md：分步指示器按钮组节奏
             ForEach(OnboardingStep.allCases) { step in
-                Button {
-                    selectedStep = step
-                } label: {
-                    Text(step.title(localizer))
-                        .font(.caption.weight(step == selectedStep ? .semibold : .regular))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+                onboardingStepButton(step, currentIndex: currentIndex)
             }
+        }
+    }
+
+    // 分步指示器单个按钮：当前步用 accent 实底（.borderedProminent）+ 半粗字重双重强调；
+    // 已完成步显示对勾并保持 accent 前景；待办步用次级色，形成清晰的进度层级。
+    @ViewBuilder
+    private func onboardingStepButton(_ step: OnboardingStep, currentIndex: Int) -> some View {
+        let stepIndex = OnboardingStep.allCases.firstIndex(of: step) ?? 0
+        let isSelected = step == selectedStep
+        let isCompleted = stepIndex < currentIndex
+
+        let label = HStack(spacing: Spacing.xs) {   // 4 → xs：对勾与标题的紧凑间距
+            if isCompleted {
+                Image(systemName: "checkmark.circle.fill")
+                    .imageScale(.small)
+            }
+            Text(step.title(localizer))
+                .font(.caption.weight(isSelected ? .semibold : .regular))
+        }
+        .frame(maxWidth: .infinity)
+
+        // 当前步与其余步使用不同 buttonStyle（类型不同），用 if/else 让 ViewBuilder 正确擦除
+        if isSelected {
+            Button { selectStep(step) } label: { label }
+                .buttonStyle(.borderedProminent)
+                .tint(.accentColor)
+        } else {
+            Button { selectStep(step) } label: { label }
+                .buttonStyle(.bordered)
+                .tint(isCompleted ? .accentColor : .secondary)
+        }
+    }
+
+    // 保持原有状态机：仅赋值 selectedStep；尊重减弱动效偏好
+    private func selectStep(_ step: OnboardingStep) {
+        if reduceMotion {
+            selectedStep = step
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) { selectedStep = step }
         }
     }
 
@@ -1772,7 +1808,7 @@ private struct OnboardingView: View {
     }
 
     private var readinessStepContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Spacing.rowGutter) {   // 10 → rowGutter：就绪清单行距
             Text(localizer.t(L.Onboarding.readinessSummary))
                 .font(.headline)
             readinessRow(localizer.t(L.Onboarding.appLanguage), appLanguageLabel(appLanguage))
@@ -1791,7 +1827,7 @@ private struct OnboardingView: View {
                 onboardingSubtitleSourceSummary
             )
         }
-        .padding(12)
+        .padding(Spacing.lg)   // 12 → lg：就绪清单内边距
     }
 
     private var onboardingSubtitleSourceSummary: String {
@@ -1804,7 +1840,7 @@ private struct OnboardingView: View {
     }
 
     private func readinessRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.md) {   // 8 → md：标签—值行内节奏
             Text(label)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -1867,7 +1903,7 @@ private struct OnboardingView: View {
         let steps = OnboardingStep.allCases
         guard let index = steps.firstIndex(of: selectedStep) else { return }
         let nextIndex = min(max(index + offset, 0), steps.count - 1)
-        selectedStep = steps[nextIndex]
+        selectStep(steps[nextIndex])
     }
 
     private func onboardingSettingsForRequest() -> AppSettings {
