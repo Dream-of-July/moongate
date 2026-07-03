@@ -330,7 +330,7 @@ struct ContentView: View {
                 }
                 .background(cardBackground)
             }
-            .frame(maxWidth: 500)
+            .frame(maxWidth: Layout.readableContentWidth)
             .padding(.horizontal, Spacing.xxl)
             .padding(.bottom, Spacing.xxl)
             .frame(maxWidth: .infinity)
