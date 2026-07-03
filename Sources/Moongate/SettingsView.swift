@@ -2911,18 +2911,19 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle(
-                    localizer.t(L.Settings.scaleHD1080),
-                    isOn: Binding(
-                        get: { draft.maxBurnHeight != nil },
-                        set: { draft.maxBurnHeight = $0 ? 1080 : nil }
-                    )
+            // 与上面两组「控件行 + 说明行」保持同一原生栅格节奏：Toggle 独占一行，
+            // 说明作为其下方的兄弟行，字体层级与换行行为和前两组统一。
+            Toggle(
+                localizer.t(L.Settings.scaleHD1080),
+                isOn: Binding(
+                    get: { draft.maxBurnHeight != nil },
+                    set: { draft.maxBurnHeight = $0 ? 1080 : nil }
                 )
-                Text(localizer.t(L.Settings.scaleHD1080Help))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
+            Text(localizer.t(L.Settings.scaleHD1080Help))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
