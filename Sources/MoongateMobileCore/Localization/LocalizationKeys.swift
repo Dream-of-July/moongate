@@ -801,4 +801,16 @@ public enum L {
         public static let youtubeVideoTitle = "L.Core.YouTubeVideoTitle"
         public static let vimeoVideoTitle = "L.Core.VimeoVideoTitle"
     }
+
+    /// 实验性「备忘录式三栏布局」原型专用文案（feature flag 默认关闭）。
+    public enum SplitLayout {
+        public static let sidebarTitle = "L.SplitLayout.SidebarTitle"
+        public static let emptyListTitle = "L.SplitLayout.EmptyListTitle"
+        public static let emptyDetailTitle = "L.SplitLayout.EmptyDetailTitle"
+        public static let emptyDetailSubtitle = "L.SplitLayout.EmptyDetailSubtitle"
+        public static let addTask = "L.SplitLayout.AddTask"
+        public static let addTaskHint = "L.SplitLayout.AddTaskHint"
+        public static let play = "L.SplitLayout.Play"
+        public static let descriptionSection = "L.SplitLayout.DescriptionSection"
+    }
 }

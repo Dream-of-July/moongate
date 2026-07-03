@@ -31,6 +31,11 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - **R5 design token层（进行中）**：新建DesignTokens.swift(Spacing/Radius/Thumbnail/Stroke贴合HIG),等价替换ContentView+QueueItemView魔法数字(零视觉变化),为三栏重构铺垫。
 - R6+ HIG三栏主线：单列→NavigationSplitView两栏 / 队列浮层→sidebar主列表 / 进度环画进列表行。大重构,分步推进(详见 memory moongate-hig-3pane-research)。
 
+### R7+ 候选池（按 HIG 优先级 + 独立性）
+- **R6 三栏原型（进行中）**：SplitLayoutView.swift，feature-flag `experimental.splitLayout` 默认off。左sidebar列表(缩略图+标题+ProgressRingView进度环)+右detail(预览框+播放overlay+功能按钮)。复用QueueManager操作。不破坏现有ContentView。
+- R7 候选(独立文件,与R6可能ContentView冲突需错开)：字幕样式实时预览 inspector(P3,CapCut式,九宫格锚点+相对档位+preset)｜统一loading/failed/需登录状态视觉(P3,ContentView)｜DependencySetupView/LoginWebView 采用design token+视觉精修(独立文件)｜SettingsView 视觉精修与token化｜Parabolic式"添加任务"对话框(P2)｜choosingState多视频选择页卡片化(ContentView)。
+- 原则：ContentView 已被R2/R5/R6反复触及,后续避免继续churn它,优先独立文件轮次;三栏成熟后再考虑切换默认。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。

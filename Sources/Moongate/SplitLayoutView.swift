@@ -1,0 +1,437 @@
+import AppKit
+import SwiftUI
+#if canImport(MoongateCore)
+import MoongateCore
+#endif
+
+/// 实验性「备忘录式三栏布局」原型（feature flag `experimental.splitLayout` 默认关闭）。
+///
+/// 用 `NavigationSplitView` 呈现：左侧视频列表（缩略图 + 标题 + 状态 + 进度环），
+/// 右侧详情（大预览框 + 元信息 + 一排功能按钮）。所有数据与操作复用现有
+/// `QueueManager`（`model.queue`），不新增任何业务逻辑；进度环复用
+/// `QueueOverlayView.swift` 里的 `ProgressRingView`。
+///
+/// 本轮仅为可运行原型：sidebar 的「添加」入口是占位（提示去主界面粘贴链接），
+/// 后续可接 Parabolic 式的粘贴/添加对话框；detail 的状态文案做了简化，
+/// 不复制 `QueueItemView.statusText` 的完整分支逻辑。预览播放与 pause/resume/
+/// cancel/retry/remove/reveal 等按钮操作均为真实可用。
+struct SplitLayoutView: View {
+    @ObservedObject var model: ViewModel
+    @ObservedObject private var queue: QueueManager
+    @State private var selectedItemID: UUID?
+    @EnvironmentObject private var localizer: Localizer
+
+    init(model: ViewModel) {
+        self.model = model
+        self._queue = ObservedObject(wrappedValue: model.queue)
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+        } detail: {
+            detail
+        }
+        .onAppear {
+            // 默认选中第一项，避免右侧空白。
+            if selectedItemID == nil {
+                selectedItemID = queue.items.first?.id
+            }
+        }
+        .onChange(of: queue.items.map(\.id)) { _, ids in
+            // 选中项被移除后回退到第一项；首个任务入队时自动选中。
+            if let selected = selectedItemID, !ids.contains(selected) {
+                selectedItemID = ids.first
+            } else if selectedItemID == nil {
+                selectedItemID = ids.first
+            }
+        }
+    }
+
+    // MARK: - Sidebar（左侧列表）
+
+    private var sidebar: some View {
+        Group {
+            if queue.items.isEmpty {
+                sidebarEmptyState
+            } else {
+                List(queue.items, selection: $selectedItemID) { item in
+                    QueueSidebarRow(item: item)
+                        .tag(item.id)
+                }
+                .listStyle(.sidebar)
+            }
+        }
+        .navigationTitle(localizer.t(L.SplitLayout.sidebarTitle))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    // 占位：原型阶段不接完整添加流程。后续可接 Parabolic 式粘贴/添加对话框。
+                    // 这里给出一句克制提示，引导用户回主界面粘贴链接。
+                    model.enqueueNotice = localizer.t(L.SplitLayout.addTaskHint)
+                    NSLog("[SplitLayout] add-task placeholder tapped")
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help(localizer.t(L.SplitLayout.addTaskHint))
+                .accessibilityLabel(localizer.t(L.SplitLayout.addTask))
+            }
+        }
+    }
+
+    private var sidebarEmptyState: some View {
+        VStack(spacing: Spacing.emptyStack) {
+            Image(systemName: "tray")
+                .font(.system(size: 32, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(localizer.t(L.SplitLayout.emptyListTitle))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Detail（右侧详情）
+
+    @ViewBuilder
+    private var detail: some View {
+        if let id = selectedItemID, let item = queue.items.first(where: { $0.id == id }) {
+            QueueDetailView(item: item, queue: queue)
+        } else {
+            detailEmptyState
+        }
+    }
+
+    private var detailEmptyState: some View {
+        VStack(spacing: Spacing.sm) {
+            Image(systemName: "play.rectangle.on.rectangle")
+                .font(.system(size: 44, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(localizer.t(L.SplitLayout.emptyDetailTitle))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+            Text(localizer.t(L.SplitLayout.emptyDetailSubtitle))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, Spacing.xxxl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Sidebar 行
+
+/// 备忘录式列表行：紧凑缩略图 + 标题/状态两级文本 + 右侧进度环 / 完成对勾 / 失败图标。
+/// 比 `QueueItemView` 更紧凑（无按钮组、无进度条），选中高亮交给 `List(selection:)` 系统胶囊。
+private struct QueueSidebarRow: View {
+    let item: QueueManager.QueueItem
+    @EnvironmentObject private var localizer: Localizer
+
+    var body: some View {
+        HStack(spacing: Spacing.rowGutter) {
+            thumbnail
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                Text(item.title)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: Spacing.sm)
+            statusIndicator
+        }
+        .padding(.vertical, Spacing.xxs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.title)
+        .accessibilityValue(statusText)
+    }
+
+    private var thumbnail: some View {
+        AsyncImage(url: item.thumbnailURL) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            default:
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay(Image(systemName: "film").font(.caption2).foregroundStyle(.tertiary))
+            }
+        }
+        .frame(width: 48, height: 27)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous)
+                .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
+        )
+    }
+
+    /// 右侧状态指示：进行中→进度环；done→对勾；failed→橙色告警；cancelled→灰色。
+    @ViewBuilder
+    private var statusIndicator: some View {
+        switch item.stage {
+        case .queued, .downloading, .translating, .burning:
+            ProgressRingView(progress: item.overallProgress ?? 0, finished: false)
+        case .done:
+            ProgressRingView(progress: 1, finished: true)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+        case .cancelled:
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// 简化的状态副文（原型阶段：只取每个 stage 的基本文案，不复制完整 statusText 逻辑）。
+    private var statusText: String {
+        if item.isPaused { return localizer.t(L.Queue.paused) }
+        switch item.stage {
+        case .queued:
+            return item.statusText ?? localizer.t(L.Queue.queued)
+        case .downloading:
+            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.downloading)
+        case .translating:
+            return localizer.t(L.Queue.translating)
+        case .burning:
+            return localizer.t(L.Queue.burning)
+        case .done:
+            return item.statusText ?? localizer.t(L.Queue.done)
+        case .cancelled:
+            return item.statusText ?? localizer.t(L.Queue.cancelled)
+        case .failed(let reason):
+            return localizer.t(L.Queue.failedWithReason, reason)
+        }
+    }
+}
+
+// MARK: - Detail 视图
+
+/// 右侧详情：大预览框（缩略图 + done 时的播放叠层）+ 标题/元信息/状态 + 一排功能按钮
+/// + 可折叠简介。所有按钮复用 `QueueManager` 操作，均为真实可用。
+private struct QueueDetailView: View {
+    let item: QueueManager.QueueItem
+    @ObservedObject var queue: QueueManager
+    @EnvironmentObject private var localizer: Localizer
+    @State private var descriptionExpanded = false
+
+    /// done 态下第一个可播放的视频产物（供预览框播放叠层）。
+    private var playableVideo: URL? {
+        guard case .done = item.stage else { return nil }
+        let videoExtensions: Set<String> = ["mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts"]
+        return item.resultFiles.first { videoExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.xl) {
+                preview
+                header
+                statusRow
+                actionButtons
+                descriptionSection
+            }
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.vertical, Spacing.xl)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: 预览框
+
+    private var preview: some View {
+        AsyncImage(url: item.thumbnailURL) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            default:
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay(Image(systemName: "film").font(.largeTitle).foregroundStyle(.tertiary))
+            }
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: 320)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
+        )
+        .overlay {
+            if let video = playableVideo {
+                Button {
+                    NSWorkspace.shared.open(video)
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 56))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 8)
+                }
+                .buttonStyle(.plain)
+                .help(localizer.t(L.SplitLayout.play))
+                .accessibilityLabel(localizer.t(L.SplitLayout.play))
+            }
+        }
+    }
+
+    // MARK: 标题与元信息
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(item.title)
+                .font(.title3.weight(.semibold))
+                .lineLimit(3)
+                .help(item.title)
+            let meta = [item.info.durationText, item.info.uploader]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+            if !meta.isEmpty {
+                Text(meta)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    // MARK: 状态行（简化：只显示 stage 基本文案）
+
+    private var statusRow: some View {
+        HStack(spacing: Spacing.md) {
+            statusIcon
+            Text(statusText)
+                .font(.callout)
+                .foregroundStyle(isFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch item.stage {
+        case .queued, .downloading, .translating, .burning:
+            ProgressRingView(progress: item.overallProgress ?? 0, finished: false)
+        case .done:
+            ProgressRingView(progress: 1, finished: true)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+        case .cancelled:
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = item.stage { return true }
+        return false
+    }
+
+    private var statusText: String {
+        if item.isPaused { return localizer.t(L.Queue.paused) }
+        switch item.stage {
+        case .queued:
+            return item.statusText ?? localizer.t(L.Queue.queued)
+        case .downloading:
+            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.downloading)
+        case .translating:
+            return localizer.t(L.Queue.translating)
+        case .burning:
+            return localizer.t(L.Queue.burning)
+        case .done:
+            return item.statusText ?? localizer.t(L.Queue.done)
+        case .cancelled:
+            return item.statusText ?? localizer.t(L.Queue.cancelled)
+        case .failed(let reason):
+            return localizer.t(L.Queue.failedWithReason, reason)
+        }
+    }
+
+    // MARK: 一排功能按钮（复用 QueueManager 操作，真实可用）
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        HStack(spacing: Spacing.md) {
+            switch item.stage {
+            case .queued, .downloading, .translating, .burning:
+                if item.isPaused {
+                    actionButton("play.fill", title: localizer.t(L.Queue.resume)) { queue.resume(item.id) }
+                } else {
+                    actionButton("pause.fill", title: localizer.t(L.Queue.pause)) { queue.pause(item.id) }
+                }
+                actionButton("xmark", title: localizer.t(L.Queue.cancelAction)) { queue.cancel(item.id) }
+            case .done:
+                if !item.resultFiles.isEmpty {
+                    actionButton("folder", title: localizer.t(L.Queue.revealInFinder)) { queue.revealInFinder(item.id) }
+                }
+                actionButton("trash", title: localizer.t(L.Queue.remove), role: .destructive) { queue.remove(item.id) }
+            case .failed:
+                actionButton("arrow.clockwise", title: localizer.t(L.Queue.retryTask)) { queue.retry(item.id) }
+                actionButton("trash", title: localizer.t(L.Queue.remove), role: .destructive) { queue.remove(item.id) }
+            case .cancelled:
+                actionButton("arrow.clockwise", title: localizer.t(L.Queue.retryTask)) { queue.retry(item.id) }
+                if !item.resultFiles.isEmpty {
+                    actionButton("folder", title: localizer.t(L.Queue.revealInFinder)) { queue.revealInFinder(item.id) }
+                }
+                actionButton("trash", title: localizer.t(L.Queue.remove), role: .destructive) { queue.remove(item.id) }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func actionButton(
+        _ systemName: String,
+        title: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemName)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel(title)
+    }
+
+    // MARK: 可折叠简介
+
+    @ViewBuilder
+    private var descriptionSection: some View {
+        if let description = item.info.description, !description.isEmpty {
+            DisclosureGroup(localizer.t(L.SplitLayout.descriptionSection), isExpanded: $descriptionExpanded) {
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, Spacing.xs)
+            }
+        }
+    }
+
+}
+

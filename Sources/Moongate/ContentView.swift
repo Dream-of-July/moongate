@@ -20,6 +20,10 @@ struct ContentView: View {
     @State private var emptyStateAppeared = false
     /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
     @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
+    /// 实验性「备忘录式三栏布局」原型开关（默认关闭）。开启后走 SplitLayoutView，
+    /// 关闭时完全等价于原有界面。手动开启：在 App 里执行
+    /// `defaults write <bundleID> experimental.splitLayout -bool YES` 后重启，或在调试构建里改此默认值。
+    @AppStorage("experimental.splitLayout") private var useSplitLayout = false
 
     init(model: ViewModel) {
         self.model = model
@@ -27,6 +31,15 @@ struct ContentView: View {
     }
 
     var body: some View {
+        if useSplitLayout {
+            SplitLayoutView(model: model)
+        } else {
+            legacyBody
+        }
+    }
+
+    /// 现有主界面（原封不动，仅从 `body` 抽出以便被实验布局开关包一层条件）。
+    private var legacyBody: some View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, 20)

@@ -762,5 +762,14 @@ extension LocalizationTables {
         L.Core.directMP4Link: "mp4 直链",
         L.Core.youtubeVideoTitle: "YouTube 视频 %@",
         L.Core.vimeoVideoTitle: "Vimeo 视频 %@",
+
+        L.SplitLayout.sidebarTitle: "视频",
+        L.SplitLayout.emptyListTitle: "还没有视频",
+        L.SplitLayout.emptyDetailTitle: "选择一个视频",
+        L.SplitLayout.emptyDetailSubtitle: "在左侧选择视频以查看详情。",
+        L.SplitLayout.addTask: "添加",
+        L.SplitLayout.addTaskHint: "在主界面粘贴链接以添加视频",
+        L.SplitLayout.play: "播放",
+        L.SplitLayout.descriptionSection: "简介",
     ]
 }

@@ -762,5 +762,14 @@ extension LocalizationTables {
         L.Core.directMP4Link: "mp4 direct link",
         L.Core.youtubeVideoTitle: "YouTube video %@",
         L.Core.vimeoVideoTitle: "Vimeo video %@",
+
+        L.SplitLayout.sidebarTitle: "Videos",
+        L.SplitLayout.emptyListTitle: "No videos yet",
+        L.SplitLayout.emptyDetailTitle: "Select a video",
+        L.SplitLayout.emptyDetailSubtitle: "Pick a video on the left to see its details.",
+        L.SplitLayout.addTask: "Add",
+        L.SplitLayout.addTaskHint: "Paste a link on the main window to add a video",
+        L.SplitLayout.play: "Play",
+        L.SplitLayout.descriptionSection: "Description",
     ]
 }
