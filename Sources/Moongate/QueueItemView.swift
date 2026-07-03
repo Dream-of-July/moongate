@@ -24,6 +24,10 @@ struct QueueItemView: View {
             thumbnail
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
+                    // 标题作为行内主锚点：body + medium 与 caption/secondary 的状态行拉开层级，
+                    // 呼应「备忘录式列表」的标题—副文两级结构，但保持克制不加粗过头。
+                    .font(.body)
+                    .fontWeight(.medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(item.title)
@@ -62,6 +66,12 @@ struct QueueItemView: View {
         }
         .frame(width: 64, height: 36)
         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        // 与 ContentView 信息卡缩略图统一的 0.5pt 极细描边，让缩略图从行背景「浮起」，
+        // light/dark 两种模式下都能形成清晰边界。
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .strokeBorder(.quaternary, lineWidth: 0.5)
+        )
     }
 
     // MARK: - 文案

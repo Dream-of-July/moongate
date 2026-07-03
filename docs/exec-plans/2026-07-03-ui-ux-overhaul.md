@@ -24,8 +24,9 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 
 ## 4. 迭代路线（滚动更新）
 
-- **R1 字幕大小调节**（进行中）：新增 `subtitleFontScale` 设置（小/标准/大/特大），贯穿 Settings→AppSettings→Burner.makeASS。用户点名需求，路径已摸清。
-- R2+ 待研究 agent（HIG/竞品 + 架构地图）成果并入后细化。候选：ready 页信息层级重排、队列项视觉升级、空状态引导、动效统一、三栏 detail 预览原型。
+- **R1 字幕大小调节 ✅ 已提交 f865d0f**：SubtitleFontScale(小/标准/大/特大 = 0.82/1.0/1.24/1.5×)，贯穿 Settings→Burner→makeASS→ASSLayout→3处burn调用+CLI，Settings picker，三语文案，BurnerAssTests。standard=1.0 保向后兼容。同 commit 收尾了 master 遗留的 Bilibili 字幕登录提示 WIP。全绿(build+700测试)。
+- **R2 空状态+信息卡视觉升级（进行中）**：emptyState 提升为 HIG 级首屏（层级拉开+支持平台提示行+呼吸感），infoCard 缩略图浮起+tabular数字+两模式边界。仅 ContentView.swift + 本地化。已派 agent。
+- R3+ 待研究 agent（HIG/竞品）+ 语言 bug 诊断成果并入后细化。候选：语言标签 bug 修复、队列项视觉、动效统一、三栏 detail 预览原型。
 
 ## 5. 风险与回滚
 
