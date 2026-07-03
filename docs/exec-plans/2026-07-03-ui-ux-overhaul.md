@@ -24,9 +24,12 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 
 ## 4. 迭代路线（滚动更新）
 
-- **R1 字幕大小调节 ✅ 已提交 f865d0f**：SubtitleFontScale(小/标准/大/特大 = 0.82/1.0/1.24/1.5×)，贯穿 Settings→Burner→makeASS→ASSLayout→3处burn调用+CLI，Settings picker，三语文案，BurnerAssTests。standard=1.0 保向后兼容。同 commit 收尾了 master 遗留的 Bilibili 字幕登录提示 WIP。全绿(build+700测试)。
-- **R2 空状态+信息卡视觉升级（进行中）**：emptyState 提升为 HIG 级首屏（层级拉开+支持平台提示行+呼吸感），infoCard 缩略图浮起+tabular数字+两模式边界。仅 ContentView.swift + 本地化。已派 agent。
-- R3+ 待研究 agent（HIG/竞品）+ 语言 bug 诊断成果并入后细化。候选：语言标签 bug 修复、队列项视觉、动效统一、三栏 detail 预览原型。
+- **R1 字幕大小调节 ✅ f865d0f**：SubtitleFontScale(小/标准/大/特大=0.82/1.0/1.24/1.5×)贯穿全链，standard=1.0保兼容。同commit收尾Bilibili字幕登录提示WIP。
+- **R2 空状态+信息卡 ✅ caafa4a**：emptyState HIG级首屏(层级+支持平台提示+动效尊重reduce-motion)，infoCard缩略图浮起+monospacedDigit，cardBackground描边两模式。
+- **R3 队列项视觉 ✅ be65cf2**：缩略图0.5pt描边统一+标题body/medium层级，零逻辑改动。
+- **R4 语言标签bug修复（进行中）**：yt-dlp错报language:en污染链(Engine.swift:1044→detectedLanguageCode→源语言auto回落→产物命名)。A层修复(不动算法)：命名关口用ScriptDetector.profile校正,内容脚本与标签强矛盾时用真实语言覆盖。改ASR.swift+新测试。
+- **R5 design token层（进行中）**：新建DesignTokens.swift(Spacing/Radius/Thumbnail/Stroke贴合HIG),等价替换ContentView+QueueItemView魔法数字(零视觉变化),为三栏重构铺垫。
+- R6+ HIG三栏主线：单列→NavigationSplitView两栏 / 队列浮层→sidebar主列表 / 进度环画进列表行。大重构,分步推进(详见 memory moongate-hig-3pane-research)。
 
 ## 5. 风险与回滚
 

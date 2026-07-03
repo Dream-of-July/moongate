@@ -223,7 +223,7 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: Spacing.emptyStack) {
             // 装饰性图标：hierarchical 渲染让下箭头与圆环形成柔和层次，比纯 tertiary 更有质感。
             // 语义上 arrow.down.circle 直接对应「粘贴链接→下载」，保留不换。
             Image(systemName: "arrow.down.circle")
@@ -231,7 +231,7 @@ struct ContentView: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.sm) {
                 // 主文案权重更强、颜色更实，与副文案拉开层级（size + weight + color 三重区分）。
                 Text(localizer.t(L.Main.idleTitle))
                     .font(.title3.weight(.semibold))
@@ -247,9 +247,9 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
-                .padding(.top, 2)
+                .padding(.top, Spacing.xxs)
         }
-        .padding(.horizontal, 32)
+        .padding(.horizontal, Spacing.xxxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
         .opacity(emptyStateAppeared ? 1 : 0)
@@ -1283,7 +1283,7 @@ struct ContentView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             Text(title)
                 .font(.headline)
             VStack(spacing: 0, content: content)
@@ -1306,7 +1306,7 @@ struct ContentView: View {
     }
 
     private func infoCard(_ info: VideoInfo) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: Spacing.lg) {
             AsyncImage(url: info.thumbnailURL) { phase in
                 switch phase {
                 case .success(let image):
@@ -1320,14 +1320,14 @@ struct ContentView: View {
                         )
                 }
             }
-            .frame(width: 160, height: 90)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(width: Thumbnail.cardWidth, height: Thumbnail.cardHeight)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous))
             // 极细描边让缩略图从卡片背景「浮起」，两种模式下都能形成清晰边界。
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(.quaternary, lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
             )
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(info.title)
                     .font(.headline)
                     .lineLimit(2)
@@ -1345,18 +1345,18 @@ struct ContentView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardBackground)
     }
 
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .fill(.quaternary.opacity(0.55))
             // 叠一层极细描边，强化卡片与背景的边界——light/dark 下都更「立得住」。
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.quaternary, lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
             )
     }
 }

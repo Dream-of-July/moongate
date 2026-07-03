@@ -20,9 +20,9 @@ struct QueueItemView: View {
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: Spacing.rowGutter) {
             thumbnail
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(item.title)
                     // 标题作为行内主锚点：body + medium 与 caption/secondary 的状态行拉开层级，
                     // 呼应「备忘录式列表」的标题—副文两级结构，但保持克制不加粗过头。
@@ -44,11 +44,11 @@ struct QueueItemView: View {
                     progressBar
                 }
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: Spacing.md)
             buttons
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.rowGutter)
     }
 
     // MARK: - 缩略图
@@ -64,13 +64,13 @@ struct QueueItemView: View {
                     .overlay(Image(systemName: "film").foregroundStyle(.tertiary))
             }
         }
-        .frame(width: 64, height: 36)
-        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .frame(width: Thumbnail.rowWidth, height: Thumbnail.rowHeight)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous))
         // 与 ContentView 信息卡缩略图统一的 0.5pt 极细描边，让缩略图从行背景「浮起」，
         // light/dark 两种模式下都能形成清晰边界。
         .overlay(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous)
+                .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
         )
     }
 
@@ -211,12 +211,12 @@ struct QueueItemView: View {
         if let source = item.resolvedSubtitleSource {
             if let reason = subtitleSourceReason(source) {
                 DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
                         Text(localizer.t(L.Queue.subtitleSourceReason, reason))
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.top, 2)
+                    .padding(.top, Spacing.xxs)
                 } label: {
                     Text(subtitleSourceSummary(source))
                         .font(.caption)
@@ -382,7 +382,7 @@ struct QueueItemView: View {
     private var buttons: some View {
         switch item.stage {
         case .queued, .downloading, .translating, .burning:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 if item.isPaused {
                     iconButton("play.fill", help: localizer.t(L.Queue.resume), hint: localizer.t(L.Queue.resumeHint), action: onResume)
                 } else {
@@ -391,7 +391,7 @@ struct QueueItemView: View {
                 iconButton("xmark", help: localizer.t(L.Queue.cancelAction), hint: localizer.t(L.Queue.cancelHint), action: onCancel)
             }
         case .done:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 if item.partialFailure {
                     // 部分成功（视频已下载、字幕处理失败）：只重跑字幕处理，不重新下载
                     iconButton("arrow.clockwise", help: localizer.t(L.Queue.retrySubtitle), hint: localizer.t(L.Queue.retrySubtitleHint), action: onRetry)
@@ -410,7 +410,7 @@ struct QueueItemView: View {
                 iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
         case .failed:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 if item.needsLogin != nil {
                     iconButton("person.crop.circle.badge.plus", help: localizer.t(L.Queue.loginAndRetry), hint: localizer.t(L.Queue.loginAndRetryHint), action: onLogin)
                 }
@@ -418,7 +418,7 @@ struct QueueItemView: View {
                 iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
         case .cancelled:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 iconButton("arrow.clockwise", help: localizer.t(L.Queue.retryTask), hint: localizer.t(L.Queue.retryTaskHint), action: onRetry)
                 if !item.resultFiles.isEmpty {
                     iconButton("folder", help: localizer.t(L.Queue.revealInFinder), hint: localizer.t(L.Queue.revealInFinderHint), action: onReveal)
