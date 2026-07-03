@@ -17,7 +17,7 @@ struct QueueSectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.rowGutter) {
                 Text(localizer.t(L.Queue.title))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -47,8 +47,8 @@ struct QueueSectionView: View {
                     .accessibilityLabel(localizer.t(L.Queue.collapse))
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, Spacing.xl)
+            .padding(.vertical, Spacing.md)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(localizer.t(L.Queue.title))
             .accessibilityValue(queueHeaderAccessibilityValue)
@@ -80,10 +80,12 @@ struct QueueSectionView: View {
                                 }
                             }
                         )
+                        // 86：刻意值，让分隔线左端对齐缩略图之后的文本列（缩略图宽 64 +
+                        // 行内边距 gutter 10 + 文本前留白），非 token 网格值，保留。
                         Divider().padding(.leading, 86)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, Spacing.xs)
             }
         }
     }
