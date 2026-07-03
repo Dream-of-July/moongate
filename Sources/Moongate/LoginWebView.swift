@@ -56,8 +56,8 @@ struct LoginSheet: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: Spacing.lg) {
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(localizer.t(L.Login.title, siteDisplayName))
                     .font(.headline)
                 Text(localizer.t(L.Login.subtitle))
@@ -70,12 +70,19 @@ struct LoginSheet: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Text(cookieReadinessText)
-                    .font(.caption)
-                    .foregroundStyle(hasSiteLoginCookies ? .secondary : .tertiary)
+                Label {
+                    Text(cookieReadinessText)
+                        .font(.caption)
+                        .foregroundStyle(hasSiteLoginCookies ? .secondary : .tertiary)
+                } icon: {
+                    Image(systemName: hasSiteLoginCookies ? "checkmark.circle.fill" : "circle.dashed")
+                        .foregroundStyle(hasSiteLoginCookies ? Color.green : Color.secondary)
+                }
+                .font(.caption)
+                .padding(.top, Spacing.xxs)
             }
-            Spacer(minLength: 12)
-            HStack(spacing: 4) {
+            Spacer(minLength: Spacing.lg)
+            HStack(spacing: Spacing.xs) {
                 Button {
                     webViewCommand = .back
                 } label: {
@@ -124,7 +131,7 @@ struct LoginSheet: View {
             }
             .controlSize(.small)
             if isLoading {
-                HStack(spacing: 6) {
+                HStack(spacing: Spacing.sm) {
                     ProgressView()
                         .accessibilityLabel(localizer.t(L.Login.loading))
                         .controlSize(.small)
@@ -155,8 +162,8 @@ struct LoginSheet: View {
             .accessibilityHint(saveLoginHelpText)
             .accessibilityValue(cookieReadinessText)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.rowGutter)
     }
 
     private var saveLoginHelpText: String {

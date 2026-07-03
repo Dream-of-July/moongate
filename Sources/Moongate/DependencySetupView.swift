@@ -144,7 +144,7 @@ struct DependencySetupSheet: View {
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Spacing.emptyStack) {
             Text(localizer.t(L.Dependency.title))
                 .font(.title3.weight(.semibold))
             Text(localizer.t(L.Dependency.description))
@@ -154,7 +154,7 @@ struct DependencySetupSheet: View {
 
             VStack(spacing: 0) {
                 if !installer.hasChecked {
-                    HStack(spacing: 8) {
+                    HStack(spacing: Spacing.md) {
                         ProgressView()
                             .controlSize(.small)
                             .accessibilityLabel(localizer.t(L.Dependency.checkingAccessibility))
@@ -163,15 +163,15 @@ struct DependencySetupSheet: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.vertical, Spacing.rowGutter)
                 } else {
                     ForEach(installer.components) { component in
-                        HStack(spacing: 10) {
+                        HStack(spacing: Spacing.rowGutter) {
                             componentStatusIcon(component)
                                 .frame(width: 18, height: 18)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                                HStack(spacing: Spacing.sm) {
                                     Text(component.id)
                                         .font(.body.monospaced())
                                 }
@@ -185,13 +185,13 @@ struct DependencySetupSheet: View {
                                 .foregroundStyle(.secondary)
                                 .contentTransition(.opacity)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, Spacing.lg)
+                        .padding(.vertical, Spacing.md)
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel(componentAccessibilityLabel(component))
                         .accessibilityValue(componentStatusText(component))
                         if component.id != installer.components.last?.id {
-                            Divider().padding(.leading, 12)
+                            Divider().padding(.leading, Spacing.lg)
                         }
                     }
                 }
@@ -199,13 +199,13 @@ struct DependencySetupSheet: View {
             .animation(.smooth(duration: 0.35), value: installer.components)
             .animation(.smooth(duration: 0.35), value: installer.inFlightFormulas)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous)
                     .fill(.quaternary.opacity(0.55))
             )
 
             if installer.brewAvailable {
                 if !installer.allInstalled {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
                         Text(localizer.t(L.Dependency.installNotice))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -214,10 +214,10 @@ struct DependencySetupSheet: View {
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
                     }
-                    .padding(10)
+                    .padding(Spacing.rowGutter)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous)
                             .fill(.quaternary.opacity(0.35))
                     )
                 }
@@ -228,12 +228,12 @@ struct DependencySetupSheet: View {
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
+                                .padding(Spacing.md)
                                 .id("tail")
                         }
                         .frame(height: 140)
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous)
                                 .fill(.quaternary.opacity(0.35))
                         )
                         .accessibilityLabel(localizer.t(L.Dependency.logAccessibility))
@@ -243,7 +243,7 @@ struct DependencySetupSheet: View {
                     }
                 }
             } else {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: Spacing.md) {
                     Text(localizer.t(L.Dependency.noBrewTitle))
                         .font(.callout)
                     Text(localizer.t(L.Dependency.noBrewDescription))
@@ -293,7 +293,7 @@ struct DependencySetupSheet: View {
                             installer.install()
                         } label: {
                             if installer.isRunning {
-                                HStack(spacing: 6) {
+                                HStack(spacing: Spacing.sm) {
                                     ProgressView()
                                         .controlSize(.small)
                                         .accessibilityLabel(localizer.t(L.Dependency.installingMissingAccessibility))
@@ -311,7 +311,7 @@ struct DependencySetupSheet: View {
                 }
             }
         }
-        .padding(20)
+        .padding(Spacing.xxl)
         .frame(width: 480)
         .task { await installer.refresh() }
     }
