@@ -12,6 +12,10 @@ public enum L {
         public static let settingsMenu = "L.App.SettingsMenu"
         /// 设置窗口标题。
         public static let settingsWindowTitle = "L.App.SettingsWindowTitle"
+        /// 「新建下载」菜单命令（聚焦链接输入，Cmd+L）。
+        public static let newDownloadCommand = "L.App.NewDownloadCommand"
+        /// 「粘贴并解析」菜单命令（Cmd+Shift+V）。
+        public static let pasteAndParseCommand = "L.App.PasteAndParseCommand"
         public static let abortRunningTasks = "L.App.AbortRunningTasks"
         public static let abortPausedTasks = "L.App.AbortPausedTasks"
         public static let abortInformativeText = "L.App.AbortInformativeText"

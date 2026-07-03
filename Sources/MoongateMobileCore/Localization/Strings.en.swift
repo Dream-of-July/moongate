@@ -4,6 +4,8 @@ extension LocalizationTables {
         L.App.title: "Moongate",
         L.App.settingsMenu: "Settings…",
         L.App.settingsWindowTitle: "Settings",
+        L.App.newDownloadCommand: "New Download",
+        L.App.pasteAndParseCommand: "Paste and Parse",
         L.App.abortRunningTasks: "There are %d active tasks in the queue. Closing will stop them all.",
         L.App.abortPausedTasks: "There are %d tasks in the queue (%d paused). Closing will stop them all.",
         L.App.abortInformativeText: "\"Keep tasks and continue\" cancels closing or quitting and keeps the queue. \"Stop tasks and close\" cancels unfinished queue tasks; completed files are not deleted.",

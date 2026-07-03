@@ -4,6 +4,8 @@ extension LocalizationTables {
         L.App.title: "月之门",
         L.App.settingsMenu: "设置…",
         L.App.settingsWindowTitle: "设置",
+        L.App.newDownloadCommand: "新建下载",
+        L.App.pasteAndParseCommand: "粘贴并解析",
         L.App.abortRunningTasks: "队列中还有 %d 个任务在进行，关闭会全部中止。",
         L.App.abortPausedTasks: "队列中还有 %d 个任务（含 %d 个已暂停），关闭会全部中止。",
         L.App.abortInformativeText: "“保留任务，继续下载”会取消本次关闭或退出，队列任务会继续保留。\n“终止任务并关闭”会取消队列中未结束的任务；不会主动删除已经完成生成的文件。",

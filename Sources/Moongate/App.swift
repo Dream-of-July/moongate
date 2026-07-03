@@ -38,6 +38,21 @@ struct MoongateApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+            // 提速常用操作：粘贴链接→解析是首个动作，给它键盘替代（HIG keyboard-shortcuts）。
+            // 放在 .newItem 附近，语义上属于 File 菜单「新建」区域。
+            CommandGroup(after: .newItem) {
+                // Cmd+L：类浏览器地址栏，聚焦 URL 输入框（ContentView 监听 requestUrlFocus）。
+                Button(localizer.t(L.App.newDownloadCommand)) {
+                    model.requestUrlFocus += 1
+                }
+                .keyboardShortcut("l", modifiers: .command)
+
+                // Cmd+Shift+V：粘贴变体，直接从剪贴板粘贴并解析。
+                Button(localizer.t(L.App.pasteAndParseCommand)) {
+                    model.pasteAndParse()
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
         }
 
         // 独立设置窗口：只保留红灯关闭；设置项实时同步，无需「完成」按钮。
