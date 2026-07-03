@@ -389,10 +389,10 @@ struct ContentView: View {
         let messageKey = hint.hasHumanSubtitle
             ? L.Ready.platformSubtitleHintHuman
             : L.Ready.platformSubtitleHintAI
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: Spacing.rowGutter) {
             Image(systemName: "captions.bubble")
                 .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Spacing.md) {
                 Text(localizer.t(messageKey, languages))
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -406,14 +406,14 @@ struct ContentView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .padding(Spacing.lg)
+        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: Radius.card))
     }
 
     private func readyState(_ info: VideoInfo) -> some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: Spacing.xl) {
                     if model.canReturnToList {
                         Button {
                             model.backToList()
@@ -435,21 +435,21 @@ struct ContentView: View {
                     }
                     let subtitleState = model.readySubtitleState(for: info)
                     section(localizer.t(L.Ready.subtitlesSection)) {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: Spacing.md) {
                             subtitleOutputRows(info, state: subtitleState)
                             if subtitleState.needsSubtitleSource {
-                                Divider().padding(.horizontal, 12)
+                                Divider().padding(.horizontal, Spacing.lg)
                                 subtitleSourceRows(info, state: subtitleState)
                             }
                         }
                     }
                 }
-                .frame(maxWidth: 500)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
+                .frame(maxWidth: Layout.readableContentWidth)
+                .padding(.horizontal, Spacing.xxl)
+                .padding(.bottom, Spacing.md)
                 .frame(maxWidth: .infinity)
             }
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.sm) {
                 Button {
                     Task {
                         await model.startDownload()
@@ -473,9 +473,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: 500)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .frame(maxWidth: Layout.readableContentWidth)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.vertical, 14) // off-grid：底部主操作区纵向留白，保留现值 14（无对应 token）
         }
     }
 
@@ -535,10 +535,10 @@ struct ContentView: View {
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }()
         section(localizer.t(L.Ready.outputOptionsSection)) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.rowGutter) {
                 if hdrAvailable {
                     Toggle(isOn: $model.preferHDR) {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Spacing.xxs) {
                             Text("HDR")
                             Text(localizer.t(L.Ready.hdrHint))
                                 .font(.caption)
@@ -548,7 +548,7 @@ struct ContentView: View {
                 }
                 HStack {
                     Text(localizer.t(L.Ready.outputFormat))
-                    Spacer(minLength: 8)
+                    Spacer(minLength: Spacing.md)
                     Picker(localizer.t(L.Ready.outputFormat), selection: $model.selectedOutputFormat) {
                         ForEach(OutputFormat.allCases, id: \.rawValue) { fmt in
                             Text(fmt == .original ? originalFormatLabel(sourceLabel) : fmt.displayName).tag(fmt)
@@ -565,7 +565,7 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(12)
+            .padding(Spacing.lg)
         }
     }
 
@@ -1044,7 +1044,7 @@ struct ContentView: View {
     private func subtitleOutputRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
         let hasSubtitleSelected = state.selectedTrack != nil
         let readiness = model.translationReadinessForCurrentSettings()
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: Spacing.md) {
             Picker(localizer.t(L.Ready.subtitleOutputSection), selection: subtitleIntentBinding(for: info)) {
                 ForEach(SubtitleIntent.allCases, id: \.rawValue) { intent in
                     Text(subtitleIntentLabel(intent)).tag(intent)
@@ -1086,7 +1086,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1332,7 +1332,7 @@ struct ContentView: View {
                 onSummarize: { model.summarizeCurrentVideo() },
                 onCancel: { model.resetSummary() }
             )
-            .padding(12)
+            .padding(Spacing.lg)
         }
     }
 

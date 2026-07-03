@@ -56,6 +56,11 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - R13 `8cb53b1` 完成 / R14 `1ce16d6` 设置画质区行对齐修复(styleSection已理想不改) / **R15(进行中)** onboarding首启引导步骤指示器增强+token(第一体验),MacOSContentBoundaryTests验证。
 - 剩余候选:网页下载/性能(偏core慎)｜画质选择已够｜三栏"添加"真实流程(需先做ViewModel快速添加能力,是产品决策非小切片,暂缓)。
 
+### R16-R18 + 里程碑
+- R16 sidebar按状态分Section(进行中/已完成+计数) / R17 键盘快捷键(New Download Cmd+L, Paste&Parse Cmd+Shift+V)
+- **Release build 里程碑**：17轮后 `swift build -c release --product Moongate` 干净通过(exit 0,无error/warning)——所有UI改动release-ready。
+- R18(进行中):readyState配置页token采用收尾(补完token覆盖,零视觉变化)。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。

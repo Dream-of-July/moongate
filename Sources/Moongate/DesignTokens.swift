@@ -45,3 +45,10 @@ enum Thumbnail {
 enum Stroke {
     static let hairline: CGFloat = 0.5
 }
+
+/// 布局约束。承载与「间距 / 圆角」无关的结构性尺寸。
+enum Layout {
+    // 可读内容最大宽度：readyState / choosingState 等主内容区共用的 500pt 宽度约束，
+    // 避免宽窗口下正文行过长。本轮先承载 readyState 的两处，choosingState 待后续统一。
+    static let readableContentWidth: CGFloat = 500
+}
