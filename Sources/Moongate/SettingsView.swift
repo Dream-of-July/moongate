@@ -2867,6 +2867,21 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.subtitlePositionBottom)).tag(SubtitlePosition.bottom)
                 Text(localizer.t(L.Settings.subtitlePositionTop)).tag(SubtitlePosition.top)
             }
+
+            // 实时预览：随上面三项设置即时重绘。纯视觉模拟，不调用烧录逻辑。
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                Label(localizer.t(L.Settings.subtitlePreview), systemImage: "eye")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                SubtitleStylePreview(
+                    style: draft.subtitleStyle,
+                    fontScale: draft.subtitleFontScale,
+                    position: draft.subtitlePosition,
+                    sampleTranslated: localizer.t(L.Settings.subtitlePreviewSampleTranslated),
+                    sampleSource: localizer.t(L.Settings.subtitlePreviewSampleSource)
+                )
+            }
+            .padding(.top, Spacing.xs)
         }
     }
 
@@ -3182,5 +3197,100 @@ struct APIConfigEditor: View {
     private static func reason(_ error: Error) -> String {
         if case MoongateError.translateFailed(let detail) = error { return detail }
         return error.localizedDescription
+    }
+}
+
+// MARK: - 字幕样式实时预览
+
+/// 字幕样式预览卡：模拟一块 16:9 视频画面，按当前三项烧录设置渲染示例双语字幕。
+/// 纯视觉模拟——不调用任何烧录逻辑，只读传入的三个枚举值。
+/// 字号为「相对示意」：真实烧录按视频分辨率用 ASS 单位换算，这里只体现四档字号（小/标准/大/特大）
+/// 与双语两级、位置差异的相对关系，不追求像素级还原。
+private struct SubtitleStylePreview: View {
+    let style: SubtitleStyle
+    let fontScale: SubtitleFontScale
+    let position: SubtitlePosition
+    let sampleTranslated: String
+    let sampleSource: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // 预览专有常量（仅用于视觉示意，与烧录像素无关）。
+    private let previewBaseFontSize: CGFloat = 15   // 译文行基准字号
+    private let sourceScaleRatio: CGFloat = 0.8     // 原文相对译文 80%（与烧录一致的相对关系）
+    private let previewMaxWidth: CGFloat = 360       // 预览区最大宽度
+
+    /// 译文行字号 = 基准 × 档位倍率。
+    private var translatedFontSize: CGFloat {
+        previewBaseFontSize * CGFloat(fontScale.multiplier)
+    }
+
+    /// 原文行字号 = 译文行 × 80%。
+    private var sourceFontSize: CGFloat {
+        translatedFontSize * sourceScaleRatio
+    }
+
+    /// 字幕在预览区内的垂直对齐（底部 / 顶部）。
+    private var verticalAlignment: Alignment {
+        position == .bottom ? .bottom : .top
+    }
+
+    var body: some View {
+        ZStack(alignment: verticalAlignment) {
+            videoBackdrop
+            subtitleStack
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.xl)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .frame(maxWidth: previewMaxWidth)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: Stroke.hairline)
+        )
+        // 切换字号 / 位置 / 样式时轻微过渡；尊重「减弱动态效果」。
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: fontScale)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: position)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: style)
+    }
+
+    /// 模拟视频画面：中性深色渐变 + 极淡的 film 占位符，暗示这是一块视频画面。
+    private var videoBackdrop: some View {
+        LinearGradient(
+            colors: [Color(white: 0.22), Color(white: 0.12)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .overlay(
+            Image(systemName: "film")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(.white.opacity(0.06))
+        )
+    }
+
+    /// 字幕文本堆叠：双语两行 / 仅中文一行。译文在上、原文在下（与烧录顺序一致）。
+    private var subtitleStack: some View {
+        VStack(spacing: Spacing.xxs) {
+            Text(sampleTranslated)
+                .font(.system(size: translatedFontSize, weight: .semibold))
+                .foregroundStyle(.white)
+                .subtitleLegibility()
+            if style == .bilingual {
+                Text(sampleSource)
+                    .font(.system(size: sourceFontSize, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.8))  // 原文 80% 不透明度，与烧录一致
+                    .subtitleLegibility()
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+}
+
+private extension View {
+    /// 深色背景上的字幕可读性：轻微黑色阴影模拟烧录的黑边描边。
+    func subtitleLegibility() -> some View {
+        self.shadow(color: .black.opacity(0.6), radius: 1, x: 0, y: 0)
     }
 }

@@ -576,7 +576,8 @@ public struct DownloadResult: Sendable {
 
 /// 烧录/输出字幕的样式
 public enum SubtitleStyle: String, Codable, Sendable {
-    /// 原文在上、中文在下
+    /// 双语：译文在上（正常字号），原文在下（80% 字号 + 80% 不透明度）。
+    /// 见 Burner.makeASS / Translator 的实际排版。
     case bilingual
     /// 仅中文
     case chineseOnly

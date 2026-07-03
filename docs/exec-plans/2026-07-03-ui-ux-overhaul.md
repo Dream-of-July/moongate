@@ -41,6 +41,11 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - **R7 字幕位置调节（进行中）**：SubtitlePosition(底部/顶部,assAlignment 2/8)照R1模式贯穿 Models/Settings/Burner(ASS Style Alignment)/QueueManager/CLI/SettingsView+三语+BurnerAssTests。默认bottom保兼容。
 - R8 候选：DependencySetupView token化+视觉精修(20个硬编码值,不需新文案,与R7零冲突)｜LoginWebView同｜字幕样式实时预览inspector。
 
+### 已提交 R1-R8 + 进行中
+- R1 f865d0f 字幕大小 / R2 caafa4a 空状态 / R3 be65cf2 队列项 / R4 e39ec29 语言bug / R5 9922757 token / R6 d8341b0 三栏原型 / R7 ef4f7c1 字幕位置 / R8 0bc1fca 首次使用路径(依赖+登录)精修
+- **R9 字幕样式实时预览（进行中）**：SettingsView styleSection 加 SubtitleStylePreview(16:9深色模拟视频,按style/fontScale/position实时渲染双语示例字幕,CapCut式WYSIWYG),闭合字幕调节反馈环。仅SettingsView+本地化。
+- R10+ 候选：三栏原型完善(statusText/添加流程)｜loading/failed状态统一(ContentView,慎churn)｜SettingsView 全量token化｜画质选择清晰度(formatRows)｜choosingState卡片化。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。
