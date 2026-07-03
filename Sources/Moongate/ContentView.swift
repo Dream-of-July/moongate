@@ -36,7 +36,10 @@ struct ContentView: View {
                 QueueOverlayView(
                     queue: model.queue,
                     expanded: $model.queueExpanded,
-                    onConfigureLocalASR: { model.openLocalASRSettings() }
+                    onConfigureLocalASR: { model.openLocalASRSettings() },
+                    onLogin: { site, loginURL in
+                        model.openLoginForQueueItem(site: site, loginURL: loginURL)
+                    }
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -315,6 +318,37 @@ struct ContentView: View {
         }
     }
 
+    /// 平台字幕存在性提示条：yt-dlp 没返回字幕、但探针发现平台其实有字幕（多为未登录）。
+    /// 引导用户登录以取用平台字幕，替代默认的 AI 识别。
+    @ViewBuilder
+    private func platformSubtitleHintBanner(_ hint: PlatformSubtitleHint) -> some View {
+        let languages = hint.languageCodes
+            .map { LanguageCatalog.displayName(for: $0) }
+            .joined(separator: "、")
+        let messageKey = hint.hasHumanSubtitle
+            ? L.Ready.platformSubtitleHintHuman
+            : L.Ready.platformSubtitleHintAI
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "captions.bubble")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(localizer.t(messageKey, languages))
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    model.openLoginForPlatformSubtitleHint(hint)
+                } label: {
+                    Label(localizer.t(L.Ready.platformSubtitleHintLogin), systemImage: "person.crop.circle.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
     private func readyState(_ info: VideoInfo) -> some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -335,6 +369,9 @@ struct ContentView: View {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
+                    if let hint = info.platformSubtitleHint {
+                        platformSubtitleHintBanner(hint)
+                    }
                     let subtitleState = model.readySubtitleState(for: info)
                     section(localizer.t(L.Ready.subtitlesSection)) {
                         VStack(alignment: .leading, spacing: 8) {

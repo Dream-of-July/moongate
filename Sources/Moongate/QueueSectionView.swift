@@ -11,6 +11,8 @@ struct QueueSectionView: View {
     /// 非 nil 时头部显示「收起」按钮（铺满态收回成底部小把手）。
     var onCollapse: (() -> Void)? = nil
     var onConfigureLocalASR: () -> Void = {}
+    /// 登录类失败项点「登录」：把站点与登录起始 URL 交给外层（ViewModel）打开登录窗。
+    var onLogin: (_ site: String, _ loginURL: URL?) -> Void = { _, _ in }
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
@@ -71,7 +73,12 @@ struct QueueSectionView: View {
                                 }
                             },
                             onRemove: { queue.remove(item.id) },
-                            onReveal: { queue.revealInFinder(item.id) }
+                            onReveal: { queue.revealInFinder(item.id) },
+                            onLogin: {
+                                if let prompt = item.needsLogin {
+                                    onLogin(prompt.site, prompt.loginURL)
+                                }
+                            }
                         )
                         Divider().padding(.leading, 86)
                     }

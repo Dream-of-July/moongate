@@ -155,6 +155,24 @@ final class QueueManager: ObservableObject {
         case transcoding
     }
 
+    /// 下载/处理阶段的「需要登录该站点」信号。从 MoongateError 提取，供 QueueItemView 显示登录按钮。
+    struct QueueLoginPrompt: Equatable {
+        let site: String
+        let loginURL: URL?
+    }
+
+    /// 从错误中提取登录提示：仅登录类错误（siteCookieRequired / loginRequired）返回非 nil。
+    static func loginPrompt(from error: Error) -> QueueLoginPrompt? {
+        switch error {
+        case MoongateError.siteCookieRequired(let site, let url, _):
+            return QueueLoginPrompt(site: site, loginURL: URL(string: url))
+        case MoongateError.loginRequired(let site):
+            return QueueLoginPrompt(site: site, loginURL: nil)
+        default:
+            return nil
+        }
+    }
+
     struct QueueItem: Identifiable {
         let id: UUID
         let title: String
@@ -193,6 +211,9 @@ final class QueueManager: ObservableObject {
         var resolvedSubtitleSource: ResolvedSubtitleSource? = nil
         /// 面向用户的源说明（如“平台字幕质量较差，已自动改用本地识别”）。nil 时不显示。
         var subtitleSourceNote: String? = nil
+        /// 失败态若为「需要登录该站点」：记录站点 host 与登录起始 URL，供 UI 显示登录按钮并在登录后自动重试。
+        /// nil 表示这不是登录类失败（走普通重试）。
+        var needsLogin: QueueLoginPrompt? = nil
         /// 本项流水线的控制令牌；retry 时换新的（旧的已 cancel）。
         var control: TaskControlToken
         /// 流水线代际：每次 enqueue/retry 递增；@MainActor 写回前校验，作废陈旧回调。
@@ -612,6 +633,7 @@ final class QueueManager: ObservableObject {
                                 $0.stage = .failed(Self.shortReason(of: error))
                                 $0.isPaused = false; $0.clearProgress()
                                 $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
+                                $0.needsLogin = Self.loginPrompt(from: error)
                                 $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
                             }
                             clearProgressTracking(id)
@@ -637,6 +659,7 @@ final class QueueManager: ObservableObject {
                         $0.isPaused = false
                         $0.clearProgress()
                         $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
+                        $0.needsLogin = Self.loginPrompt(from: error)
                         $0.isPostDownloadProcessing = false
                         $0.postDownloadProcessingKind = nil
                     }
@@ -734,7 +757,19 @@ final class QueueManager: ObservableObject {
             }
         } catch {
             guard item(id)?.generation == generation else { return }
-            // 回退过程中生成 whisper 失败：不阻塞，沿用原平台字幕继续翻译。
+            // 用户取消要如实中止；其余错误（回退 whisper 生成失败）不阻塞，沿用原平台字幕继续翻译。
+            if isCancellation(error) {
+                update(id, generation: generation) {
+                    $0.stage = .cancelled
+                    $0.isPaused = false
+                    $0.clearProgress()
+                    $0.statusText = CoreL10n.t(L.Queue.cancelled)
+                    $0.isPostDownloadProcessing = false
+                    $0.postDownloadProcessingKind = nil
+                }
+                clearProgressTracking(id)
+                return
+            }
         }
 
         if shouldResolveSourceOnly {
@@ -785,7 +820,8 @@ final class QueueManager: ObservableObject {
                     backend: settings.encodeBackend,
                     alwaysH264: settings.burnAlwaysH264,
                     control: control,
-                    outputTag: CoreL10n.t(L.Queue.subtitleVersionTag)
+                    outputTag: CoreL10n.t(L.Queue.subtitleVersionTag),
+                    subtitleFontScale: settings.subtitleFontScale.multiplier
                 ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -860,7 +896,8 @@ final class QueueManager: ObservableObject {
                     maxHeight: settings.maxBurnHeight,
                     backend: settings.encodeBackend,
                     alwaysH264: settings.burnAlwaysH264,
-                    control: control
+                    control: control,
+                    subtitleFontScale: settings.subtitleFontScale.multiplier
                 ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -964,7 +1001,8 @@ final class QueueManager: ObservableObject {
                 maxHeight: settings.maxBurnHeight,
                 backend: settings.encodeBackend,
                 alwaysH264: settings.burnAlwaysH264,
-                control: control
+                control: control,
+                subtitleFontScale: settings.subtitleFontScale.multiplier
             ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -1143,6 +1181,7 @@ final class QueueManager: ObservableObject {
                 $0.isPaused = false
                 $0.clearProgress()
                 $0.statusText = CoreL10n.t(L.Queue.failedWithReason, reason)
+                $0.needsLogin = Self.loginPrompt(from: error)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
             }
@@ -1240,6 +1279,19 @@ final class QueueManager: ObservableObject {
     }
 
     /// 重试：保留已下载产物则跳过下载，仅重跑字幕处理；无产物则整条重跑。
+    /// 登录成功后调用：重试所有因该站点需要登录而失败的队列项。
+    /// site 为 nil 时重试所有登录类失败项（登录窗不总能回传站点）。
+    func retryFailedNeedingLogin(site: String?) {
+        let targets = items.filter { item in
+            guard case .failed = item.stage, let prompt = item.needsLogin else { return false }
+            guard let site else { return true }
+            return prompt.site.caseInsensitiveCompare(site) == .orderedSame
+        }
+        for target in targets {
+            retry(target.id)
+        }
+    }
+
     func retry(_ id: UUID) {
         guard let old = item(id) else { return }
         // 旧 control 若仍登记着进程，确保释放；清掉旧代际的槽位记账。
@@ -1263,6 +1315,7 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
+            $0.needsLogin = nil
             $0.statusText = skipDownload ? nil : CoreL10n.t(L.Queue.retryDownloadAndProcess)
             if !skipDownload { $0.resultFiles = [] }
         }
@@ -1303,6 +1356,7 @@ final class QueueManager: ObservableObject {
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
+            $0.needsLogin = nil
             $0.timingWarning = false
             $0.statusText = nil
         }

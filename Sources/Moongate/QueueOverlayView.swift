@@ -10,6 +10,7 @@ struct QueueOverlayView: View {
     @ObservedObject var queue: QueueManager
     @Binding var expanded: Bool
     var onConfigureLocalASR: () -> Void = {}
+    var onLogin: (_ site: String, _ loginURL: URL?) -> Void = { _, _ in }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var localizer: Localizer
 
@@ -21,6 +22,8 @@ struct QueueOverlayView: View {
                         expanded = false
                     } onConfigureLocalASR: {
                         onConfigureLocalASR()
+                    } onLogin: { site, loginURL in
+                        onLogin(site, loginURL)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.regularMaterial)

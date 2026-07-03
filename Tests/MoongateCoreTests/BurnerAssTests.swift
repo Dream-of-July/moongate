@@ -161,4 +161,46 @@ final class BurnerAssTests: XCTestCase {
         XCTAssertTrue(styleLine.contains("&H0AFFFFFF"), "译文填充应为 96% 不透明（&H0AFFFFFF）：\(styleLine)")
         XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明（&H00000000）：\(styleLine)")
     }
+
+    // MARK: - 用户可调字号缩放
+
+    func testSubtitleFontScaleMultipliersAreMonotonic() {
+        XCTAssertLessThan(SubtitleFontScale.small.multiplier, SubtitleFontScale.standard.multiplier)
+        XCTAssertEqual(SubtitleFontScale.standard.multiplier, 1.0, accuracy: 1e-9)
+        XCTAssertLessThan(SubtitleFontScale.standard.multiplier, SubtitleFontScale.large.multiplier)
+        XCTAssertLessThan(SubtitleFontScale.large.multiplier, SubtitleFontScale.extraLarge.multiplier)
+    }
+
+    func testFontScaleMonotonicallyChangesLayoutSizes() {
+        let aspect = 16.0 / 9.0
+        let small = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.small.multiplier)
+        let standard = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.standard.multiplier)
+        let large = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.large.multiplier)
+        let extraLarge = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.extraLarge.multiplier)
+
+        // 译文字号随档位单调递增
+        XCTAssertLessThan(small.chineseSize, standard.chineseSize)
+        XCTAssertLessThan(standard.chineseSize, large.chineseSize)
+        XCTAssertLessThan(large.chineseSize, extraLarge.chineseSize)
+
+        // standard 与不传 fontScale（默认 1.0）完全等价：老用户行为不变
+        XCTAssertEqual(standard.chineseSize, FFmpegBurner.ASSLayout(aspect: aspect).chineseSize)
+        XCTAssertEqual(standard.originalSize, FFmpegBurner.ASSLayout(aspect: aspect).originalSize)
+
+        // 原文字号也随档位单调递增（保持 80% 比例衍生）
+        XCTAssertLessThanOrEqual(small.originalSize, standard.originalSize)
+        XCTAssertLessThan(standard.originalSize, extraLarge.originalSize)
+    }
+
+    func testFontScaleLowerBoundProtection() {
+        // 竖屏 + 极小倍率仍受下限保护（译文 >= 8，原文 >= 6）。
+        let layout = FFmpegBurner.ASSLayout(aspect: 9.0 / 16.0, fontScale: 0.01)
+        XCTAssertGreaterThanOrEqual(layout.chineseSize, 8)
+        XCTAssertGreaterThanOrEqual(layout.originalSize, 6)
+        // 非法倍率（0 / 非有限）回退为 1.0，与 standard 一致。
+        XCTAssertEqual(
+            FFmpegBurner.ASSLayout(aspect: 16.0 / 9.0, fontScale: 0).chineseSize,
+            FFmpegBurner.ASSLayout(aspect: 16.0 / 9.0).chineseSize
+        )
+    }
 }

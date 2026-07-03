@@ -2857,6 +2857,12 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.subtitleStyleBilingual)).tag(SubtitleStyle.bilingual)
                 Text(localizer.t(L.Settings.subtitleStyleChineseOnly)).tag(SubtitleStyle.chineseOnly)
             }
+            Picker(localizer.t(L.Settings.subtitleFontScale), selection: $draft.subtitleFontScale) {
+                Text(localizer.t(L.Settings.subtitleFontScaleSmall)).tag(SubtitleFontScale.small)
+                Text(localizer.t(L.Settings.subtitleFontScaleStandard)).tag(SubtitleFontScale.standard)
+                Text(localizer.t(L.Settings.subtitleFontScaleLarge)).tag(SubtitleFontScale.large)
+                Text(localizer.t(L.Settings.subtitleFontScaleExtraLarge)).tag(SubtitleFontScale.extraLarge)
+            }
         }
     }
 

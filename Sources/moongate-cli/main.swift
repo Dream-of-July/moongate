@@ -514,7 +514,8 @@ do {
         let printer = PercentPrinter(label: "烧录中")
         let outputURL = try await burner.burn(
             video: videoURL, subtitle: subtitleURL,
-            maxHeight: maxHeight, control: nil
+            maxHeight: maxHeight, control: nil,
+            subtitleFontScale: AppSettings.load().subtitleFontScale.multiplier
         ) {
             printer.update($0)
         }

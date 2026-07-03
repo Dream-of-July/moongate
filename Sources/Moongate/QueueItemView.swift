@@ -16,6 +16,7 @@ struct QueueItemView: View {
     let onRetryWithLocalASR: () -> Void
     let onRemove: () -> Void
     let onReveal: () -> Void
+    var onLogin: () -> Void = {}
     @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
@@ -400,6 +401,9 @@ struct QueueItemView: View {
             }
         case .failed:
             HStack(spacing: 6) {
+                if item.needsLogin != nil {
+                    iconButton("person.crop.circle.badge.plus", help: localizer.t(L.Queue.loginAndRetry), hint: localizer.t(L.Queue.loginAndRetryHint), action: onLogin)
+                }
                 iconButton("arrow.clockwise", help: localizer.t(L.Queue.retryTask), hint: localizer.t(L.Queue.retryTaskHint), action: onRetry)
                 iconButton("trash", help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint), action: onRemove)
             }
