@@ -31,6 +31,7 @@ extension LocalizationTables {
         L.Main.parseCurrentHint: "Parse the video link in the input field",
         L.Main.idleTitle: "Paste a link to download web videos",
         L.Main.idleSubtitle: "Paste multiple links and Moongate will parse them one by one",
+        L.Main.idleSupportedSites: "Works with YouTube, Bilibili, TikTok, and more",
         L.Main.loadingAccessibility: "Parsing",
         L.Main.loading: "Parsing...",
         L.Main.batchAutoQueueHint: "Parsed videos are added to the queue at the best available quality",

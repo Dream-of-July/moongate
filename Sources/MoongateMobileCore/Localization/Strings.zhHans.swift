@@ -31,6 +31,7 @@ extension LocalizationTables {
         L.Main.parseCurrentHint: "解析当前输入框中的视频链接",
         L.Main.idleTitle: "粘贴链接，下载网页里的视频",
         L.Main.idleSubtitle: "一次粘贴多条链接会自动逐个解析并加入队列",
+        L.Main.idleSupportedSites: "支持 YouTube、Bilibili、TikTok 等主流网站",
         L.Main.loadingAccessibility: "正在解析",
         L.Main.loading: "正在解析…",
         L.Main.batchAutoQueueHint: "解析完成的视频会按最高画质自动加入队列",

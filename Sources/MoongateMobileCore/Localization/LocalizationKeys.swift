@@ -46,6 +46,7 @@ public enum L {
         public static let parseCurrentHint = "L.Main.ParseCurrentHint"
         public static let idleTitle = "L.Main.IdleTitle"
         public static let idleSubtitle = "L.Main.IdleSubtitle"
+        public static let idleSupportedSites = "L.Main.IdleSupportedSites"
         public static let loadingAccessibility = "L.Main.LoadingAccessibility"
         public static let loading = "L.Main.Loading"
         public static let batchAutoQueueHint = "L.Main.BatchAutoQueueHint"

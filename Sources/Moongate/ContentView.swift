@@ -14,6 +14,10 @@ struct ContentView: View {
     @FocusState private var urlFieldFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// 尊重「减弱动态效果」——空状态出现动效在开启该项时禁用（HIG: reduce-motion）。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 空状态首帧的轻量出现动效（opacity + 微 scale），仅在未减弱动态效果时启用。
+    @State private var emptyStateAppeared = false
     /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
     @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
 
@@ -219,18 +223,47 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
+            // 装饰性图标：hierarchical 渲染让下箭头与圆环形成柔和层次，比纯 tertiary 更有质感。
+            // 语义上 arrow.down.circle 直接对应「粘贴链接→下载」，保留不换。
             Image(systemName: "arrow.down.circle")
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(localizer.t(L.Main.idleTitle))
-                .font(.callout)
+                .font(.system(size: 54, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
-            Text(localizer.t(L.Main.idleSubtitle))
+                .accessibilityHidden(true)
+            VStack(spacing: 6) {
+                // 主文案权重更强、颜色更实，与副文案拉开层级（size + weight + color 三重区分）。
+                Text(localizer.t(L.Main.idleTitle))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                Text(localizer.t(L.Main.idleSubtitle))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            // 支持平台提示：极克制的一行小字，暗示能力边界又不喧宾夺主。
+            Text(localizer.t(L.Main.idleSupportedSites))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 2)
         }
+        .padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .opacity(emptyStateAppeared ? 1 : 0)
+        .scaleEffect(emptyStateAppeared ? 1 : 0.98)
+        .onAppear {
+            guard !emptyStateAppeared else { return }
+            if reduceMotion {
+                emptyStateAppeared = true
+            } else {
+                withAnimation(.easeOut(duration: 0.28)) {
+                    emptyStateAppeared = true
+                }
+            }
+        }
     }
 
     private var loadingState: some View {
@@ -1289,6 +1322,11 @@ struct ContentView: View {
             }
             .frame(width: 160, height: 90)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // 极细描边让缩略图从卡片背景「浮起」，两种模式下都能形成清晰边界。
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 0.5)
+            )
             VStack(alignment: .leading, spacing: 5) {
                 Text(info.title)
                     .font(.headline)
@@ -1301,6 +1339,8 @@ struct ContentView: View {
                     Text(meta)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        // 时长为等宽数字，避免不同数字宽度导致的横向跳动。
+                        .monospacedDigit()
                 }
             }
             Spacer(minLength: 0)
@@ -1313,6 +1353,11 @@ struct ContentView: View {
     private var cardBackground: some View {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(.quaternary.opacity(0.55))
+            // 叠一层极细描边，强化卡片与背景的边界——light/dark 下都更「立得住」。
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 0.5)
+            )
     }
 }
 
