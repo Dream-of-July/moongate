@@ -36,6 +36,11 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - R7 候选(独立文件,与R6可能ContentView冲突需错开)：字幕样式实时预览 inspector(P3,CapCut式,九宫格锚点+相对档位+preset)｜统一loading/failed/需登录状态视觉(P3,ContentView)｜DependencySetupView/LoginWebView 采用design token+视觉精修(独立文件)｜SettingsView 视觉精修与token化｜Parabolic式"添加任务"对话框(P2)｜choosingState多视频选择页卡片化(ContentView)。
 - 原则：ContentView 已被R2/R5/R6反复触及,后续避免继续churn它,优先独立文件轮次;三栏成熟后再考虑切换默认。
 
+### 已提交轮次汇总
+- R1 f865d0f 字幕大小 / R2 caafa4a 空状态+信息卡 / R3 be65cf2 队列项 / R4 e39ec29 语言标签bug修复 / R5 9922757 design token / R6 d8341b0 三栏原型(feature-flag)
+- **R7 字幕位置调节（进行中）**：SubtitlePosition(底部/顶部,assAlignment 2/8)照R1模式贯穿 Models/Settings/Burner(ASS Style Alignment)/QueueManager/CLI/SettingsView+三语+BurnerAssTests。默认bottom保兼容。
+- R8 候选：DependencySetupView token化+视觉精修(20个硬编码值,不需新文案,与R7零冲突)｜LoginWebView同｜字幕样式实时预览inspector。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。

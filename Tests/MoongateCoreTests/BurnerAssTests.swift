@@ -162,6 +162,35 @@ final class BurnerAssTests: XCTestCase {
         XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明（&H00000000）：\(styleLine)")
     }
 
+    // MARK: - 用户可调字幕位置
+
+    func testSubtitlePositionAssAlignmentValues() {
+        XCTAssertEqual(SubtitlePosition.bottom.assAlignment, 2, "底部应映射到 ASS Alignment=2（底部居中）")
+        XCTAssertEqual(SubtitlePosition.top.assAlignment, 8, "顶部应映射到 ASS Alignment=8（顶部居中）")
+    }
+
+    func testMakeASSDefaultAlignmentIsBottom() {
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ])
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        // Alignment 列前缀为 BorderStyle,Outline,Shadow = 1,1,0，故底部对齐应出现 ,1,0,2,
+        XCTAssertTrue(styleLine.contains(",1,0,2,"), "默认应为底部对齐 Alignment=2：\(styleLine)")
+    }
+
+    func testMakeASSTopAlignmentEmitsAlignmentEight() {
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ], alignment: 8)
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        XCTAssertTrue(styleLine.contains(",1,0,8,"), "顶部对齐应为 Alignment=8：\(styleLine)")
+        XCTAssertFalse(styleLine.contains(",1,0,2,"), "顶部对齐不应残留 Alignment=2：\(styleLine)")
+    }
+
     // MARK: - 用户可调字号缩放
 
     func testSubtitleFontScaleMultipliersAreMonotonic() {

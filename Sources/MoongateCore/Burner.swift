@@ -146,6 +146,7 @@ public struct FFmpegBurner: SubtitleBurner {
         control: TaskControlToken?,
         outputTag: String? = nil,
         subtitleFontScale: Double = 1.0,
+        subtitleAlignment: Int = 2,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         guard let ffmpeg = Self.locate("ffmpeg") else {
@@ -226,7 +227,7 @@ public struct FFmpegBurner: SubtitleBurner {
                     }
                     return Double(w) / Double(h)
                 }()
-                let ass = Self.makeASS(cues: cues, aspect: aspect, fontScale: subtitleFontScale)
+                let ass = Self.makeASS(cues: cues, aspect: aspect, fontScale: subtitleFontScale, alignment: subtitleAlignment)
                 try ass.write(
                     to: tempDir.appendingPathComponent("subs.ass"),
                     atomically: true, encoding: .utf8
@@ -929,7 +930,7 @@ public struct FFmpegBurner: SubtitleBurner {
 
     /// 把 SRT 字幕转成 ASS：双语条目（首行含中日韩文字、其余行不含）首行用正常字号，
     /// 其余行（原文）用更小字号；普通条目整条统一字号。aspect = 视频宽/高。
-    static func makeASS(cues: [SubtitleCue], aspect: Double = 16.0 / 9.0, fontScale: Double = 1.0) -> String {
+    static func makeASS(cues: [SubtitleCue], aspect: Double = 16.0 / 9.0, fontScale: Double = 1.0, alignment: Int = 2) -> String {
         let layout = ASSLayout(aspect: aspect, fontScale: fontScale)
         var dialogues: [String] = []
         for cue in cues {
@@ -980,7 +981,7 @@ public struct FFmpegBurner: SubtitleBurner {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H\(chineseAlphaHex)FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,2,\(layout.marginH),\(layout.marginH),\(layout.marginV),1
+        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H\(chineseAlphaHex)FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,\(alignment),\(layout.marginH),\(layout.marginH),\(layout.marginV),1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

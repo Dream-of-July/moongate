@@ -2863,6 +2863,10 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.subtitleFontScaleLarge)).tag(SubtitleFontScale.large)
                 Text(localizer.t(L.Settings.subtitleFontScaleExtraLarge)).tag(SubtitleFontScale.extraLarge)
             }
+            Picker(localizer.t(L.Settings.subtitlePosition), selection: $draft.subtitlePosition) {
+                Text(localizer.t(L.Settings.subtitlePositionBottom)).tag(SubtitlePosition.bottom)
+                Text(localizer.t(L.Settings.subtitlePositionTop)).tag(SubtitlePosition.top)
+            }
         }
     }
 

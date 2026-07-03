@@ -515,7 +515,8 @@ do {
         let outputURL = try await burner.burn(
             video: videoURL, subtitle: subtitleURL,
             maxHeight: maxHeight, control: nil,
-            subtitleFontScale: AppSettings.load().subtitleFontScale.multiplier
+            subtitleFontScale: AppSettings.load().subtitleFontScale.multiplier,
+            subtitleAlignment: AppSettings.load().subtitlePosition.assAlignment
         ) {
             printer.update($0)
         }

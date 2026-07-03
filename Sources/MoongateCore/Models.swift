@@ -596,6 +596,13 @@ public enum SubtitleFontScale: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// 烧录字幕的垂直位置。作用于 ASS Style 的 Alignment（2=底部居中，8=顶部居中）。
+public enum SubtitlePosition: String, Codable, Sendable, CaseIterable {
+    case bottom, top
+    /// ASS Alignment 值（numpad 布局：2=底部居中，8=顶部居中）。
+    public var assAlignment: Int { self == .bottom ? 2 : 8 }
+}
+
 /// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
 public struct SubtitleCueSourceFragment: Sendable {
     public let startSeconds: Double
@@ -743,6 +750,7 @@ public protocol SubtitleBurner: Sendable {
         control: TaskControlToken?,
         outputTag: String?,
         subtitleFontScale: Double,
+        subtitleAlignment: Int,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL
 }
@@ -757,6 +765,7 @@ public extension SubtitleBurner {
         control: TaskControlToken?,
         outputTag: String? = nil,
         subtitleFontScale: Double = 1.0,
+        subtitleAlignment: Int = 2,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try await burn(
@@ -764,6 +773,7 @@ public extension SubtitleBurner {
             maxHeight: maxHeight, backend: backend, alwaysH264: alwaysH264,
             control: control, outputTag: outputTag,
             subtitleFontScale: subtitleFontScale,
+            subtitleAlignment: subtitleAlignment,
             progress: progress
         )
     }
@@ -778,6 +788,7 @@ public extension SubtitleBurner {
             maxHeight: nil, backend: .auto, alwaysH264: false,
             control: nil, outputTag: nil,
             subtitleFontScale: 1.0,
+            subtitleAlignment: 2,
             progress: progress
         )
     }
