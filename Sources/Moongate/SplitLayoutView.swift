@@ -52,14 +52,54 @@ struct SplitLayoutView: View {
 
     // MARK: - Sidebar（左侧列表）
 
+    /// 进行中分组：stage 为 queued/downloading/translating/burning（无论是否 paused），保持 items 原始相对顺序。
+    private var activeItems: [QueueManager.QueueItem] {
+        queue.items.filter { item in
+            switch item.stage {
+            case .queued, .downloading, .translating, .burning:
+                return true
+            case .done, .failed, .cancelled:
+                return false
+            }
+        }
+    }
+
+    /// 已完成分组：stage 为 done/failed/cancelled，保持 items 原始相对顺序。
+    private var finishedItems: [QueueManager.QueueItem] {
+        queue.items.filter { item in
+            switch item.stage {
+            case .done, .failed, .cancelled:
+                return true
+            case .queued, .downloading, .translating, .burning:
+                return false
+            }
+        }
+    }
+
     private var sidebar: some View {
         Group {
             if queue.items.isEmpty {
                 sidebarEmptyState
             } else {
-                List(queue.items, selection: $selectedItemID) { item in
-                    QueueSidebarRow(item: item)
-                        .tag(item.id)
+                // 按任务状态分区（备忘录/邮件式）：进行中在上，已完成在下。
+                // 分组仅重组渲染，不改动 queue.items 数据或任何操作；跨 Section 的选中态由 List(selection:) 统一维护。
+                List(selection: $selectedItemID) {
+                    if !activeItems.isEmpty {
+                        Section("\(localizer.t(L.SplitLayout.sectionActive)) \(activeItems.count)") {
+                            ForEach(activeItems) { item in
+                                QueueSidebarRow(item: item)
+                                    .tag(item.id)
+                            }
+                        }
+                    }
+                    if !finishedItems.isEmpty {
+                        Section("\(localizer.t(L.SplitLayout.sectionFinished)) \(finishedItems.count)") {
+                            ForEach(finishedItems) { item in
+                                QueueSidebarRow(item: item)
+                                    .tag(item.id)
+                            }
+                        }
+                    }
                 }
                 .listStyle(.sidebar)
             }

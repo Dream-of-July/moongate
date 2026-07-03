@@ -778,5 +778,7 @@ extension LocalizationTables {
         L.SplitLayout.addTaskHint: "在主介面貼上連結以新增影片",
         L.SplitLayout.play: "播放",
         L.SplitLayout.descriptionSection: "簡介",
+        L.SplitLayout.sectionActive: "進行中",
+        L.SplitLayout.sectionFinished: "已完成",
     ]
 }

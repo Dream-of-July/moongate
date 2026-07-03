@@ -818,5 +818,7 @@ public enum L {
         public static let addTaskHint = "L.SplitLayout.AddTaskHint"
         public static let play = "L.SplitLayout.Play"
         public static let descriptionSection = "L.SplitLayout.DescriptionSection"
+        public static let sectionActive = "L.SplitLayout.SectionActive"
+        public static let sectionFinished = "L.SplitLayout.SectionFinished"
     }
 }

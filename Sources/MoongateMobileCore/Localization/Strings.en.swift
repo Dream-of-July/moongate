@@ -777,5 +777,7 @@ extension LocalizationTables {
         L.SplitLayout.addTaskHint: "Paste a link on the main window to add a video",
         L.SplitLayout.play: "Play",
         L.SplitLayout.descriptionSection: "Description",
+        L.SplitLayout.sectionActive: "In Progress",
+        L.SplitLayout.sectionFinished: "Completed",
     ]
 }
