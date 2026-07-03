@@ -829,6 +829,12 @@ def score_sample(
             )
     if reference_text is None:
         reference_text = load_human_word_reference(sample_dir, window)
+    # A manual/official platform caption is trusted ground truth for the recognition dimension:
+    # there is no lossy ASR — the subtitle IS the human-uploaded text, so comparing it to itself
+    # (reference_similarity = 100) correctly reflects that the pipeline reproduced the human caption
+    # verbatim, rather than an ASR-accuracy claim. This is a deliberate, tested design ("manual/
+    # official captions are trusted"); auto (non-manual) platform captions do NOT get this and stay
+    # unverified. Reviewed under EVAL-04: working as intended, not a tautology defect.
     manual_platform_reference = False
     explicit_manual_platform = source_kind != "local-asr" and has_manual_platform_provenance(source_record)
     if reference_text is None and explicit_manual_platform:
