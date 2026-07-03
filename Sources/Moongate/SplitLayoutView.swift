@@ -12,9 +12,10 @@ import MoongateCore
 /// `QueueOverlayView.swift` 里的 `ProgressRingView`。
 ///
 /// 本轮仅为可运行原型：sidebar 的「添加」入口是占位（提示去主界面粘贴链接），
-/// 后续可接 Parabolic 式的粘贴/添加对话框；detail 的状态文案做了简化，
-/// 不复制 `QueueItemView.statusText` 的完整分支逻辑。预览播放与 pause/resume/
-/// cancel/retry/remove/reveal 等按钮操作均为真实可用。
+/// 后续可接 Parabolic 式的粘贴/添加对话框；detail 与 sidebar 的状态文案通过
+/// `QueueStatusFormatter` 复用 `QueueItemView` 等价的丰富逻辑（下载 百分比·速度·剩余、
+/// 本地 ASR 三子阶段、翻译/烧录/转码%、部分成功、失败原因等），detail 并显示进度条。
+/// 预览播放与 pause/resume/cancel/retry/remove/reveal 等按钮操作均为真实可用。
 struct SplitLayoutView: View {
     @ObservedObject var model: ViewModel
     @ObservedObject private var queue: QueueManager
@@ -129,6 +130,142 @@ struct SplitLayoutView: View {
     }
 }
 
+// MARK: - 状态文案格式化（与 QueueItemView 保持一致）
+
+/// 把 `QueueItem` 的 stage + progressPhase + postDownloadProcessingKind + speed + remaining
+/// 组装成与 `QueueItemView.statusText` 等价的丰富状态文案。QueueItemView 的对应计算属性是
+/// private，无法直接复用，这里在原型内写等价实现，复用相同的 `item` 字段与 `L.Queue.*` 文案 key，
+/// 保证用户在 legacy 列表与三栏原型看到的状态文案一致。
+///
+/// `compact` 为 true 时给 sidebar 行用（省略速度/剩余等次要细节，保持单行紧凑）。
+@MainActor
+private struct QueueStatusFormatter {
+    let item: QueueManager.QueueItem
+    let localizer: Localizer
+
+    /// 详情用：完整文案（下载显示 百分比·速度·剩余；ASR 子阶段；转码/翻译/烧录%；done/部分成功；failed 原因）。
+    var detailText: String { statusText(compact: false) }
+
+    /// sidebar 用：紧凑文案（保留百分比与阶段，去掉速度/剩余，单行不溢出）。
+    var compactText: String { statusText(compact: true) }
+
+    private func statusText(compact: Bool) -> String {
+        if item.isPaused { return localizer.t(L.Queue.paused) }
+        switch item.stage {
+        case .queued:
+            return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
+        case .downloading:
+            // 下载 stage 内可能实际处于本地 ASR 各子阶段或下载后处理（转码）——与 QueueItemView 一致地优先判定。
+            if let asr = localASRProgressText {
+                return withDetails(asr, includeSpeed: false, compact: compact)
+            }
+            if item.isPostDownloadProcessing {
+                return withDetails(postDownloadProcessingText, includeSpeed: false, compact: compact)
+            }
+            if let p = item.progress {
+                return withDetails(localizer.t(L.Queue.downloadingPercent, Int(p * 100)), compact: compact)
+            }
+            return withDetails(localizer.t(L.Queue.downloading), compact: compact)
+        case .translating:
+            if let p = item.progress {
+                return withDetails(localizer.t(L.Queue.translatingPercent, Int(p * 100)), includeSpeed: false, compact: compact)
+            }
+            return withDetails(localizer.t(L.Queue.translating), includeSpeed: false, compact: compact)
+        case .burning:
+            if let p = item.progress {
+                return withDetails(localizer.t(L.Queue.burningPercent, Int(p * 100)), includeSpeed: false, compact: compact)
+            }
+            return withDetails(localizer.t(L.Queue.burning), includeSpeed: false, compact: compact)
+        case .done:
+            return item.statusText ?? localizer.t(L.Queue.done)
+        case .cancelled:
+            return item.statusText ?? localizer.t(L.Queue.cancelled)
+        case .failed(let reason):
+            return localizer.t(L.Queue.failedWithReason, reason)
+        }
+    }
+
+    /// 本地 ASR 三子阶段（音频提取 / 语音识别 / 字幕分段），非这三个阶段返回 nil。
+    private var localASRProgressText: String? {
+        switch item.progressPhase {
+        case .audioExtract:
+            if let p = item.progress { return localizer.t(L.Queue.audioExtractingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.audioExtracting)
+        case .speechRecognition:
+            if let p = item.progress { return localizer.t(L.Queue.speechRecognizingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.speechRecognizing)
+        case .subtitleSegment:
+            if let p = item.progress { return localizer.t(L.Queue.subtitleSegmentingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.subtitleSegmenting)
+        default:
+            return nil
+        }
+    }
+
+    /// 下载后处理（转码等）文案。
+    private var postDownloadProcessingText: String {
+        switch item.postDownloadProcessingKind {
+        case .transcoding:
+            if let p = item.progress { return localizer.t(L.Queue.transcodingPercent, Int(p * 100)) }
+            return localizer.t(L.Queue.transcoding)
+        case .generic, nil:
+            return (item.statusText ?? localizer.t(L.Queue.processing)) + "…"
+        }
+    }
+
+    /// 用 " · " 拼接 基础文案·速度·剩余。compact（sidebar）模式省略速度与剩余，保持单行。
+    private func withDetails(_ base: String, includeSpeed: Bool = true, compact: Bool) -> String {
+        if compact { return base }
+        var parts = [base]
+        if includeSpeed, let speed = item.speedText, !speed.isEmpty {
+            parts.append(speed)
+        }
+        if let remaining = remainingText {
+            parts.append(remaining)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 剩余时间文案：精确 mm:ss / 约 N 分钟 / 正在估算。与 QueueItemView 的实现一致。
+    private var remainingText: String? {
+        if let seconds = item.remainingSeconds {
+            if item.remainingIsApproximate {
+                return localizer.t(L.Queue.remainingApprox, approximateDurationText(seconds))
+            }
+            return localizer.t(L.Queue.remainingExact, clockDurationText(seconds))
+        }
+        if item.isEstimatingRemaining {
+            return localizer.t(L.Queue.remainingEstimating)
+        }
+        return nil
+    }
+
+    private func clockDurationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+
+    private func approximateDurationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.up)))
+        if total < 60 {
+            return localizer.t(L.Queue.remainingLessThanMinute)
+        }
+        let minutes = Int(ceil(Double(total) / 60.0))
+        if minutes < 60 {
+            return localizer.t(L.Queue.remainingMinutes, minutes)
+        }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return localizer.t(L.Queue.remainingHoursMinutes, hours, rest)
+    }
+}
+
 // MARK: - Sidebar 行
 
 /// 备忘录式列表行：紧凑缩略图 + 标题/状态两级文本 + 右侧进度环 / 完成对勾 / 失败图标。
@@ -199,26 +336,10 @@ private struct QueueSidebarRow: View {
         }
     }
 
-    /// 简化的状态副文（原型阶段：只取每个 stage 的基本文案，不复制完整 statusText 逻辑）。
+    /// 状态副文：复用 `QueueStatusFormatter` 的紧凑口径（保留百分比与阶段，去掉速度/剩余），
+    /// 与 legacy 列表和 detail 的状态文案保持一致，单行 lineLimit 1 不溢出。
     private var statusText: String {
-        if item.isPaused { return localizer.t(L.Queue.paused) }
-        switch item.stage {
-        case .queued:
-            return item.statusText ?? localizer.t(L.Queue.queued)
-        case .downloading:
-            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
-            return localizer.t(L.Queue.downloading)
-        case .translating:
-            return localizer.t(L.Queue.translating)
-        case .burning:
-            return localizer.t(L.Queue.burning)
-        case .done:
-            return item.statusText ?? localizer.t(L.Queue.done)
-        case .cancelled:
-            return item.statusText ?? localizer.t(L.Queue.cancelled)
-        case .failed(let reason):
-            return localizer.t(L.Queue.failedWithReason, reason)
-        }
+        QueueStatusFormatter(item: item, localizer: localizer).compactText
     }
 }
 
@@ -313,18 +434,47 @@ private struct QueueDetailView: View {
         }
     }
 
-    // MARK: 状态行（简化：只显示 stage 基本文案）
+    // MARK: 状态行（复用 QueueStatusFormatter 的丰富文案）+ 进度条
 
     private var statusRow: some View {
-        HStack(spacing: Spacing.md) {
-            statusIcon
-            Text(statusText)
-                .font(.callout)
-                .foregroundStyle(isFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack(spacing: Spacing.md) {
+                statusIcon
+                Text(statusText)
+                    .font(.callout)
+                    .foregroundStyle(isFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            if showsProgressBar {
+                progressBar
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// 非终态（进行中）才显示进度条，与 QueueItemView.showsProgressBar 口径一致。
+    private var showsProgressBar: Bool {
+        switch item.stage {
+        case .queued, .downloading, .translating, .burning:
+            return true
+        case .done, .failed, .cancelled:
+            return false
+        }
+    }
+
+    /// 有 overallProgress 时确定进度，否则 indeterminate；暂停时灰色 tint——与 QueueItemView.progressBar 一致。
+    private var progressBar: some View {
+        Group {
+            if let p = item.overallProgress {
+                ProgressView(value: min(max(p, 0), 1))
+                    .tint(item.isPaused ? .gray : nil)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(item.isPaused ? .gray : nil)
+            }
+        }
     }
 
     @ViewBuilder
@@ -350,25 +500,10 @@ private struct QueueDetailView: View {
         return false
     }
 
+    /// 状态文案：复用 `QueueStatusFormatter` 的完整口径（下载 百分比·速度·剩余、ASR 三子阶段、
+    /// 翻译/烧录/转码%、暂停、done/部分成功、failed 原因），与 legacy 列表保持一致。
     private var statusText: String {
-        if item.isPaused { return localizer.t(L.Queue.paused) }
-        switch item.stage {
-        case .queued:
-            return item.statusText ?? localizer.t(L.Queue.queued)
-        case .downloading:
-            if let p = item.progress { return localizer.t(L.Queue.downloadingPercent, Int(p * 100)) }
-            return localizer.t(L.Queue.downloading)
-        case .translating:
-            return localizer.t(L.Queue.translating)
-        case .burning:
-            return localizer.t(L.Queue.burning)
-        case .done:
-            return item.statusText ?? localizer.t(L.Queue.done)
-        case .cancelled:
-            return item.statusText ?? localizer.t(L.Queue.cancelled)
-        case .failed(let reason):
-            return localizer.t(L.Queue.failedWithReason, reason)
-        }
+        QueueStatusFormatter(item: item, localizer: localizer).detailText
     }
 
     // MARK: 一排功能按钮（复用 QueueManager 操作，真实可用）
