@@ -280,28 +280,39 @@ struct ContentView: View {
     }
 
     private var loadingState: some View {
-        VStack(spacing: 14) {
+        // 与 emptyState 同一套纵向节奏（emptyStack=14）与三级文案层级：
+        // 进度指示 → 主状态文案（稍强权重、实色）→ 副提示（caption、tertiary）。
+        VStack(spacing: Spacing.emptyStack) {
             ProgressView()
                 .controlSize(.large)
                 .accessibilityLabel(model.batchStatusText ?? localizer.t(L.Main.loadingAccessibility))
-            Text(model.batchStatusText ?? localizer.t(L.Main.loading))
-                .foregroundStyle(.secondary)
-            if model.batchStatusText != nil {
-                Text(localizer.t(L.Main.batchAutoQueueHint))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            VStack(spacing: Spacing.sm) {
+                // 主状态文案：向 emptyState 主文案看齐，用 title3 半粗 + 实色，从原本的平铺 secondary 提为主层级。
+                Text(model.batchStatusText ?? localizer.t(L.Main.loading))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                if model.batchStatusText != nil {
+                    // 批量自动排队副提示：caption + tertiary，作为第三级信息克制呈现。
+                    Text(localizer.t(L.Main.batchAutoQueueHint))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
             }
             Button(localizer.t(L.Common.cancel)) {
                 model.cancelParse()
             }
             .buttonStyle(.bordered)
+            .padding(.top, Spacing.xxs)
         }
+        .padding(.horizontal, Spacing.xxxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func choosingState(_ candidates: [VideoCandidate]) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.rowGutter) {
                 Text(localizer.t(L.Main.videoCount, candidates.count))
                     .font(.headline)
                 VStack(spacing: 0) {
@@ -320,20 +331,24 @@ struct ContentView: View {
                 .background(cardBackground)
             }
             .frame(maxWidth: 500)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.bottom, Spacing.xxl)
             .frame(maxWidth: .infinity)
         }
     }
 
     private func candidateRow(_ candidate: VideoCandidate) -> some View {
-        HStack(spacing: 10) {
+        // 与信息卡 / 队列行统一：图标 hierarchical 渲染、标题 .body、detail caption+secondary、
+        // 「标题—副文」行距用 rowTitleGap(5)，与 infoCard 同一节奏。
+        HStack(spacing: Spacing.rowGutter) {
             Image(systemName: icon(for: candidate.kind))
                 .font(.system(size: 16))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(candidate.title)
+                    .font(.body)
                     .lineLimit(2)
                     .help(candidate.title)
                 if let detail = candidate.detail {
@@ -342,13 +357,13 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: Spacing.md)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.rowGutter)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(candidate.title)
@@ -1223,11 +1238,14 @@ struct ContentView: View {
             ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
         return ScrollView {
-            VStack(spacing: 16) {
+            VStack(spacing: Spacing.xl) {
+                // 错误图标：hierarchical 渲染与 emptyState 图标同一手法，让三角形与感叹号形成柔和层次；
+                // orange 语义色保留（区别于空状态的中性 secondary，明确传达「出错」）。
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 40))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.orange)
-                    .padding(.top, 40)
+                    .padding(.top, 40) // 顶部呼吸留白，off-grid 且无对应 token，保留现值不缩窄
                 Text(headline)
                     .font(.headline)
                     .multilineTextAlignment(.center)
@@ -1241,11 +1259,11 @@ struct ContentView: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
+                            .padding(.top, Spacing.xs)
                     }
                     .frame(maxWidth: 420)
                 }
-                HStack(spacing: 10) {
+                HStack(spacing: Spacing.rowGutter) {
                     if model.failedNeedsDependency {
                         Button(localizer.t(L.Dependency.setupMissing)) {
                             model.showDependencySetup = true
@@ -1284,8 +1302,8 @@ struct ContentView: View {
                 }
                 .controlSize(.large)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.bottom, Spacing.xxl)
             .frame(maxWidth: .infinity)
         }
     }
