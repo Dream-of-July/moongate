@@ -8,14 +8,14 @@
         <description>Moongate macOS updates</description>
         <language>zh-cn</language>
         <item>
-            <title>Moongate 0.8.0</title>
-            <link>https://github.com/Dream-of-July/moongate/releases/tag/v0.8.0</link>
-            <sparkle:version>8005</sparkle:version>
-            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <title>Moongate 0.8.2</title>
+            <link>https://github.com/Dream-of-July/moongate/releases/tag/v0.8.2</link>
+            <sparkle:version>8201</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
-            <pubDate>Wed, 24 Jun 2026 06:14:05 +0000</pubDate>
-            <enclosure url="https://github.com/Dream-of-July/moongate/releases/download/v0.8.0/Moongate-macOS-v0.8.0.zip"
-                sparkle:edSignature="nFDzSYee84jfb0rWfnigCucLtukqUJSKPcEeAO3MZFvsKlqxJWntuH5Wo8ytVNs71oeF5ZKnl2JqxnEO7nLDCw==" length="4835983"
+            <pubDate>Fri, 03 Jul 2026 03:15:22 +0000</pubDate>
+            <enclosure url="https://github.com/Dream-of-July/moongate/releases/download/v0.8.2/Moongate-macOS-v0.8.2.zip"
+                sparkle:edSignature="iUHAAGfuZdeomejtb3ECh87/Okmj9HBIb4N44zkzoV+Qy59STMXRhUGLZZQNHgIFhkn0EuIw0Nf/fAQgzAcFBA==" length="5503395"
                 type="application/zip" />
         </item>
     </channel>
