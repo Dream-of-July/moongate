@@ -146,4 +146,104 @@ final class CookieSitesTests: XCTestCase {
         XCTAssertFalse(youtube.contains("stale"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
     }
+
+    // MARK: - 过期 / 会话 cookie（cookieHeader 的时效过滤，安全相关，此前未测）
+
+    /// 已过期的 cookie（expiry <= now）不得进入发往服务器的 Cookie header；
+    /// 未过期的正常保留。此前所有 header 测试都用 9999999999（远期），从未走过期分支。
+    func testCookieHeaderDropsExpiredCookies() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-cookie-expiry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let now = Int(Date().timeIntervalSince1970)
+        let file = dir.appendingPathComponent("site-example.com.txt")
+        try [
+            "# Netscape HTTP Cookie File",
+            ".example.com\tTRUE\t/\tTRUE\t\(now - 3600)\texpired\told",   // 1 小时前过期 → 丢弃
+            ".example.com\tTRUE\t/\tTRUE\t\(now + 3600)\tfresh\tnew",     // 1 小时后过期 → 保留
+        ].joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let header = NetscapeCookieFile.cookieHeader(
+            for: URL(string: "https://example.com/")!, from: file
+        )
+        XCTAssertEqual(header, "fresh=new", "过期 cookie 必须被排除，只发未过期的")
+    }
+
+    /// 全部 cookie 都过期时，header 应为 nil（没有可发送的凭证），而不是空串或过期值。
+    func testCookieHeaderIsNilWhenAllCookiesExpired() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-cookie-allexpired-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let now = Int(Date().timeIntervalSince1970)
+        let file = dir.appendingPathComponent("site-example.com.txt")
+        try [
+            "# Netscape HTTP Cookie File",
+            ".example.com\tTRUE\t/\tTRUE\t\(now - 10)\ta\t1",
+            ".example.com\tTRUE\t/\tTRUE\t\(now - 10)\tb\t2",
+        ].joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        XCTAssertNil(NetscapeCookieFile.cookieHeader(
+            for: URL(string: "https://example.com/")!, from: file
+        ))
+    }
+
+    /// 会话 cookie（expiry 字段为 0）视为无过期时间（expiresEpochSeconds = nil），永不因过期被丢。
+    func testSessionCookieWithZeroExpiryIsNeverDroppedAsExpired() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-cookie-session-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let file = dir.appendingPathComponent("site-example.com.txt")
+        try [
+            "# Netscape HTTP Cookie File",
+            ".example.com\tTRUE\t/\tTRUE\t0\tsession\tkeep",  // expiry 0 = 会话 cookie
+        ].joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        // read 应把 expiry 0 解析成 nil（无过期时间）。
+        let records = try NetscapeCookieFile.read(from: file)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNil(records[0].expiresEpochSeconds, "expiry 0 应解析为 nil（会话 cookie，无过期时间）")
+
+        // header 不应因“过期”丢掉会话 cookie。
+        let header = NetscapeCookieFile.cookieHeader(
+            for: URL(string: "https://example.com/")!, from: file
+        )
+        XCTAssertEqual(header, "session=keep")
+    }
+
+    /// write→read 往返：会话 cookie（isSessionOnly）写出 expiry 0，读回为 nil；
+    /// 带过期日期的 cookie 写出正整数，读回原值。
+    func testWriteReadRoundTripPreservesExpirySemantics() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moongate-cookie-roundtrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let futureDate = Date(timeIntervalSince1970: 4_000_000_000)
+        let persistent = HTTPCookie(properties: [
+            .domain: ".example.com", .path: "/", .name: "persist", .value: "1",
+            .secure: "TRUE", .expires: futureDate,
+        ])!
+        let session = HTTPCookie(properties: [
+            .domain: ".example.com", .path: "/", .name: "sess", .value: "2",
+            .secure: "TRUE",  // 无 .expires → 会话 cookie
+        ])!
+
+        let file = dir.appendingPathComponent("site-example.com.txt")
+        try NetscapeCookieFile.write(cookies: [persistent, session], to: file)
+        let records = try NetscapeCookieFile.read(from: file)
+
+        let byName = Dictionary(uniqueKeysWithValues: records.map { ($0.name, $0) })
+        // 持久 cookie 写出正整数 expiry、读回为正（HTTPCookie 可能对远期日期做上限钳制，
+        // 故只断言“有正过期时间”而非精确值）；会话 cookie 往返后仍为 nil。
+        let persistExpiry = try XCTUnwrap(byName["persist"]?.expiresEpochSeconds)
+        XCTAssertGreaterThan(persistExpiry, Int(Date().timeIntervalSince1970),
+                             "持久 cookie 往返后应保留一个未来的过期时间")
+        XCTAssertNil(byName["sess"]?.expiresEpochSeconds, "会话 cookie 往返后仍应是 nil（无过期）")
+    }
 }
