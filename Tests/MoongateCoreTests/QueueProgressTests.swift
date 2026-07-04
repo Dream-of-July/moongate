@@ -188,4 +188,37 @@ final class QueueProgressTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot.remainingSeconds), 443, accuracy: 0.0001)
         XCTAssertFalse(snapshot.isEstimatingRemaining)
     }
+
+    // MARK: - normalizedFraction 钳制（进度条永不越界/不显示 NaN）
+
+    func testNormalizedFractionClampsAndRejectsNonFinite() {
+        // nil / 非有限（NaN/Inf）→ nil（不喂给进度条）。
+        XCTAssertNil(QueueProgressEstimator.normalizedFraction(nil))
+        XCTAssertNil(QueueProgressEstimator.normalizedFraction(Double.nan))
+        XCTAssertNil(QueueProgressEstimator.normalizedFraction(Double.infinity))
+        XCTAssertNil(QueueProgressEstimator.normalizedFraction(-Double.infinity))
+        // 越界钳到 [0,1]，防止进度条显示负值或 >100%。
+        XCTAssertEqual(try XCTUnwrap(QueueProgressEstimator.normalizedFraction(-0.5)), 0, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(QueueProgressEstimator.normalizedFraction(1.5)), 1, accuracy: 1e-9)
+        // 区间内原样。
+        XCTAssertEqual(try XCTUnwrap(QueueProgressEstimator.normalizedFraction(0.42)), 0.42, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(QueueProgressEstimator.normalizedFraction(0)), 0, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(QueueProgressEstimator.normalizedFraction(1)), 1, accuracy: 1e-9)
+    }
+
+    // MARK: - parseEtaSeconds 畸形输入（只接受 mm:ss / hh:mm:ss 的整数分段）
+
+    func testParseEtaSecondsRejectsMalformedInput() {
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds(nil))
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds(""))
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("   "))
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("N/A"))
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("45"))          // 单段（无冒号）不接受
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("1:2:3:4"))     // 4 段不接受
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("aa:bb"))       // 非整数段
+        XCTAssertNil(QueueProgressEstimator.parseEtaSeconds("1:2.5"))       // 小数段（Int 解析失败）
+        // 合法：mm:ss / hh:mm:ss（含前后空白被 trim）。
+        XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds(" 02:00 "), 120)
+        XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds("00:00"), 0)
+    }
 }
