@@ -218,3 +218,24 @@ Windows 去重命名 + 翻译超限/拆分已补 6 测试对等 macOS（visibili
 ### 停机依据（本维度）
 Cookie 时效过滤（过期丢弃 / 会话保留）双端补齐测试对等 + mutation 验证；清理、迁移、登录态判定经审查健康。过期 jar 的下载安全由 yt-dlp 工具层兜底。登录状态行「按文件存在显示」是 UX 诚实性取舍，需七月决策后才改（触发面变更），已证据化不自主动。
 
+## 十六、进度 / ETA / QueueProgress / 失败恢复提示边界
+只读审查长任务（下载/字幕/转写/翻译/压制）的 pending/running/paused/cancelled/failed/partial 状态是否给清晰、不过度承诺的进度与恢复提示；ETA 不可信时是否降级为稳定文案；失败恢复是否有测试。**双端补齐 ETA 降级边界测试（此前只测 happy path），核心确认健康。**
+
+### 16.1 ✅ ETA 估算降级边界测试（macOS `c8134c1` +6 / Windows `260f0e0` +1×多断言）
+- `estimatedRemainingSeconds`/`EstimatedRemainingSeconds` 决定 UI 显示「剩余时间数字」还是降级为「正在估算」：可信 source ETA 优先（精确）、拒非法 ETA（负/非有限）、太早(<3s)/进度过小(<3%)/已完成 → nil。**双端此前只测了 happy 自估算路径，所有 nil/降级 guard 未覆盖**。
+- 补：source ETA 精确采用、ETA=0 合法精确、非法 ETA 拒后回落斜率、太早/进度过小/完成/缺失→nil。macOS 的 minimumProgress guard 经 mutation 验证。macOS 795 + Windows 820 全绿。
+
+### 16.2 确认健康（未改）
+- **UI 降级链稳定**：`remainingSeconds` 有值→精确/约数文案；否则 `isEstimatingRemaining`→「正在估算」；否则空。三级降级由 `QueueItemView.remainingText` 承载，boundary 测试已守护 `remainingApprox`/`remainingEstimating`。不显示不可信数字。
+- **进度钳制**：`normalizedFraction` 拒 NaN/∞、钳 [0,1]（既有测试守护），进度条不会负值或 >100%。`taskOverallProgress` 单调不回退（`max(previous, computed)`）。
+- **队列聚合**：`queueSnapshot` 终态按 1 计、开放项取最长已知剩余、无采样时保持 estimating——既有测试覆盖。
+- **失败恢复有测试**：pause/resume 槽位不误放（`testPauseDoesNotReleaseTranslationSlot` 等）、retry-with-localASR 复用已生成 SRT、登录类失败的「登录并重试」（SplitLayout boundary + MacOSLogin boundary）。retry/cancel/pause/resume/loginAndRetry 路径均有守护。
+- **通知不过度承诺**：完成通知仅在「全部终态且≥1 成功」时发（`guard !completedItems.isEmpty`）——**全失败批次不发「完成」通知**（失败在队列内可见+带重试按钮，不谎报成功）；partialFailure 数进通知体（「N 个任务需要重试字幕处理」）。coalescing 机制有 boundary 测试守护。
+
+### 16.3 记录（非缺陷 / 需重构，未做）
+- **通知标题/正文文案逻辑**（`SystemQueueCompletionNotifier.title(for:)`/`body(for:)`）是 `QueueCompletionNotification` 纯函数，但在 App target（不可 @testable import），只有 coalescing 的源码扫描 boundary 测试，无 title/body 文案直测。想直测需下沉到 Core（同 StageSlotPool/CredentialMasking 模式）——中等重构，本轮按边界不做，记录为候选。
+- **单条完成即 partialFailure 时**通知标题仍「下载完成」+ 正文显示视频标题（不单独标注部分失败）。属轻微，且队列项本身有 partialFailure 视觉 + 重试按钮，通知只是补充。非缺陷。
+
+### 停机依据（本维度）
+ETA 降级边界双端补齐测试（含 mutation 验证）。UI 三级降级、进度钳制、队列聚合、失败恢复、通知不谎报成功——经代码级审查 + 既有测试确认健康。通知文案直测需 Core 下沉（中等重构，记录候选，不自主做）。
+
