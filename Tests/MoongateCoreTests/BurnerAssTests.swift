@@ -257,6 +257,22 @@ final class BurnerAssTests: XCTestCase {
         XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明 &H00000000：\(styleLine)")
     }
 
+    func testMakeASSBilingualSourceLineInheritsColorViaAlphaOnly() {
+        // 双语条目的原文行只用 {\fs..\alpha..} 覆盖字号/透明度，不硬编码颜色 → 颜色继承 Style 的
+        // PrimaryColour。黄色时译文与原文都应是黄色（无 \c / \1c 覆盖会把原文行拉回白色）。
+        // 这条防回归：若有人给原文行加了 \c 颜色覆盖，黄色字幕的原文行会静默变白。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "你好世界\nhello world")
+        ], primaryColorBGRHex: "00FFFF")
+        guard let dialogue = ass.split(separator: "\n").first(where: { $0.hasPrefix("Dialogue:") }).map(String.init) else {
+            return XCTFail("应有 Dialogue 行：\(ass)")
+        }
+        // 原文行的行内覆盖块应只含 \fs 与 \alpha，不含颜色覆盖 \c / \1c。
+        XCTAssertTrue(dialogue.contains("\\alpha&H"), "双语原文行应有 \\alpha 透明度覆盖：\(dialogue)")
+        XCTAssertFalse(dialogue.contains("\\c&H"), "原文行不应硬编码颜色覆盖 \\c（否则不继承黄色）：\(dialogue)")
+        XCTAssertFalse(dialogue.contains("\\1c&H"), "原文行不应硬编码颜色覆盖 \\1c：\(dialogue)")
+    }
+
     func testMakeASSDefaultColorStaysWhiteForBackwardCompatibility() {
         // 不传颜色（默认）：Style 行仍为白色 &H0AFFFFFF，老用户零变化。
         let ass = FFmpegBurner.makeASS(cues: [
