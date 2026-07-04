@@ -549,4 +549,32 @@ public class EncoderSelectionTests
         Assert.Equal("copy", chain[1][1]);
     }
 
+    // SRT 兜底路径（parseSRT 返回空时）也应应用字幕外观设置，与 macOS 对齐。
+    [Fact]
+    public void SrtForceStyleFallback_AppliesAppearanceSettings()
+    {
+        // 大号(1.24)+顶部(8)+黄色(00FFFF)：force_style 带缩放字号、Alignment=8、黄色 PrimaryColour。
+        var filter = FFmpegBurner.SrtForceStyleFilter(1.24, 8, "00FFFF");
+        Assert.Contains("FontSize=19", filter); // 15 * 1.24 = 18.6 → 19
+        Assert.Contains("Alignment=8", filter);
+        Assert.Contains("PrimaryColour=&H0000FFFF", filter);
+    }
+
+    [Fact]
+    public void SrtForceStyleFallback_DefaultsMatchLegacy()
+    {
+        var filter = FFmpegBurner.SrtForceStyleFilter(1.0, 2, "FFFFFF");
+        Assert.Contains("FontSize=15", filter);
+        Assert.Contains("Alignment=2", filter);
+        Assert.Contains("PrimaryColour=&H00FFFFFF", filter);
+    }
+
+    [Fact]
+    public void SrtForceStyleFallback_ClampsInvalidScale()
+    {
+        // 非法倍率（0）回落 1.0，字号仍 15。
+        var filter = FFmpegBurner.SrtForceStyleFilter(0, 2, "FFFFFF");
+        Assert.Contains("FontSize=15", filter);
+    }
+
 }

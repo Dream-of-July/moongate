@@ -350,12 +350,9 @@ public sealed class FFmpegBurner : ISubtitleBurner
             string subtitleFilter;
             if (cues.Count == 0)
             {
-                // 解析不出来就按原样走 SRT + force_style 的老路。
-                // 外观设置也带上：字号按倍率缩放（下限 8）、Alignment 用位置、PrimaryColour 用颜色（ASS BGR，&H 前缀）。
+                // 解析不出来就按原样走 SRT + force_style 的老路。外观设置也带上（见 SrtForceStyleFilter）。
                 File.Copy(subtitle, Path.Combine(tempDir, "subs.srt"));
-                var forcedSize = Math.Max(8, (int)Math.Round(15 * (double.IsFinite(fontScale) && fontScale > 0 ? fontScale : 1.0), MidpointRounding.AwayFromZero));
-                subtitleFilter = "subtitles=subs.srt:force_style="
-                    + $"'FontName={ChineseFontName},FontSize={forcedSize},PrimaryColour=&H00{primaryColorBgrHex},Alignment={alignment},Outline=1,Shadow=0,MarginV=20'";
+                subtitleFilter = SrtForceStyleFilter(fontScale, alignment, primaryColorBgrHex);
             }
             else
             {
@@ -727,6 +724,22 @@ public sealed class FFmpegBurner : ISubtitleBurner
             var latinCapacity = (int)(usableWidth / (OriginalSize * 0.55));
             LatinWrapCapacity = latinCapacity >= 12 ? latinCapacity : null;
         }
+    }
+
+    /// <summary>
+    /// SRT 解析不出 cue 时的兜底 ffmpeg 字幕滤镜（subtitles=subs.srt:force_style=...）。
+    /// 把用户的字幕外观设置带上——字号按倍率缩放（基准 15，下限 8，非有限/非正回落 1.0）、
+    /// Alignment 用位置、PrimaryColour 用颜色（&H00 前缀 + BGR）。抽成纯函数以便单测，
+    /// 与 macOS 的 srtForceStyleFilter 对齐，防止这条罕见路径再次静默丢弃外观设置。
+    /// </summary>
+    internal static string SrtForceStyleFilter(double fontScale, int alignment, string primaryColorBgrHex)
+    {
+        var safeScale = double.IsFinite(fontScale) && fontScale > 0 ? fontScale : 1.0;
+        var forcedSize = Math.Max(8, (int)Math.Round(15 * safeScale, MidpointRounding.AwayFromZero));
+        return "subtitles=subs.srt:force_style="
+            + $"'FontName={ChineseFontName},FontSize={forcedSize},"
+            + $"PrimaryColour=&H00{primaryColorBgrHex},Alignment={alignment},"
+            + "Outline=1,Shadow=0,MarginV=20'";
     }
 
     /// <summary>
