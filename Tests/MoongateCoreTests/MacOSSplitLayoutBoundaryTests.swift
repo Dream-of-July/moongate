@@ -49,6 +49,18 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.shared.open("))
     }
 
+    /// 登录类失败项必须在 detail 提供「登录并重试」恢复入口（与 legacy 队列一致），
+    /// 否则用户无法从三栏恢复登录门失败——完整性守护。
+    func testFailedLoginItemExposesLoginRecovery() throws {
+        let source = try splitLayoutSource()
+        XCTAssertTrue(source.contains("item.needsLogin"),
+                      "failed 分支应根据 needsLogin 决定是否显示登录入口")
+        XCTAssertTrue(source.contains("L.Queue.loginAndRetry"),
+                      "登录类失败应显示「登录并重试」按钮")
+        XCTAssertTrue(source.contains("onLogin("),
+                      "登录按钮应调用 onLogin 闭包（外层 wire 到 model.openLoginForQueueItem）")
+    }
+
     /// "添加"是真实流程：走 model.addTasks（复用批量自动入队），非占位。
     func testAddSheetWiresToRealAddTasks() throws {
         let source = try splitLayoutSource()

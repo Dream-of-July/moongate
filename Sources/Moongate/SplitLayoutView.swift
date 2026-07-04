@@ -190,7 +190,9 @@ struct SplitLayoutView: View {
     @ViewBuilder
     private var detail: some View {
         if let id = selectedItemID, let item = queue.items.first(where: { $0.id == id }) {
-            QueueDetailView(item: item, queue: queue)
+            QueueDetailView(item: item, queue: queue) { site, loginURL in
+                model.openLoginForQueueItem(site: site, loginURL: loginURL)
+            }
         } else {
             detailEmptyState
         }
@@ -427,6 +429,8 @@ private struct QueueSidebarRow: View {
 private struct QueueDetailView: View {
     let item: QueueManager.QueueItem
     @ObservedObject var queue: QueueManager
+    /// 登录类失败项点「登录并重试」：把站点 + 登录起始 URL 交给外层打开登录窗（与 legacy 队列一致）。
+    var onLogin: (_ site: String, _ loginURL: URL?) -> Void = { _, _ in }
     @EnvironmentObject private var localizer: Localizer
     @State private var descriptionExpanded = false
 
@@ -607,6 +611,12 @@ private struct QueueDetailView: View {
                 }
                 actionButton("trash", title: localizer.t(L.Queue.remove), role: .destructive) { queue.remove(item.id) }
             case .failed:
+                // 登录类失败：给「登录并重试」入口（与 legacy 队列一致），否则用户无法从三栏恢复登录门失败。
+                if let prompt = item.needsLogin {
+                    actionButton("person.crop.circle.badge.plus", title: localizer.t(L.Queue.loginAndRetry)) {
+                        onLogin(prompt.site, prompt.loginURL)
+                    }
+                }
                 actionButton("arrow.clockwise", title: localizer.t(L.Queue.retryTask)) { queue.retry(item.id) }
                 actionButton("trash", title: localizer.t(L.Queue.remove), role: .destructive) { queue.remove(item.id) }
             case .cancelled:
