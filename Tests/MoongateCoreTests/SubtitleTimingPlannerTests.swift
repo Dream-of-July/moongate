@@ -120,4 +120,24 @@ final class SubtitleTimingPlannerTests: XCTestCase {
         // CJK 少于 minWidth：3 个 CJK 字符 → maxReadableParts = max(1, 3/4=0) = 1。
         XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "我们继", requestedParts: 4), 1)
     }
+
+    // MARK: - shouldBorrowBoundaryForHandoff 边界（冒号/分号交接借帧）
+
+    func testShouldBorrowBoundaryForHandoff() {
+        // 前句以冒号/分号结尾（半角+全角）且后句非空 → 借帧。
+        XCTAssertTrue(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "他说：", nextText: "明天出发"))
+        XCTAssertTrue(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "Note:", nextText: "the plan"))
+        XCTAssertTrue(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "list;", nextText: "next"))
+        XCTAssertTrue(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "清单；", nextText: "下一项"))
+        // 冒号后跟允许的收尾符（引号）仍算冒号结尾（lastMeaningfulCharacter 跳过引号）。
+        XCTAssertTrue(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "he said:\"", nextText: "go"))
+        // 后句为空 / 纯空白 → 不借帧。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "Note:", nextText: ""))
+        XCTAssertFalse(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "Note:", nextText: "   "))
+        // 前句非冒号/分号结尾（句号/普通词）→ 不借帧。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "The end.", nextText: "next"))
+        XCTAssertFalse(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "hello", nextText: "world"))
+        // 前句无有意义字符（空/纯符号）→ 不借帧。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldBorrowBoundaryForHandoff(previousText: "  ", nextText: "next"))
+    }
 }
