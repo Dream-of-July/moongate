@@ -321,6 +321,86 @@ final class LocalASRConfidenceTests: XCTestCase {
         XCTAssertEqual(LocalASRConfidence.stretchedCJKLowProbabilityCeiling, try doubleValue("stretchedCJKLowProbabilityCeiling"))
     }
 
+    // MARK: - 假阳性防护边界（autoLanguageMismatch / nearEmpty 的否定分支）
+    // 这些判据一旦误报会把正常字幕标成低质量，负面用户可见。钉住"不该触发"的边界。
+
+    func testExplicitLanguageDoesNotTriggerAutoLanguageMismatch() {
+        // requested 是显式语言(en，非 auto) + CJK hint + detected 不同：autoLanguageMismatch 的
+        // isAutoLanguage 项为假 → 不应触发。这是 R4 语言标签修复的场景（显式语言不算 mismatch，
+        // 命名校正走另一路径），防止显式选语言的用户被误标低质量。
+        let segments = [
+            ASRSegment(text: "hello there friend", startSeconds: 0, endSeconds: 2),
+            ASRSegment(text: "how are you today", startSeconds: 3, endSeconds: 5),
+            ASRSegment(text: "nice to meet you", startSeconds: 6, endSeconds: 8),
+        ]
+        let words = segments.map {
+            ASRWord(text: $0.text, startSeconds: $0.startSeconds, endSeconds: $0.endSeconds, probability: 0.95)
+        }
+        let summary = LocalASRConfidence.assess(
+            words: words, segments: segments,
+            languageCode: "en", requestedLanguageCode: "en", languageHintCode: "ja")
+        XCTAssertFalse(summary.qualityIssues.contains("autoLanguageMismatch"),
+                      "显式语言(非auto)不应触发 autoLanguageMismatch")
+    }
+
+    func testAutoWithMatchingDetectedLanguageDoesNotTriggerMismatch() {
+        // auto + ja hint + detected ja（匹配）：detected == hint → 不应触发。
+        let segments = [
+            ASRSegment(text: "こんにちは今日はいい天気ですね", startSeconds: 0, endSeconds: 2),
+            ASRSegment(text: "散歩に行きましょうか", startSeconds: 3, endSeconds: 5),
+            ASRSegment(text: "とても気持ちがいいです", startSeconds: 6, endSeconds: 8),
+        ]
+        let words = segments.map {
+            ASRWord(text: $0.text, startSeconds: $0.startSeconds, endSeconds: $0.endSeconds, probability: 0.95)
+        }
+        let summary = LocalASRConfidence.assess(
+            words: words, segments: segments,
+            languageCode: "ja", requestedLanguageCode: "auto", languageHintCode: "ja")
+        XCTAssertFalse(summary.qualityIssues.contains("autoLanguageMismatch"),
+                      "detected 与 hint 一致时不应触发 mismatch")
+    }
+
+    func testAutoWithNonCJKHintDoesNotTriggerMismatch() {
+        // auto + en hint（非 CJK）+ detected fr：isCJKLanguage(hint) 为假 → 不应触发
+        // （该判据只针对 CJK hint 场景，避免对拉丁语系间的差异误报）。
+        let segments = [
+            ASRSegment(text: "bonjour tout le monde", startSeconds: 0, endSeconds: 2),
+            ASRSegment(text: "comment allez vous", startSeconds: 3, endSeconds: 5),
+            ASRSegment(text: "il fait beau aujourd hui", startSeconds: 6, endSeconds: 8),
+        ]
+        let words = segments.map {
+            ASRWord(text: $0.text, startSeconds: $0.startSeconds, endSeconds: $0.endSeconds, probability: 0.95)
+        }
+        let summary = LocalASRConfidence.assess(
+            words: words, segments: segments,
+            languageCode: "fr", requestedLanguageCode: "auto", languageHintCode: "en")
+        XCTAssertFalse(summary.qualityIssues.contains("autoLanguageMismatch"),
+                      "非 CJK hint 不应触发 mismatch")
+    }
+
+    func testThreeMeaningfulCharsIsNotNearEmpty() {
+        // near-empty 判据是 单段 且 meaningfulScalars <= 2。3 个有意义字符（单段）在上边界之外 → 不near-empty。
+        let segments = [ASRSegment(text: "你好吗", startSeconds: 0.4, endSeconds: 1.53)]
+        let summary = LocalASRConfidence.assess(
+            words: [], segments: segments,
+            languageCode: "zh", requestedLanguageCode: "zh", languageHintCode: "zh")
+        XCTAssertFalse(summary.qualityIssues.contains("nearEmptyTranscript"),
+                      "3 个有意义字符（>2）不应判为 near-empty")
+    }
+
+    func testMultipleSegmentsAreNotNearEmptyEvenIfEachShort() {
+        // near-empty 要求 segments.count == 1。两段（即便每段仅 1 字）→ 不near-empty。
+        let segments = [
+            ASRSegment(text: "あ", startSeconds: 0.4, endSeconds: 1.0),
+            ASRSegment(text: "い", startSeconds: 1.2, endSeconds: 1.8),
+        ]
+        let summary = LocalASRConfidence.assess(
+            words: [], segments: segments,
+            languageCode: "ja", requestedLanguageCode: "ja", languageHintCode: "ja")
+        XCTAssertFalse(summary.qualityIssues.contains("nearEmptyTranscript"),
+                      "多段（count!=1）不应判为 near-empty，即便每段很短")
+    }
+
     private func loadFixtureSection(_ section: String) throws -> [String: Any] {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
