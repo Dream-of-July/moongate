@@ -102,6 +102,25 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "三栏应展示添加结果摘要 enqueueNotice（含无效/失败/重复反馈）")
     }
 
+    /// 状态文案一致性：三栏的 QueueStatusFormatter 是 legacy QueueItemView.statusText 的等价重写
+    /// （legacy 的是 private 无法复用）。两份手维护副本有漂移风险——给 legacy 加了 stage/phase 文案却
+    /// 忘了同步 formatter，三栏用户就会看到过时状态。守护两处引用完全相同的 L.Queue.* 状态 key 集合，
+    /// 任一处新增/删除 key 未同步即失败。
+    func testStatusFormatterKeySetMatchesLegacyStatusText() throws {
+        let formatter = try splitLayoutSource()
+        let legacy = try queueItemViewSource()
+        // formatter 的状态文案实现区（statusText/localASRProgressText/postDownloadProcessingText/remainingText/approximateDurationText）。
+        let formatterKeys = queueStatusKeys(in: try XCTUnwrap(
+            slice(formatter, from: "private func statusText(compact: Bool)", to: "// MARK: - Sidebar 行")))
+        // legacy 的对应实现区（statusText 到 approximateDurationText，止于其后的 isFailed）。
+        let legacyKeys = queueStatusKeys(in: try XCTUnwrap(
+            slice(legacy, from: "private var statusText: String", to: "private var isFailed: Bool")))
+        XCTAssertFalse(formatterKeys.isEmpty, "应能从 formatter 区解析出 L.Queue.* 状态 key")
+        XCTAssertEqual(formatterKeys, legacyKeys,
+                       "三栏 QueueStatusFormatter 与 legacy statusText 引用的 L.Queue.* 状态 key 集合必须一致；" +
+                       "差异=\(formatterKeys.symmetricDifference(legacyKeys).sorted())")
+    }
+
     /// 可访问性：装饰性图标 hidden、行/详情合并为可读元素、播放/添加按钮有 label。
     func testSplitLayoutAccessibility() throws {
         let source = try splitLayoutSource()
@@ -111,6 +130,39 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
     }
 
     // MARK: - helpers（与其它 boundary 测试同款）
+
+    private func queueItemViewSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources").appendingPathComponent("Moongate")
+            .appendingPathComponent("QueueItemView.swift"))
+    }
+
+    /// 从 source 截取 [from, to) 之间的片段（找不到边界返回 nil）。
+    private func slice(_ source: String, from: String, to: String) -> String? {
+        guard let start = source.range(of: from) else { return nil }
+        let tail = source[start.lowerBound...]
+        guard let end = tail.range(of: to) else { return String(tail) }
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// 解析片段里所有 L.Queue.<key> 引用，去重成集合。
+    private func queueStatusKeys(in fragment: String) -> Set<String> {
+        var keys = Set<String>()
+        var search = fragment.startIndex
+        let marker = "L.Queue."
+        while let range = fragment.range(of: marker, range: search..<fragment.endIndex) {
+            var cursor = range.upperBound
+            var name = ""
+            while cursor < fragment.endIndex, fragment[cursor].isLetter || fragment[cursor].isNumber {
+                name.append(fragment[cursor])
+                cursor = fragment.index(after: cursor)
+            }
+            if !name.isEmpty { keys.insert(name) }
+            search = cursor
+        }
+        return keys
+    }
+
 
     private func splitLayoutSource() throws -> String {
         try String(contentsOf: packageRoot()
