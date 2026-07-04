@@ -45,6 +45,6 @@
 ### 3.3 队列并发边界 —— 健康，但有一处已记录的测试覆盖限制
 - **逻辑正确**：pause/resume/cancel、代际（generation）守卫、槽位释放顺序均有源码扫描测试守护（`testPauseDoesNotReleaseTranslationSlot`、`testPauseResumeReportSuccessAndConfirmPauseBeforeReleasingSlot` 等）；`StageSlotPool.acquire` 用 `withCheckedContinuation` 挂起等待、`release/wakeAll` 唤醒，是正确的 async 信号量（非忙等，见第二节）。
 - **覆盖限制（已诊断根因，不自主修）**：`StageSlotPool` 这个 async 信号量原语**只有"按检查"和源码扫描测试，没有行为单测**（实际 acquire N / 阻塞 N+1 / release 唤醒）。根因：它位于 `Moongate`（App 可执行 target），而 SwiftPM **可执行 target 无法被其它 target `@testable import`**——这正是队列 boundary 测试读源码文本而非 import 的原因。
-  - **为何不自主修**：让它可行为测试需把 `StageSlotPool` 移到 `MoongateCore` 库 target。这是对**关键并发原语的重构**，有回归风险，超出"低风险文档/测试补充"范围，触及"不改变现有行为"的谨慎线。
-  - **给七月的可执行建议（非本轮）**：若要补行为测试，可把 `StageSlotPool`（连同 `TaskControlToken` 等纯并发原语）下沉到 MoongateCore，再在 MoongateCoreTests 写确定性并发测试（acquire 占满→下一个 await 挂起→release 后被唤醒→容量调大 wakeAll 重竞争）。属结构性改动，建议独立小分支 + 全量回归。
+  - **✅ 已解决（后续 commit）**：复核依赖后确认这是零逻辑的纯迁移（StageSlotPool 只依赖 TaskControlToken + MoongateError，均已在 MoongateCore；只被 QueueManager 引用），已下沉到 `Sources/MoongateCore/StageSlotPool.swift` 并补 5 个行为单测（`StageSlotPoolTests`）。原判"有回归风险"过度保守——实为可安全自主的关系解耦。build + 725 测试全绿。
+  - ~~给七月的可执行建议（非本轮）~~：已自主完成，无需七月决策。
 
