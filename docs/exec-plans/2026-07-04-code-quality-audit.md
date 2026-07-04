@@ -77,3 +77,12 @@
 - **本分支已修的低风险缺口**（测试守护为主）：StageSlotPool 行为测试、SplitLayout/VideoThumbnail boundary、iconButton a11y label、颜色继承 guard、双端 fallback 可测化、Windows 三语键集守护、语言标签/ai- 前缀双端修复、字幕外观三设置双端对等等。
 - **剩余均为需七月决策或有回归风险的项**（已证据化，不自主做）：基准字号 13/15 对齐、Bilibili 探测 port Windows、readability eval 双语口径修正（动基线）、平台字幕可读性提示（动 timingWarning 触发面）、CHANGELOG/发布、三栏设默认、队列持久化/续传、QueueStatusFormatter dedup。
 - 停机依据：可自主、可验证、不改现有行为/基线的缺口已基本清空；继续深挖要么触碰上述决策项，要么是边际递减的重复确认。
+
+## 八、三栏 done 态动作对等复核（commit 62-64 新代码审查）
+只读复核最新三个 commit（62 画质边界测试 / 63 三栏 done 态动作对齐 legacy / 64 三栏添加反馈条）的正确性与覆盖：
+- **✅ 已自主修的覆盖缺口**：commit 63（084768a）给三栏 detail 补了 done 态的 `retrySubtitle`（部分成功）+ `waveform` 本地 ASR 重识别，但未加测试守护——原 `testDetailReusesProgressRingAndRealQueueOperations` 只断言 pause/resume/cancel/retry/remove/reveal。已补 `testDoneStateActionsMatchLegacyQueue` 守护两个新动作 + 其 guard 条件（partialFailure；canRetryWithLocalASR + hasLocalASRGenerator 双重守护）+ 文案 key。SplitLayout 套件 8 绿（原 7）。
+- **⚠️ 一处行为差异（需七月定，未自主改）**：**waveform 本地 ASR 重识别按钮的显示条件两端不一致**。
+  - **legacy**（QueueSectionView:62-63 → QueueItemView:383）：只要 `canRetryWithLocalASR`（done + 有视频产物）就**显示**按钮，`hasLocalASRGenerator` 仅切换 **hint 文案**（就绪 vs「去设置里配置本地识别」），即未配置本地引擎时按钮仍在，点了引导去配置。
+  - **三栏**（SplitLayoutView:649）：额外要求 `queue.hasLocalASRGenerator` 才显示，未配置时**整颗按钮隐藏**。
+  - **判断**：三栏行为**UX 上更干净**（不给一颗点了才发现没配置的「死按钮」），但与 commit 63「matches legacy across all stages」的措辞不符，且两端不一致。两种都合理，取舍是产品决策：(a) 统一到 legacy「常显 + 引导配置」——可发现性强，但有一次无效点击；(b) 统一到三栏「配置后才显」——干净，但用户不知道有此功能。**flag 默认关，无用户影响，不自主改**，记录供七月定方向后双端对齐。
+
