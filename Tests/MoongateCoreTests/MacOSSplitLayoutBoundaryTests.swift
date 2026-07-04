@@ -49,6 +49,17 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.shared.open("))
     }
 
+    /// playableVideo（播放叠层资格）必须复用 QueueManager.videoExtensions 单一来源，
+    /// 与 canRetryWithLocalASR 的资格判定同集合。此前它内联了一份重复的扩展名字面量集合——
+    /// 若 QM 的集合新增扩展名，两处会对同一文件给出不一致判断（可重识别但无播放叠层）。
+    func testPlayableVideoReusesQueueManagerExtensionSet() throws {
+        let source = try splitLayoutSource()
+        XCTAssertTrue(source.contains("QueueManager.videoExtensions.contains("),
+                      "playableVideo 应复用 QueueManager.videoExtensions，而非内联副本")
+        XCTAssertFalse(source.contains("[\"mp4\", \"mov\", \"mkv\""),
+                       "不应再内联视频扩展名字面量集合（已收敛到 QueueManager.videoExtensions 单一来源）")
+    }
+
     /// done 态动作集必须与 legacy 队列对等（commit 084768a 补齐）：
     /// partialFailure→重跑字幕(retry)、完成视频+本地生成器就绪→本地 Whisper 重识别(retryWithLocalASR)、
     /// 有产物→在 Finder 显示、始终可移除。此前 detail 的 .done 只有 reveal/remove，是完整性缺口。

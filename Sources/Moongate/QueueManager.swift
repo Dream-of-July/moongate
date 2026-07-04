@@ -225,7 +225,9 @@ final class QueueManager: ObservableObject {
     private var notifiedTerminalIDs = Set<UUID>()
 
     /// 视频文件后缀（用于在产物里识别可烧录的视频）
-    private static let videoExtensions: Set<String> = [
+    /// 可播放/可本地重识别判定共用的视频扩展名集合。非 private 以便同 target 的三栏预览
+    /// （SplitLayoutView.playableVideo）复用同一份来源，避免两处副本漂移（播放叠层与重识别资格判定不一致）。
+    static let videoExtensions: Set<String> = [
         "mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts",
     ]
 

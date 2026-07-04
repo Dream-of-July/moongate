@@ -470,10 +470,12 @@ private struct QueueDetailView: View {
     @State private var descriptionExpanded = false
 
     /// done 态下第一个可播放的视频产物（供预览框播放叠层）。
+    /// 复用 QueueManager.videoExtensions 单一来源，与 canRetryWithLocalASR 的资格判定同集合，避免漂移。
     private var playableVideo: URL? {
         guard case .done = item.stage else { return nil }
-        let videoExtensions: Set<String> = ["mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts"]
-        return item.resultFiles.first { videoExtensions.contains($0.pathExtension.lowercased()) }
+        return item.resultFiles.first {
+            QueueManager.videoExtensions.contains($0.pathExtension.lowercased())
+        }
     }
 
     var body: some View {
