@@ -604,6 +604,16 @@ public enum SubtitlePosition: String, Codable, Sendable, CaseIterable {
     public var assAlignment: Int { self == .bottom ? 2 : 8 }
 }
 
+/// 烧录字幕译文颜色。作用于 ASS Style 的 PrimaryColour（译文与原文统一色），
+/// 黑色描边始终不变以保可读性。白=当前默认（现状），黄=深色画面上更醒目的 CJK 常见偏好。
+/// 分层约束：本枚举位于 Core，只提供 ASS 颜色值；预览用的 SwiftUI.Color 映射放在 UI 层。
+public enum SubtitleColor: String, Codable, Sendable, CaseIterable {
+    case white, yellow
+    /// ASS PrimaryColour 的 RGB 部分（ASS 用 BGR 字节序，十六进制，不含 alpha 与 &H 前缀）。
+    /// 白=FFFFFF；黄=RGB(255,255,0)→BGR 字节 00(B) FF(G) FF(R)→"00FFFF"。
+    public var assBGRHex: String { self == .white ? "FFFFFF" : "00FFFF" }
+}
+
 /// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
 public struct SubtitleCueSourceFragment: Sendable {
     public let startSeconds: Double
@@ -752,6 +762,7 @@ public protocol SubtitleBurner: Sendable {
         outputTag: String?,
         subtitleFontScale: Double,
         subtitleAlignment: Int,
+        subtitleColorBGRHex: String,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL
 }
@@ -767,6 +778,7 @@ public extension SubtitleBurner {
         outputTag: String? = nil,
         subtitleFontScale: Double = 1.0,
         subtitleAlignment: Int = 2,
+        subtitleColorBGRHex: String = "FFFFFF",
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try await burn(
@@ -775,6 +787,7 @@ public extension SubtitleBurner {
             control: control, outputTag: outputTag,
             subtitleFontScale: subtitleFontScale,
             subtitleAlignment: subtitleAlignment,
+            subtitleColorBGRHex: subtitleColorBGRHex,
             progress: progress
         )
     }
@@ -790,6 +803,7 @@ public extension SubtitleBurner {
             control: nil, outputTag: nil,
             subtitleFontScale: 1.0,
             subtitleAlignment: 2,
+            subtitleColorBGRHex: "FFFFFF",
             progress: progress
         )
     }

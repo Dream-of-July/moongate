@@ -822,7 +822,8 @@ final class QueueManager: ObservableObject {
                     control: control,
                     outputTag: CoreL10n.t(L.Queue.subtitleVersionTag),
                     subtitleFontScale: settings.subtitleFontScale.multiplier,
-                    subtitleAlignment: settings.subtitlePosition.assAlignment
+                    subtitleAlignment: settings.subtitlePosition.assAlignment,
+                    subtitleColorBGRHex: settings.subtitleColor.assBGRHex
                 ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -899,7 +900,8 @@ final class QueueManager: ObservableObject {
                     alwaysH264: settings.burnAlwaysH264,
                     control: control,
                     subtitleFontScale: settings.subtitleFontScale.multiplier,
-                    subtitleAlignment: settings.subtitlePosition.assAlignment
+                    subtitleAlignment: settings.subtitlePosition.assAlignment,
+                    subtitleColorBGRHex: settings.subtitleColor.assBGRHex
                 ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {
@@ -1005,7 +1007,8 @@ final class QueueManager: ObservableObject {
                 alwaysH264: settings.burnAlwaysH264,
                 control: control,
                 subtitleFontScale: settings.subtitleFontScale.multiplier,
-                subtitleAlignment: settings.subtitlePosition.assAlignment
+                subtitleAlignment: settings.subtitlePosition.assAlignment,
+                subtitleColorBGRHex: settings.subtitleColor.assBGRHex
             ) { [weak self] p in
                     Task { @MainActor in
                         self?.update(id, generation: generation) {

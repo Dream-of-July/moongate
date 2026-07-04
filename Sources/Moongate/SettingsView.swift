@@ -2867,8 +2867,12 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.subtitlePositionBottom)).tag(SubtitlePosition.bottom)
                 Text(localizer.t(L.Settings.subtitlePositionTop)).tag(SubtitlePosition.top)
             }
+            Picker(localizer.t(L.Settings.subtitleColor), selection: $draft.subtitleColor) {
+                Text(localizer.t(L.Settings.subtitleColorWhite)).tag(SubtitleColor.white)
+                Text(localizer.t(L.Settings.subtitleColorYellow)).tag(SubtitleColor.yellow)
+            }
 
-            // 实时预览：随上面三项设置即时重绘。纯视觉模拟，不调用烧录逻辑。
+            // 实时预览：随上面四项设置即时重绘。纯视觉模拟，不调用烧录逻辑。
             VStack(alignment: .leading, spacing: Spacing.md) {
                 Label(localizer.t(L.Settings.subtitlePreview), systemImage: "eye")
                     .font(.subheadline.weight(.medium))
@@ -2877,6 +2881,7 @@ struct SettingsView: View {
                     style: draft.subtitleStyle,
                     fontScale: draft.subtitleFontScale,
                     position: draft.subtitlePosition,
+                    textColor: draft.subtitleColor == .white ? .white : .yellow,
                     sampleTranslated: localizer.t(L.Settings.subtitlePreviewSampleTranslated),
                     sampleSource: localizer.t(L.Settings.subtitlePreviewSampleSource),
                     accessibilityLabelText: localizer.t(L.Settings.subtitlePreview)
@@ -3212,6 +3217,9 @@ private struct SubtitleStylePreview: View {
     let style: SubtitleStyle
     let fontScale: SubtitleFontScale
     let position: SubtitlePosition
+    /// 译文颜色（原文继承同色 + 80% 不透明度）。白=现状默认，黄=深色画面更醒目。
+    /// 由父视图在 UI 层把 Core 的 SubtitleColor 映射为 SwiftUI.Color 传入（Core 不 import SwiftUI）。
+    let textColor: Color
     let sampleTranslated: String
     let sampleSource: String
     /// 无障碍标签：预览是纯视觉示意，VoiceOver 应把整块念作单一「预览」元素，
@@ -3259,6 +3267,7 @@ private struct SubtitleStylePreview: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: fontScale)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: position)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: style)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: textColor)
         // 纯视觉预览：合并为单一无障碍元素并给出「预览」标签，避免 VoiceOver 把示例字幕当内容念。
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
@@ -3283,12 +3292,12 @@ private struct SubtitleStylePreview: View {
         VStack(spacing: Spacing.xxs) {
             Text(sampleTranslated)
                 .font(.system(size: translatedFontSize, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(textColor)
                 .subtitleLegibility()
             if style == .bilingual {
                 Text(sampleSource)
                     .font(.system(size: sourceFontSize, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.8))  // 原文 80% 不透明度，与烧录一致
+                    .foregroundStyle(textColor.opacity(0.8))  // 原文 80% 不透明度，与烧录一致
                     .subtitleLegibility()
             }
         }

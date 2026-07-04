@@ -232,4 +232,39 @@ final class BurnerAssTests: XCTestCase {
             FFmpegBurner.ASSLayout(aspect: 16.0 / 9.0).chineseSize
         )
     }
+
+    // MARK: - 用户可调字幕颜色
+
+    func testSubtitleColorAssBGRHexValues() {
+        // 白=FFFFFF；黄=RGB(255,255,0)→ASS BGR 字节序 00FFFF。
+        XCTAssertEqual(SubtitleColor.white.assBGRHex, "FFFFFF", "白色 BGR 应为 FFFFFF")
+        XCTAssertEqual(SubtitleColor.yellow.assBGRHex, "00FFFF", "黄色 RGB(255,255,0) → BGR 应为 00FFFF")
+    }
+
+    func testMakeASSYellowChangesPrimaryColourRGBOnly() {
+        // 传入黄色 BGR：PrimaryColour 的 RGB 变黄，但译文 alpha（chineseAlphaHex）与黑色描边不受影响。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ], primaryColorBGRHex: "00FFFF")
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        // PrimaryColour = &H + alpha(0A) + 黄色 BGR(00FFFF)。
+        XCTAssertTrue(styleLine.contains("&H0A00FFFF"), "黄色译文填充应为 &H0A00FFFF（alpha 保留 + 黄 BGR）：\(styleLine)")
+        // 未变：不应残留白色 PrimaryColour。
+        XCTAssertFalse(styleLine.contains("&H0AFFFFFF"), "黄色时不应再出现白色 PrimaryColour：\(styleLine)")
+        // 黑色描边仍不透明（OutlineColour &H00000000）。
+        XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明 &H00000000：\(styleLine)")
+    }
+
+    func testMakeASSDefaultColorStaysWhiteForBackwardCompatibility() {
+        // 不传颜色（默认）：Style 行仍为白色 &H0AFFFFFF，老用户零变化。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ])
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        XCTAssertTrue(styleLine.contains("&H0AFFFFFF"), "默认应保持白色译文填充 &H0AFFFFFF：\(styleLine)")
+    }
 }

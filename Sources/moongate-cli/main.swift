@@ -516,7 +516,8 @@ do {
             video: videoURL, subtitle: subtitleURL,
             maxHeight: maxHeight, control: nil,
             subtitleFontScale: AppSettings.load().subtitleFontScale.multiplier,
-            subtitleAlignment: AppSettings.load().subtitlePosition.assAlignment
+            subtitleAlignment: AppSettings.load().subtitlePosition.assAlignment,
+            subtitleColorBGRHex: AppSettings.load().subtitleColor.assBGRHex
         ) {
             printer.update($0)
         }
