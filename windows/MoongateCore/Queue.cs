@@ -2235,7 +2235,7 @@ public sealed class QueueManager
         return nextFiles;
     }
 
-    private static string ImportedSubtitleDestination(
+    internal static string ImportedSubtitleDestination(
         string directory,
         string languageCode,
         string extension)

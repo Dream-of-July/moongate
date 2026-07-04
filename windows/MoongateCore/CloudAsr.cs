@@ -233,7 +233,7 @@ public sealed class OpenAICloudAsrSubtitleGenerator : ICloudAsrSubtitleGenerator
             : trimmed;
     }
 
-    private static string UniqueOutputPath(string videoFile, string languageCode)
+    internal static string UniqueOutputPath(string videoFile, string languageCode)
     {
         var directory = Path.GetDirectoryName(videoFile) ?? ".";
         var stem = Path.GetFileNameWithoutExtension(videoFile);
@@ -444,7 +444,7 @@ public sealed class AlignedOpenAICloudAsrSubtitleGenerator : ICloudAsrSubtitleGe
         return new GeneratedCloudAsrSource(written);
     }
 
-    private static string CloudAlignedOutputPath(string videoFile, string languageCode)
+    internal static string CloudAlignedOutputPath(string videoFile, string languageCode)
     {
         var directory = Path.GetDirectoryName(videoFile) ?? ".";
         var stem = Path.GetFileNameWithoutExtension(videoFile);
