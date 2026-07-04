@@ -27,6 +27,9 @@ struct QueueOverlayView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.regularMaterial)
+                    // Esc 收起展开的队列浮层：与 App 内其它可关闭面板（sheet/取消）一致的键盘惯例，
+                    // 键盘用户不必 Tab 到收起按钮。收起动作与 chevron 按钮同走 expanded=false。
+                    .onExitCommand { expanded = false }
                     .transition(overlayTransition)
                 } else {
                     handle
