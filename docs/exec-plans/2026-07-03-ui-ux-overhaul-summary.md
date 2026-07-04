@@ -3,15 +3,16 @@
 面向 七月 的验收索引。分支从 master `3d57cf9`（0.8.2 已发布）建，2026-07-03 一夜自主迭代。**只做产品体验层，未动已到人类水平的核心算法（ASR/分段/翻译/时序），未动发布流程。**
 
 ## 一句话
-把 Moongate 的界面朝"苹果原生软件级"推进了 18 轮：补齐用户可调的字幕大小/位置 + 实时预览，修了一个真实的语言标签 bug，搭建了你想要的"备忘录式三栏"可运行原型，统一了全界面的视觉语言并建立了 design token 层。
+把 Moongate 的界面朝"苹果原生软件级"推进了 35 个 commit：补齐用户可调的字幕**大小/位置/颜色 + 实时预览**，修了一个真实的语言标签 bug（并同步到 Windows），搭建了你想要的"备忘录式三栏"**可运行且能自洽添加视频**的原型，统一了全界面视觉语言 + design token 层，**把新加的字幕功能与语言修复对等到了 Windows/C# 端**，并经一次对抗性代码审查修掉了唯一的真 bug。
 
 ## 如何验收
-- 全部改动在本分支，18 个 commit（`git log master..HEAD`），每个 commit 独立、可回滚、带说明。
-- 验证：`swift build`（debug + release 均绿）、`swift test`（713 全绿，多次检查点）、每轮跑对应的 boundary 测试。
-- **三栏原型预览**（默认关闭，不影响现有界面）：终端执行 `defaults write com.moongate.app experimental.splitLayout -bool YES`，重启 App 即见左列表+右详情三栏；关掉用 `-bool NO`。
-- **注意**：GUI 像素级视觉未在本机自动验证（shell 无 accessibility 权限截不到窗口）——建议你启动 App 直观检查空状态、字幕预览（设置→字幕样式）、三栏原型。
+- 全部改动在本分支，35 个 commit（`git log master..HEAD`），每个独立、可回滚、带说明。
+- 验证：`swift build`（debug + release 均绿）、`swift test`（**719 全绿**，多检查点）、Windows/C# `dotnet test`（**802 全绿**，本机 dotnet 10 可跑 MoongateCore；WPF App 项目本机可编译，MoongateApp.Tests 需 Windows VM）、每轮跑对应 boundary 测试。0 编译警告。
+- **三栏原型预览**（默认关闭，不影响现有界面）：`defaults write com.moongate.app experimental.splitLayout -bool YES` 后重启 App，即见左列表（含进度环）+ 右预览/功能按钮；左上"+"可粘贴链接直接添加。关掉用 `-bool NO`。
+- **待你决策的项**见 `2026-07-03-ui-ux-overhaul.md` 末尾：基准字号(13 vs 15)/alpha 两端对齐（改动会影响现有用户既有烧录，属设计取舍）、Bilibili 字幕探测 port 到 Windows、CHANGELOG/发布注记、三栏是否设默认。
+- **注意**：GUI 像素级视觉未在本机自动验证（shell 无 accessibility 权限截不到窗口，但分支 release 包实测启动稳定无崩溃）——建议你启动 App 直观检查空状态、字幕预览（设置→字幕样式，四控件实时预览）、三栏原型。
 
-## 18 轮做了什么
+## 各轮做了什么（35 commit）
 
 ### 用户点名的功能（新增能力）
 - **字幕大小可调**（R1）：设置里小/标准/大/特大，标准=原行为。
@@ -34,11 +35,12 @@
 - **首次使用路径**（R8/R15）：依赖安装 + 登录页视觉精修（登录 cookie 状态图标化）、首启引导步骤指示器三态增强。
 - **design token 层**（R5/R14/R18）：新建 `DesignTokens.swift`（Spacing/Radius/Thumbnail/Stroke/Layout），全界面等价采用，消除散落的魔法数字，为后续统一维护打基础。
 
-## 已知占位 / 后续方向
-- 三栏原型的"添加任务"按钮是占位（引导回主界面粘贴）。接真实的"粘贴即添加"需要先在 ViewModel 做"用默认设置快速入队"能力——这是产品决策，留给你定方向后再做。
-- choosingState 的 `maxWidth: 500` 尚未统一到 `Layout.readableContentWidth`（readyState 已用）。
-- 未触及：网页下载健壮性、性能（偏核心，风险高，未在本轮范围）。
-- 若采纳三栏为默认，需把 onboarding/依赖/登录等 sheet 接入三栏路径（目前只在 legacy 路径）。
+## 后续方向 / 待你决策（已不含早期占位——三栏"添加"已真实化、maxWidth 已统一）
+- **基准字号/alpha 两端对齐**：macOS ASS 基准 13pt / alpha 0A vs Windows 15pt / 全不透明。同选"标准"两端绝对字号不同——削弱"跨平台一致"。对齐需改一端基准=改动该端现有用户既有烧录（行为变更），选 13 还是 15 是设计取舍，交你定。
+- **Bilibili 字幕探测 + 登录提示** port 到 Windows：macOS 有（master 遗留 WIP），Windows 缺失。完整功能，属跨平台路线决策。
+- **三栏设为默认**：需先把 onboarding/依赖/登录等 sheet 接入三栏路径（目前只在 legacy 路径）。
+- **CHANGELOG / 发布注记**：本分支改动尚未写入 CHANGELOG（发布消息由你把控，未擅自 bump 版本）。
+- 未触及：网页下载健壮性、性能（偏核心，风险高，未在本轮范围）；Bilibili 探针可选加 bvid 缓存防批量风控。
 
 ## 不碰的事（遵守约束）
-核心算法、发布流程、RS-02 仓库改名（需你亲自授权）。
+核心算法、发布流程、RS-02 仓库改名（需你亲自授权）。所有跨平台 core 改动已本机 dotnet 验证；WPF 运行时行为与真实烧录效果建议 Windows VM 最终确认。
