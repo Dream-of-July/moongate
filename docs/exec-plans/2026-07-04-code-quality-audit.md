@@ -159,3 +159,23 @@ macOS 解析器鲁棒性契约已补直接测试（含可判别 BOM 用例 + mut
 ### 停机依据（本维度）
 macOS 四处去重命名已收敛到单一可测来源 + 8 测试（mutation 验证），行为零变化。Windows 等价逻辑健在但内部重复 + 无测试，记录为可自主的后续对等项（跨文件重构，本轮控制风险未做）。产物覆盖风险在 macOS 侧已被测试守护。
 
+## 十三、翻译分块 / 长文本边界（超长 cue / 输出超限 / 空返回 / 部分失败）
+只读审查翻译分块、递归拆分、缺失回补、源回退与部分失败的用户可见结果 + 可复现测试。**补 2 个测试覆盖缺口 + 清 1 处死代码，核心逻辑确认健康。**
+
+### 13.1 ✅ 已补测：输出超限的递归拆分 + 无法拆分的错误路径（commit `f783953`）
+- **缺口**：`translateChunk` 在模型报 `reachedOutputLimit` 时对半递归拆（`depth<2 && half>=8`），拆不动时抛本地化的 outputLimitReached。这是长字幕的关键容错，**此前无测试**（既有 fallback 测试只覆盖缺失行/纯标点/源泄漏）。
+- **补测**（用既有 `modelSender` 注入缝）：`testChunkSplitsInHalfWhenOutputLimitReached`（30 条整块触顶→两个 15 条半块成功→30 条全回贴无丢条，mutation 验证过：把拆分 guard 改 `depth<0` 会 fail）；`testUnsplittableOutputLimitThrowsLocalizedError`（3 条整块触顶→抛可行动本地化错误而非静默产空）。
+
+### 13.2 ✅ 已清死代码：源泄漏重译后的质量二次评估被丢弃（commit `b4b29b0`）
+- 源语言泄漏重译后，`translationQuality` 被重新赋值一次 `TranslationOutputQualityGate.assess(...)`，但该 Verdict **此后从未被读取**——纯函数的死存储（做真实计算却丢弃结果）。删掉重算、`var`→`let`，行为零变化（重译路径的两个既有测试仍绿）。加注释记录：把「重译后仍质量偏低」作为用户提示是需产品决策的 timingWarning 类触发面变更，非本层自动完成。
+
+### 13.3 确认健康（未改）
+- **无丢条**：`translateAllCues` 最终装配（Translator.swift:3199-3212）逐 cue 取 `merged[index]`，空则 `usedSourceFallback=true` 落回原文；仍全空才抛 missingTranslatedLine。任何 cue 都不会被静默丢弃。
+- **缺失回补**：`repairMissingTranslations` 对残缺 cue 逐条重问，网络异常时落回原文（catch→original），不因单条失败拖垮整块。
+- **部分失败可见**：`usedSourceFallback` 逐 cue 传出，双语样式下回退条只显原文；队列层 `partialFailure` + 完成通知「N 个任务需要重试字幕处理」+ 三栏/legacy 的重试字幕按钮（§八已审）——部分失败对用户可见且可操作。
+- **分块并行**：3 路在途、全局序号回贴与完成顺序无关、每调度过 gate（暂停/取消），逻辑清晰。
+- **源泄漏重试**：`shouldRetrySourceLanguageLeakage` 触发一次更强 advice 重译（既有测试覆盖触发与「重试后仍差则保留」）。
+
+### 停机依据（本维度）
+翻译分块的容错主干（递归拆分、缺失回补、源回退、部分失败可见）经代码级审查健康且现补齐了拆分/超限的直接测试；清掉一处死存储让代码诚实。「超长单 cue 无法拆分」已有明确本地化错误（非崩溃/非静默）。把翻译质量做成用户可见提示是需七月决策的触发面变更，记录不自主做。
+
