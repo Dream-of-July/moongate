@@ -664,6 +664,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         friendlyDownloadReason(stderrTail: stderrTail)
     }
 
+    /// 测试用：暴露取消后的临时文件清理，验证只删本视频的 .part/.ytdl/.part-Frag，不碰产物与他视频。
+    static func _testCleanupTemporaryFiles(in directory: URL, videoID: String) {
+        cleanupTemporaryFiles(in: directory, videoID: videoID)
+    }
+
     // MARK: 信息缓存
 
     /// 缓存条数上限：单条 YouTube -J JSON 可达 1-2MB，引擎与 App 同寿命，
