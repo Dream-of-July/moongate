@@ -659,6 +659,11 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         isNativeExtractorHost(host)
     }
 
+    /// 测试用：暴露下载失败文案分类，验证磁盘满/写权限/网络/403/通用各走对应的可行动中文提示。
+    static func _testFriendlyDownloadReason(stderrTail: String) -> String {
+        friendlyDownloadReason(stderrTail: stderrTail)
+    }
+
     // MARK: 信息缓存
 
     /// 缓存条数上限：单条 YouTube -J JSON 可达 1-2MB，引擎与 App 同寿命，
@@ -1610,11 +1615,48 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 zhHant: "網路連線不穩或被中斷。若該站點在你的網路中受限，請確認代理/VPN 已開啟且正常，再點「重試」。"
             ) + "\n" + rawLine
         }
+        if isLikelyDiskFullError(stderrTail) {
+            return CoreL10n.text(
+                en: "Your disk ran out of space while saving the video. Free up space (the Downloads/Moongate folder holds finished videos) and click Retry.",
+                zhHans: "保存视频时磁盘空间不足。请清理磁盘后再点「重试」（下载产物在「下载/Moongate」文件夹里）。",
+                zhHant: "儲存影片時磁碟空間不足。請清理磁碟後再點「重試」（下載產物在「下載/Moongate」資料夾裡）。"
+            ) + "\n" + rawLine
+        }
+        if isLikelyWritePermissionError(stderrTail) {
+            return CoreL10n.text(
+                en: "Moongate could not write to the download folder — it may be read-only or lack permission (for example a locked volume or an iCloud-optimized location). Pick another output folder in Settings, then click Retry.",
+                zhHans: "无法写入下载文件夹——可能是只读或没有权限（例如被锁定的卷、iCloud「优化存储」位置）。请在设置里换一个输出文件夹，再点「重试」。",
+                zhHant: "無法寫入下載資料夾——可能是唯讀或沒有權限（例如被鎖定的卷、iCloud「最佳化儲存」位置）。請在設定裡換一個輸出資料夾，再點「重試」。"
+            ) + "\n" + rawLine
+        }
         return CoreL10n.text(
             en: "An error occurred during download.",
             zhHans: "下载过程中出现错误。",
             zhHant: "下載過程中發生錯誤。"
         ) + "\n" + rawLine
+    }
+
+    /// 识别磁盘空间不足（yt-dlp/ffmpeg 写盘失败）——真实用户环境边界的高频场景。
+    private static func isLikelyDiskFullError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let markers = [
+            "no space left on device", "errno 28", "enospc",
+            "disk quota exceeded", "errno 122", "not enough space",
+        ]
+        return markers.contains { lower.contains($0) }
+    }
+
+    /// 识别输出目录不可写 / 权限拒绝 / 只读卷（含 iCloud 优化存储、锁定卷等）。
+    /// 注意：排在网络/磁盘判断之后，避免与网络类错误误撞（网络错误先被 isLikelyNetworkError 拦截）。
+    /// 只保留明确的文件系统写入标志，不用裸 "errno 1"（EPERM 过宽，会误伤无关子进程错误）。
+    private static func isLikelyWritePermissionError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let markers = [
+            "permission denied", "errno 13", "eacces",
+            "read-only file system", "errno 30", "erofs",
+            "unable to open file for writing", "unable to create directory",
+        ]
+        return markers.contains { lower.contains($0) }
     }
 
     /// 识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。

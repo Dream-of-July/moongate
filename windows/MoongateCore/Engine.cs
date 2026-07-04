@@ -1738,7 +1738,47 @@ public class YtDlpEngine : IDownloadEngine
                 "網路連線不穩定或被中斷。若在中國大陸訪問 YouTube 等站點，請確認代理/VPN 已開啟且正常運作，再點「重試」。",
                 "The network connection is unstable or was interrupted. If you are behind the GFW, make sure your proxy/VPN is on and working, then press Retry.") + "\n" + rawLine;
         }
+        if (IsLikelyDiskFullError(stderrTail))
+        {
+            return L10n.T("保存视频时磁盘空间不足。请清理磁盘后再点「重试」（下载产物在「下载\\Moongate」文件夹里）。",
+                "儲存影片時磁碟空間不足。請清理磁碟後再點「重試」（下載產物在「下載\\Moongate」資料夾裡）。",
+                "Your disk ran out of space while saving the video. Free up space (the Downloads\\Moongate folder holds finished videos) and press Retry.") + "\n" + rawLine;
+        }
+        if (IsLikelyWritePermissionError(stderrTail))
+        {
+            return L10n.T("无法写入下载文件夹——可能是只读或没有权限（例如只读卷、受保护目录、被杀软/权限策略拦截）。请在设置里换一个输出文件夹，再点「重试」。",
+                "無法寫入下載資料夾——可能是唯讀或沒有權限（例如唯讀卷、受保護目錄、被防毒軟體/權限策略攔截）。請在設定裡換一個輸出資料夾，再點「重試」。",
+                "Moongate could not write to the download folder — it may be read-only or lack permission (for example a read-only volume, a protected directory, or an antivirus/policy block). Pick another output folder in Settings, then press Retry.") + "\n" + rawLine;
+        }
         return L10n.T("下载过程中出现错误。", "下載過程中發生錯誤。", "An error occurred while downloading.") + "\n" + rawLine;
+    }
+
+    /// <summary>识别磁盘空间不足（yt-dlp/ffmpeg 写盘失败）——真实用户环境边界高频场景。含 Windows 特有标志。</summary>
+    private static bool IsLikelyDiskFullError(string stderr)
+    {
+        var lower = stderr.ToLowerInvariant();
+        string[] markers =
+        [
+            "no space left on device", "errno 28", "enospc",
+            "disk quota exceeded", "not enough space",
+            "there is not enough space on the disk", "winerror 112",
+        ];
+        return markers.Any(lower.Contains);
+    }
+
+    /// <summary>识别输出目录不可写 / 权限拒绝 / 只读卷。排在网络/磁盘之后，避免误撞。含 Windows 特有标志。</summary>
+    private static bool IsLikelyWritePermissionError(string stderr)
+    {
+        var lower = stderr.ToLowerInvariant();
+        string[] markers =
+        [
+            "permission denied", "errno 13", "eacces",
+            "read-only file system", "errno 30", "erofs",
+            "unable to open file for writing", "unable to create directory",
+            "access is denied", "winerror 5",
+            "the process cannot access the file",
+        ];
+        return markers.Any(lower.Contains);
     }
 
     /// <summary>识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。</summary>
