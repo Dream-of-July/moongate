@@ -606,6 +606,14 @@ private struct QueueDetailView: View {
                 }
                 actionButton("xmark", title: localizer.t(L.Queue.cancelAction)) { queue.cancel(item.id) }
             case .done:
+                // 部分成功（视频下好、字幕处理失败）：只重跑字幕处理，与 legacy 一致。
+                if item.partialFailure {
+                    actionButton("arrow.clockwise", title: localizer.t(L.Queue.retrySubtitle)) { queue.retry(item.id) }
+                }
+                // 完成项可用本地 Whisper 重识别（仅在生成器就绪时显示，retryWithLocalASR 内部也再校验）。
+                if queue.canRetryWithLocalASR(item.id), queue.hasLocalASRGenerator {
+                    actionButton("waveform", title: localizer.t(L.Queue.retryWithLocalASR)) { queue.retryWithLocalASR(item.id) }
+                }
                 if !item.resultFiles.isEmpty {
                     actionButton("folder", title: localizer.t(L.Queue.revealInFinder)) { queue.revealInFinder(item.id) }
                 }
