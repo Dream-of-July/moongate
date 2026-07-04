@@ -54,6 +54,11 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             "iconButton should expose the supplied hint to assistive technologies."
         )
         XCTAssertTrue(
+            iconButtonBody.contains(".accessibilityLabel(help)"),
+            "iconButton is icon-only — it MUST carry an accessibilityLabel, or VoiceOver reads nothing. "
+            + "The label is more critical than the hint; guard it explicitly."
+        )
+        XCTAssertTrue(
             source.contains("help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint)"),
             "Remove actions should explain that downloaded files are not deleted."
         )
