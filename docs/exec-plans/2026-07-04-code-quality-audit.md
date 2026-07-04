@@ -128,3 +128,18 @@
 ### 停机依据（本维度）
 键盘/焦点/VoiceOver 三类明确低风险缺口（Esc 收起、删除按钮 label、sheet 初始焦点）已修 + 测试守护。主要交互面的快捷键、图标 label、焦点、状态可读性经代码级审查确认健康。剩余为需权衡的非标准增强（红点播报、页面级回车），非本轮自主项。
 
+## 十一、字幕解析鲁棒性 + 编码边界（parseSRT/parseVTT）
+只读审查字幕文件解析的编码/格式边界（BOM、CRLF、非 UTF-8、缺序号、空条、孤块）。**发现并补 1 个 macOS 侧测试覆盖缺口，其余确认健康。**
+
+### 11.1 ✅ 已修：macOS parseSRT/parseVTT 鲁棒性契约无直接测试（commit `7e9dd53`）
+- **缺口**：`parseSRT`/`parseVTT`(Translator.swift) 是全下游字幕分析（质量门/时序健康/置信度/翻译）的解析基座，其鲁棒性契约（容忍 BOM、CRLF/裸 CR、缺序号按序补号、显式非连续序号、丢空文本条与无时间行孤块）**只写在源码注释、无直接测试**——易回归且影响面大。
+- **修复**：新建 `SubtitleParseRobustnessTests`(9)：BOM 剥离、CRLF 归一、隐式补号、显式序号保留、空条丢弃、点号毫秒、垃圾/空输入、VTT BOM+CRLF。**BOM 测试特意做成可判别**（BOM 后接显式序号 7，若剥离失败会补号成 1 而 fail），mutation 验证过（删 parseSRT 的 BOM 剥离行→fail，恢复→pass）。macOS 775 全绿。
+- **跨平台观察（反常方向）**：Windows/C# 侧**本就有**对应测试（`ParseSrt_BomCrlfAndDotMilliseconds_Tolerated`/`_MissingIndexLines_AutoNumbers`/`_EmptyTextEntry_Dropped` + VTT，共 11 绿）——这次是 **macOS 落后于 Windows**，补测后两端持平。与以往「mac 领先、win 留缺口」相反，说明覆盖缺口两个方向都要查。
+
+### 11.2 确认健康（未改）
+- **BOM 安全贯穿全链**：所有下游分析（SubtitleTimingHealth/SubtitleQualityScorer/PlatformSubtitleQualityGate/LocalASRConfidence）都经共享 `parseSubtitleCues`→`parseSRT`/`parseVTT`，BOM 在解析入口统一剥离，无各自重复实现的漂移。
+- **非 UTF-8 编码优雅降级**：`String(contentsOf:encoding:.utf8)` 对 GBK/Big5/Latin-1 返回 nil → `try?` 兜底为「不可用/空」，**不崩溃**。yt-dlp 产物基本是 UTF-8，非-UTF8 是低频（用户手动导入的老字幕）。真正的编码探测（usedEncoding/逐编码尝试）非平凡、有识别质量回归风险，属需 eval 先行的算法层改进，**非本轮低风险自主项**，记录为增强候选。
+
+### 停机依据（本维度）
+macOS 解析器鲁棒性契约已补直接测试（含可判别 BOM 用例 + mutation 验证），两端持平。BOM 安全全链统一、非-UTF8 优雅降级。编码自动探测是需 eval 的算法层改进，不自主做。
+
