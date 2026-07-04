@@ -197,3 +197,24 @@ macOS 四处去重命名已收敛到单一可测来源 + 8 测试（mutation 验
 ### 停机依据（本维度）
 Windows 去重命名 + 翻译超限/拆分已补 6 测试对等 macOS（visibility 加宽零行为变化）。CloudAsr 两份逐字节重复的真重构记录为后续候选（跨类 helper，控风险未做）。发现的 macOS-抛错 vs Windows-源回退分歧已证据化，需七月定统一方向；两端行为均已被测试锁定。
 
+## 十五、Cookie / 登录 jar 的过期与清理
+只读审查 cookie jar 的过期时效、会话 cookie、失效清理与登录态判定。**双端各补 4 测试（安全相关的时效过滤此前无测试），确认无功能缺陷，记录 1 处 UX 诚实性观察。**
+
+### 15.1 ✅ 过期/会话 cookie 过滤测试（macOS `b05c333` + Windows `cf7e549`，各 4）
+- `NetscapeCookieFile.cookieHeader`/`CookieHeaderFor` 决定「哪些 cookie 发给服务器」——丢弃过期（`expiry <= now`）、会话 cookie（expiry 0→nil）永不因过期丢。这是**安全相关**逻辑，但**双端既有测试全用 9999999999（远期）**，过期分支与会话分支从未走过。
+- 双端补：过期 cookie 被排除（fresh 保留）、全过期→nil header、会话 cookie(expiry 0)读回 nil 且不被丢、write→read 往返保留过期语义。macOS 过期-丢弃测试 mutation 验证过（删 `expiry <= now` 会 fail）。macOS 789 + Windows 819 全绿。
+- **平台细节**：Swift `HTTPCookie` 对远期日期做上限钳制（4e9→~2027），故 macOS 往返测断言 `>now` 而非精确值；C# `CookieRecord` 路径无钳制，精确保留——两端各自锁定实际行为。
+
+### 15.2 确认健康（未改）
+- **下载不受过期 jar 影响**：`makeCookieArguments` 把 jar 私有副本交 yt-dlp（`--cookies`），yt-dlp 自身在请求时跳过过期 cookie；全过期 jar 被传入不是功能 bug（工具层处理时效）。副本机制还防并发写回损坏 + 权限放宽。
+- **失效清理路径完整**：Settings「清除登录」`NetscapeCookieFile.clear` 删所有按站点 jar + 旧全局文件 + WKWebsite cookie/localStorage 数据；文件不存在静默忽略（幂等）。
+- **迁移幂等且不覆盖新登录**：`CookieMigration` 旧全局→按站点拆分，目标已存在（新登录）不覆盖，完成删旧文件（既有测试守护）。
+- **登录态判定防跨站误判**：`containsAuthCookie` 要求认证 cookie 名 + 域属该站点双条件（既有测试守护）。
+
+### 15.3 UX 诚实性观察（记录，需七月决策，未改）
+- Settings「登录状态」行（`refreshLoginStatus`/`loginStatusText`）以 **jar 文件存在 + 修改日期** 为准，显示「已保存验证信息（<日期>）」——**不解析 jar 内 cookie 是否已全部过期**。即：cookie 全过期后，该行仍显示「已保存」直到用户手动清除或重新登录。
+  - **判断**：措辞是「已保存验证信息（<登录日期>）」（陈述何时登录过的事实），非「当前已登录」，不算严格误导；且实际过期由下载时 yt-dlp 优雅处理（触发重新登录引导）。改成解析 jar 有效性会**改变用户可见的登录状态行为**（何时显示「已过期/需重新登录」），属 timingWarning 类触发面变更——**需七月决策**，不自主改。记录为候选。
+
+### 停机依据（本维度）
+Cookie 时效过滤（过期丢弃 / 会话保留）双端补齐测试对等 + mutation 验证；清理、迁移、登录态判定经审查健康。过期 jar 的下载安全由 yt-dlp 工具层兜底。登录状态行「按文件存在显示」是 UX 诚实性取舍，需七月决策后才改（触发面变更），已证据化不自主动。
+
