@@ -284,6 +284,39 @@ public class QueueManagerTests
         Assert.True(remaining.Value.IsApproximate);
     }
 
+    /// <summary>ETA 估算降级边界（与 macOS testEstimatedRemaining* 对等）：可信 source ETA 优先且精确；
+    /// 非法 source ETA 被拒后回落斜率自估；太早 / 进度过小 / 已完成 → null（UI 降级为「正在估算」）。</summary>
+    [Fact]
+    public void QueueProgressEstimator_RemainingDegradationBoundaries()
+    {
+        // source ETA 可信 → 精确采用。
+        var exact = QueueProgressEstimator.EstimatedRemainingSeconds(100, 0.5, sourceEtaSeconds: 42);
+        Assert.NotNull(exact);
+        Assert.Equal(42, exact!.Value.Seconds, precision: 9);
+        Assert.False(exact.Value.IsApproximate);
+
+        // source ETA=0（即将结束）是合法精确值。
+        var zero = QueueProgressEstimator.EstimatedRemainingSeconds(100, 0.99, sourceEtaSeconds: 0);
+        Assert.NotNull(zero);
+        Assert.Equal(0, zero!.Value.Seconds, precision: 9);
+        Assert.False(zero.Value.IsApproximate);
+
+        // 非法 source ETA（负 / NaN / ∞）被拒 → 回落斜率自估（10*(1-0.25)/0.25=30，约数）。
+        foreach (var bad in new[] { -1.0, double.NaN, double.PositiveInfinity })
+        {
+            var est = QueueProgressEstimator.EstimatedRemainingSeconds(10, 0.25, sourceEtaSeconds: bad);
+            Assert.NotNull(est);
+            Assert.Equal(30, est!.Value.Seconds, precision: 9);
+            Assert.True(est.Value.IsApproximate);
+        }
+
+        // 太早（elapsed<3）/ 进度过小（<0.03）/ 已完成（>=1）/ 缺失 → null。
+        Assert.Null(QueueProgressEstimator.EstimatedRemainingSeconds(1, 0.5, sourceEtaSeconds: null));
+        Assert.Null(QueueProgressEstimator.EstimatedRemainingSeconds(100, 0.01, sourceEtaSeconds: null));
+        Assert.Null(QueueProgressEstimator.EstimatedRemainingSeconds(100, 1.0, sourceEtaSeconds: null));
+        Assert.Null(QueueProgressEstimator.EstimatedRemainingSeconds(100, null, sourceEtaSeconds: null));
+    }
+
     [Fact]
     public void QueueProgressEstimator_QueueSnapshotAveragesProgressAndKeepsUnknownEtaFlag()
     {
