@@ -79,6 +79,57 @@ struct SplitLayoutView: View {
     }
 
     private var sidebar: some View {
+        VStack(spacing: 0) {
+            addFeedbackBanner
+            sidebarList
+        }
+        .navigationTitle(localizer.t(L.SplitLayout.sidebarTitle))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    // 打开轻量「添加下载」sheet：粘贴一或多个链接，确认后按默认设置自动入队。
+                    showAddSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help(localizer.t(L.SplitLayout.addTask))
+                .accessibilityLabel(localizer.t(L.SplitLayout.addTask))
+            }
+        }
+        .sheet(isPresented: $showAddSheet) {
+            addTaskSheet
+        }
+    }
+
+    /// 添加任务后的反馈条（sheet 关闭后仍可见）：解析中显示批量进度（batchStatusText），
+    /// 结束显示添加/重复/失败摘要（enqueueNotice）。复用 legacy 已有的 @Published，三栏只是也展示——
+    /// 否则用户在三栏粘贴无效链接/全部失败时毫无反馈（sheet 即时关闭、成功项才进 sidebar）。
+    @ViewBuilder
+    private var addFeedbackBanner: some View {
+        if let status = model.batchStatusText {
+            HStack(spacing: Spacing.sm) {
+                ProgressView().controlSize(.small)
+                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.sm)
+            .transition(.opacity)
+        } else if let notice = model.enqueueNotice {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.sm)
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarList: some View {
         Group {
             if queue.items.isEmpty {
                 sidebarEmptyState
@@ -105,22 +156,6 @@ struct SplitLayoutView: View {
                 }
                 .listStyle(.sidebar)
             }
-        }
-        .navigationTitle(localizer.t(L.SplitLayout.sidebarTitle))
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    // 打开轻量「添加下载」sheet：粘贴一或多个链接，确认后按默认设置自动入队。
-                    showAddSheet = true
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .help(localizer.t(L.SplitLayout.addTask))
-                .accessibilityLabel(localizer.t(L.SplitLayout.addTask))
-            }
-        }
-        .sheet(isPresented: $showAddSheet) {
-            addTaskSheet
         }
     }
 

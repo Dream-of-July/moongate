@@ -72,6 +72,16 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("keyboardShortcut(.defaultAction)"))
     }
 
+    /// 添加反馈必须在三栏可见：sheet 即时关闭、成功项才进 sidebar，若不展示 batchStatusText/
+    /// enqueueNotice，用户粘贴无效链接/全部失败时毫无反馈。守护三栏也观察这两个 @Published。
+    func testAddFeedbackSurfacesBatchStatusAndEnqueueNotice() throws {
+        let source = try splitLayoutSource()
+        XCTAssertTrue(source.contains("model.batchStatusText"),
+                      "三栏应展示批量解析进度 batchStatusText")
+        XCTAssertTrue(source.contains("model.enqueueNotice"),
+                      "三栏应展示添加结果摘要 enqueueNotice（含无效/失败/重复反馈）")
+    }
+
     /// 可访问性：装饰性图标 hidden、行/详情合并为可读元素、播放/添加按钮有 label。
     func testSplitLayoutAccessibility() throws {
         let source = try splitLayoutSource()
