@@ -73,6 +73,11 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - **Bilibili 字幕探测+登录提示**(BilibiliSubtitleProbe/Engine platformSubtitleHint/invalidateInfoCache)：macOS 有(master 遗留 WIP,R1 收尾),**Windows 端完全缺失**。这是较大的完整功能(探测 Bilibili 字幕 API + PlatformSubtitleHint 模型 + Engine 缓存失效 + WPF 登录提示 UI),属跨平台功能路线决策,非机械镜像。此缺口在本分支前已存在(非本次引入的回归)。建议七月决定是否/何时port到Windows。
 - 三栏"添加"已在 R21 用 addTasks 真实化(macOS);若三栏未来上 Windows,需对等。
 
+### R33-R34 对抗性审查 + P1 修复
+- 派 quality_reviewer 全面审 32 commit（Swift/C# 逐字节比对）。结论:**无 P0**;跨平台契约(倍率/BGR/Alignment/settings键/脚本检测/回退默认)逐项确认一致;分支高质量可合并。
+- **P1 已修(commit 33/34)**:macOS SRT force_style 兜底路径(parseSRT 返回空时)硬编码 FontSize=15、无位置/颜色,静默丢弃用户字幕外观设置,且与 Windows 兜底行为相反。已对齐 C#:抽 `srtForceStyleFilter` 纯函数(字号缩放+Alignment+PrimaryColour)+3个防回归单测。
+- **P2 待七月决策(pre-existing,本功能放大了可见性,非本分支引入)**:①macOS ASS 主路径基准字号 13(Burner.swift:868) vs Windows 15(Burner.cs:680)——同选"标准"两端绝对字号不同(13 vs 15pt),削弱"字号跨平台一致"承诺。对齐需改一端基准=改动该端现有用户的既有烧录字号(行为变更),且选 13 还是 15 是设计取舍→交七月定。②macOS ZH 主色 alpha=0A(≈96%) vs Windows &H00(全不透明),同属两端渲染非逐字节一致。③Bilibili 探针无并发去重/节流(大批量可能触发风控,可选加 bvid 进程内缓存)。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。
