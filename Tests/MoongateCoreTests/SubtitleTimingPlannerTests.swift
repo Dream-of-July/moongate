@@ -103,4 +103,21 @@ final class SubtitleTimingPlannerTests: XCTestCase {
             speechAlignTimings: true, canUseSourceAnchors: false, endsSentence: false),
             "CJK 可见字符 >12 不应对齐")
     }
+
+    // MARK: - characterSplitPartCount 边界（换行分段数的钳制）
+
+    func testCharacterSplitPartCountClampsAndRespectsCJKMinWidth() {
+        // 空文本 → 1。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "", requestedParts: 5), 1)
+        // requestedParts < 1 → 至少 1。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "hello world", requestedParts: 0), 1)
+        // 拉丁 minVisibleChars=1：11 可见字符（"helloworld"=10 实际）可支持较多份，requested 3 不被砍。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "hello world", requestedParts: 3), 3)
+        // 拉丁超额：可见字符数即上限。"abc"(3 可见) 请求 10 → 砍到 3。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "abc", requestedParts: 10), 3)
+        // CJK minVisibleChars=4：8 个 CJK 字符 → maxParts = 8/4 = 2，请求 5 → 砍到 2。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "今天我们继续讨论", requestedParts: 5), 2)
+        // CJK 少于 minWidth：3 个 CJK 字符 → maxReadableParts = max(1, 3/4=0) = 1。
+        XCTAssertEqual(SubtitleTimingPlanner.characterSplitPartCount(text: "我们继", requestedParts: 4), 1)
+    }
 }
