@@ -425,6 +425,22 @@ final class ViewModel: ObservableObject {
         return urls
     }
 
+    /// 三栏原型「添加任务」入口：从一段文本提取一或多个链接，按默认设置（最高画质、
+    /// 当前字幕模式）自动入队，不经 ready 配置页。复用批量自动入队引擎；对单个链接也走
+    /// 同一路径（直接入队，不进入单流程的 choosing/ready 阶段）。空输入或无有效链接时
+    /// 设 enqueueNotice 提示并返回。
+    func addTasks(from text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isParsing else { return }
+        hydrateCredentials()
+        let urls = Self.extractURLs(from: trimmed)
+        guard !urls.isEmpty else {
+            enqueueNotice = CoreL10n.t(L.Main.invalidURL)
+            return
+        }
+        processBatch(urls)
+    }
+
     // 每个字符既非空白、也不是下一条链接的开头（负向前瞻保证相接的链接被切开）。
     private static let urlExtractionRegex: NSRegularExpression? = try? NSRegularExpression(
         pattern: #"(?i)https?://(?:(?!https?://)\S)+"#

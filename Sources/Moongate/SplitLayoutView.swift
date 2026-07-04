@@ -20,6 +20,8 @@ struct SplitLayoutView: View {
     @ObservedObject var model: ViewModel
     @ObservedObject private var queue: QueueManager
     @State private var selectedItemID: UUID?
+    @State private var showAddSheet = false
+    @State private var addURLText = ""
     @EnvironmentObject private var localizer: Localizer
 
     init(model: ViewModel) {
@@ -108,17 +110,62 @@ struct SplitLayoutView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    // 占位：原型阶段不接完整添加流程。后续可接 Parabolic 式粘贴/添加对话框。
-                    // 这里给出一句克制提示，引导用户回主界面粘贴链接。
-                    model.enqueueNotice = localizer.t(L.SplitLayout.addTaskHint)
-                    NSLog("[SplitLayout] add-task placeholder tapped")
+                    // 打开轻量「添加下载」sheet：粘贴一或多个链接，确认后按默认设置自动入队。
+                    showAddSheet = true
                 } label: {
                     Image(systemName: "plus")
                 }
-                .help(localizer.t(L.SplitLayout.addTaskHint))
+                .help(localizer.t(L.SplitLayout.addTask))
                 .accessibilityLabel(localizer.t(L.SplitLayout.addTask))
             }
         }
+        .sheet(isPresented: $showAddSheet) {
+            addTaskSheet
+        }
+    }
+
+    // MARK: - 添加任务 sheet（轻量粘贴入口，复用默认设置自动入队）
+
+    /// 轻量「添加下载」对话框：多行输入一或多个链接，确认后调用 `model.addTasks(from:)`
+    /// 按默认设置（最高画质、当前字幕模式）自动入队——复用批量自动入队引擎，不经 ready 配置页。
+    /// 新任务通过 `queue.items` 实时出现在左侧 sidebar「进行中」分组。取消/确认均清空输入并关闭。
+    private var addTaskSheet: some View {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            Text(localizer.t(L.SplitLayout.addTaskSheetTitle))
+                .font(.headline)
+
+            TextField(
+                localizer.t(L.SplitLayout.addSheetPlaceholder),
+                text: $addURLText,
+                axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...5)
+
+            Text(localizer.t(L.SplitLayout.addSheetHint))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: Spacing.md) {
+                Spacer(minLength: 0)
+                Button(localizer.t(L.Common.cancel)) {
+                    addURLText = ""
+                    showAddSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button(localizer.t(L.SplitLayout.addSheetConfirm)) {
+                    model.addTasks(from: addURLText)
+                    addURLText = ""
+                    showAddSheet = false
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(addURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(Spacing.xl)
+        .frame(width: 460)
     }
 
     private var sidebarEmptyState: some View {
