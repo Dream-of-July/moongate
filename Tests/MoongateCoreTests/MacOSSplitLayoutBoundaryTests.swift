@@ -101,6 +101,9 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         // 取消/确认都清空输入并关闭。
         XCTAssertTrue(source.contains("keyboardShortcut(.cancelAction)"))
         XCTAssertTrue(source.contains("keyboardShortcut(.defaultAction)"))
+        // 打开 sheet 时链接输入框应自动获得焦点，键盘用户无需先 Tab（与主界面 URL 输入框一致）。
+        XCTAssertTrue(source.contains(".focused($addFieldFocused)") && source.contains("addFieldFocused = true"),
+                      "添加 sheet 应把初始焦点落到输入框（@FocusState + focused + onAppear）。")
     }
 
     /// 添加反馈必须在三栏可见：sheet 即时关闭、成功项才进 sidebar，若不展示 batchStatusText/

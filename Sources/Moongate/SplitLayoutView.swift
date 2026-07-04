@@ -22,6 +22,8 @@ struct SplitLayoutView: View {
     @State private var selectedItemID: UUID?
     @State private var showAddSheet = false
     @State private var addURLText = ""
+    /// 添加 sheet 打开时把焦点直接落到链接输入框，键盘用户无需先 Tab（与主界面 URL 输入框一致）。
+    @FocusState private var addFieldFocused: Bool
     @EnvironmentObject private var localizer: Localizer
 
     init(model: ViewModel) {
@@ -176,6 +178,7 @@ struct SplitLayoutView: View {
             )
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...5)
+            .focused($addFieldFocused)
 
             Text(localizer.t(L.SplitLayout.addSheetHint))
                 .font(.caption)
@@ -201,6 +204,7 @@ struct SplitLayoutView: View {
         }
         .padding(Spacing.xl)
         .frame(width: 460)
+        .onAppear { addFieldFocused = true }
     }
 
     private var sidebarEmptyState: some View {
