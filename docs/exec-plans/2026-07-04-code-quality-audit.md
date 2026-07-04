@@ -107,3 +107,24 @@
 ### 停机依据（本维度）
 文件系统写入失败文案是真实高频缺口，已双端对等修复 + 测试。其余环境边界（输出目录/路径含空格中文/analyze 离线/依赖缺失/iCloud 导入）经代码级审查确认已有合理处理或属边缘无低风险修法。证书信任分支是平台差异非缺陷。
 
+## 十、键盘可达性 / 焦点顺序 / 快捷键 / VoiceOver 标签
+只读审查主要路径（队列、设置、三栏、字幕预览、失败恢复、添加 sheet）的无鼠标操作与辅助技术可读性。**发现并修 3 个明确低风险缺口，其余确认健康。**
+
+### 10.1 ✅ 已修（3 个低风险缺口）
+- **Esc 收起展开的队列浮层**（commit `9409e3d`）：展开的队列是铺满的可关闭面板，此前只能点 chevron 或 Tab 到收起按钮——与 App 内其它可关闭面（add sheet/parse-cancel 都用 `.keyboardShortcut(.cancelAction)`）不一致。加 `.onExitCommand { expanded = false }`（SwiftUI 非-sheet 容器的 Esc 惯例），与 chevron 同动作。守护 `testExpandedQueueOverlayDismissesWithEscape`。
+- **删除模型按钮的 VoiceOver 标签**（commit `fb2617a`）：本地-ASR 模型列表两个纯图标 trash 按钮（删除受管模型 / 删除导入模型）只有 `.help(...)`（悬停提示，非 VoiceOver 名字），而同排下载按钮已有 `.accessibilityLabel`。破坏性操作缺 label 会让 VoiceOver 念「未命名按钮」。双按钮补 label（同 key，零新文案）。守护扩展到 Settings boundary test，mutation 验证过。
+- **添加 sheet 初始焦点**（commit `e9144f8`）：三栏 add sheet 链接输入框打开时无初始焦点，键盘用户须先 Tab（主界面 URL 框用 `@FocusState` 自动聚焦）。加 `@FocusState + .focused + .onAppear` 聚焦。守护在 `testAddSheetWiresToRealAddTasks`。
+
+### 10.2 确认健康（未改）
+- **快捷键齐备且可发现**：Cmd+,（设置）/Cmd+L（聚焦 URL）/Cmd+Shift+V（粘贴解析）都在菜单栏 CommandGroup（可发现）；URL 框 `onSubmit` 回车解析；add sheet cancel/confirm 走 `.cancelAction`/`.defaultAction`。
+- **图标按钮 label 覆盖**：队列 iconButton（label+hint，前轮已守护）、三栏 actionButton（Label 可见文字 + accessibilityLabel）、三栏 add「+」/play、Settings 导入头/下载模型、ContentView 粘贴/设置齿轮——均带 label。系统扫描 ContentView/Dependency/Login/Summary/QueueOverlay/SplitLayout 无遗漏的纯图标交互按钮。
+- **焦点与可关闭**：主 URL 框 `@FocusState` + Cmd+L 聚焦；队列 handle 是真 Button（Space/Return 激活）带 label+value；失败恢复按钮是文字按钮（天然可聚焦+VoiceOver 可读），primary 用 `.borderedProminent` 体现层级。
+- **状态可读性**：sidebar 行 `.accessibilityElement(.combine)` + label(title) + value(statusText)；进度环 ProgressRingView 带 label；失败/取消图标 `.accessibilityHidden`（状态由行 value 承载，不重复念图标）。
+
+### 10.3 记录（非缺陷，未改）
+- **更新可用红点** 在设置齿轮上是纯视觉（VoiceOver 不念），但更新状态的主渠道是设置内的更新区（有完整文案）；给齿轮 label 动态附加更新态会让标签随状态变动，收益有限，非本轮低风险项。
+- **失败恢复主按钮无 `.defaultAction`（回车触发）**：失败态是铺满页面而非 sheet/dialog，回车在非对话上下文触发主操作不是标准预期，且可能与其它焦点冲突；文字按钮已可 Tab+Space 触发。不加。
+
+### 停机依据（本维度）
+键盘/焦点/VoiceOver 三类明确低风险缺口（Esc 收起、删除按钮 label、sheet 初始焦点）已修 + 测试守护。主要交互面的快捷键、图标 label、焦点、状态可读性经代码级审查确认健康。剩余为需权衡的非标准增强（红点播报、页面级回车），非本轮自主项。
+
