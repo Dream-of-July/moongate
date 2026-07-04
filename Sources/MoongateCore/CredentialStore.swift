@@ -74,3 +74,15 @@ public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable
     }
 }
 #endif
+
+// MARK: - 凭证脱敏（日志/诊断输出）
+
+/// 把 API Token 等敏感凭证脱敏后再打印到日志/CLI 输出，避免变相回显。
+/// 规则：<=8 字符全打码（短 token 露任何前缀都可能泄露）；较长的只留前 6 字符 + 省略号。
+/// 从 moongate-cli 的 maskToken 下沉到 Core，使其可被测试并供其它需要脱敏的表面复用。
+public enum CredentialMasking {
+    public static func masked(_ token: String) -> String {
+        guard token.count > 8 else { return "…" }
+        return String(token.prefix(6)) + "…"
+    }
+}

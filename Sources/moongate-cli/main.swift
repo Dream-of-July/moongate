@@ -141,8 +141,8 @@ func writeLocalASRSRT(
 
 /// 凭证脱敏：只显示前 6 位，绝不回显完整值。
 func maskToken(_ token: String) -> String {
-    guard token.count > 8 else { return "…" }  // 短 token 全打码，避免变相回显
-    return String(token.prefix(6)) + "…"
+    // 复用 Core 的 CredentialMasking（已下沉+测试），避免 CLI 各自实现脱敏规则漂移。
+    CredentialMasking.masked(token)
 }
 
 /// 解析 translate / ping-llm 共用的 LLM 相关 flags，覆盖到 settings；返回 token 是否被命令行覆盖。
