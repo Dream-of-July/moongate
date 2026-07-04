@@ -49,6 +49,26 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.shared.open("))
     }
 
+    /// done 态动作集必须与 legacy 队列对等（commit 084768a 补齐）：
+    /// partialFailure→重跑字幕(retry)、完成视频+本地生成器就绪→本地 Whisper 重识别(retryWithLocalASR)、
+    /// 有产物→在 Finder 显示、始终可移除。此前 detail 的 .done 只有 reveal/remove，是完整性缺口。
+    func testDoneStateActionsMatchLegacyQueue() throws {
+        let source = try splitLayoutSource()
+        let actions = try XCTUnwrap(functionBody(named: "actionButtons", in: source))
+        // 部分成功只重跑字幕处理（不重新下载），条件为 partialFailure。
+        XCTAssertTrue(actions.contains("item.partialFailure"),
+                      "done 态应据 partialFailure 决定是否显示重跑字幕")
+        XCTAssertTrue(actions.contains("L.Queue.retrySubtitle"),
+                      "部分成功应提供「重跑字幕」")
+        // 完成项本地 Whisper 重识别：既要 done+有视频(canRetryWithLocalASR)，也要生成器就绪(hasLocalASRGenerator)。
+        XCTAssertTrue(actions.contains("queue.retryWithLocalASR("),
+                      "done 态应提供本地 ASR 重识别真实操作（此前无测试守护）")
+        XCTAssertTrue(actions.contains("queue.canRetryWithLocalASR(") && actions.contains("queue.hasLocalASRGenerator"),
+                      "本地 ASR 重识别按钮需 done+有视频 且 生成器就绪双重守护")
+        XCTAssertTrue(actions.contains("L.Queue.retryWithLocalASR"),
+                      "本地重识别按钮应用 retryWithLocalASR 文案")
+    }
+
     /// 登录类失败项必须在 detail 提供「登录并重试」恢复入口（与 legacy 队列一致），
     /// 否则用户无法从三栏恢复登录门失败——完整性守护。
     func testFailedLoginItemExposesLoginRecovery() throws {
