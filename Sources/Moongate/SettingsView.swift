@@ -2878,7 +2878,8 @@ struct SettingsView: View {
                     fontScale: draft.subtitleFontScale,
                     position: draft.subtitlePosition,
                     sampleTranslated: localizer.t(L.Settings.subtitlePreviewSampleTranslated),
-                    sampleSource: localizer.t(L.Settings.subtitlePreviewSampleSource)
+                    sampleSource: localizer.t(L.Settings.subtitlePreviewSampleSource),
+                    accessibilityLabelText: localizer.t(L.Settings.subtitlePreview)
                 )
             }
             .padding(.top, Spacing.xs)
@@ -3213,6 +3214,9 @@ private struct SubtitleStylePreview: View {
     let position: SubtitlePosition
     let sampleTranslated: String
     let sampleSource: String
+    /// 无障碍标签：预览是纯视觉示意，VoiceOver 应把整块念作单一「预览」元素，
+    /// 而非逐字读装饰性示例字幕（那是噪音）。文案由父视图传入（已本地化）。
+    let accessibilityLabelText: String
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -3255,6 +3259,9 @@ private struct SubtitleStylePreview: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: fontScale)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: position)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: style)
+        // 纯视觉预览：合并为单一无障碍元素并给出「预览」标签，避免 VoiceOver 把示例字幕当内容念。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabelText)
     }
 
     /// 模拟视频画面：中性深色渐变 + 极淡的 film 占位符，暗示这是一块视频画面。
