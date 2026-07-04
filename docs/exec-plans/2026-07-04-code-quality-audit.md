@@ -239,3 +239,25 @@ Cookie 时效过滤（过期丢弃 / 会话保留）双端补齐测试对等 + m
 ### 停机依据（本维度）
 ETA 降级边界双端补齐测试（含 mutation 验证）。UI 三级降级、进度钳制、队列聚合、失败恢复、通知不谎报成功——经代码级审查 + 既有测试确认健康。通知文案直测需 Core 下沉（中等重构，记录候选，不自主做）。
 
+
+## 十七、存储清理 / Settings 存储管理边界
+只读审查下载产物/字幕/转写/翻译/缓存/临时文件/失败残留/模型/登录 jar 在 UI 文案、计数、清理动作、权限失败、文件缺失场景的表现。**补齐临时文件清理的安全测试（双端），其余确认健康。**
+
+### 17.1 ✅ 临时文件清理安全测试（macOS `b479f22` +4 / Windows `1b12ccb` +4）
+- `cleanupTemporaryFiles`/`CleanupTemporaryFiles`（Engine）在取消/失败后删 yt-dlp 残留（.part/.ytdl/.part-Frag），**安全属性：只删本视频（`[videoID]` marker 匹配）的临时文件，绝不碰完成产物或其它视频的临时文件**。macOS 侧 private 无测试；Windows 侧 internal 无测试。
+- 双端补 4 测试：只删本视频临时扩展名（保留 .mp4/.srt 产物）、不碰他 videoID 的 .part/.ytdl、目录缺失静默 no-op、无匹配全保留。macOS 加 `_testCleanupTemporaryFiles` 钩子（同 `_test*` 约定），videoID-marker 安全 guard mutation 验证过（删 guard → 误删他视频测试 fail）。macOS 799 + Windows 824 全绿。
+
+### 17.2 确认健康（未改）
+- **下载清理可恢复**：`deleteAllDownloads` 用 `trashItem`（移到废纸篓，非永久删）——用户可从废纸篓恢复。boundary 测试已断言 `trashItem` + 反断言不用 `contentsOfDirectory` 硬删。
+- **删除有二次确认**：模型/VAD/下载/依赖卸载各有 `confirmationDialog` + destructive 角色按钮 + cancel。
+- **删除失败有文案**：`deleteAllASRModels`/`deleteAllDownloads` catch 落 `storageDeletionFailed`（含系统错误详情）；目录不存在视为已清空（幂等，不报错）。
+- **尺寸计算稳健**：`directorySize` 用 enumerator + `resourceValues`，逐文件 catch 跳过不可访问项（权限失败不中断），目录不可枚举返回 0；后台 `Task.detached` 算不卡 UI；`storageCalculating` 有 spinner。`formattedSize` 0 → "0 KB"、否则 ByteCountFormatter。
+- **分类计数不重复**：support 尺寸 = 总 support − (models+vad)（`max(…,0)` 防负），避免 ASR 资产被 support 与 models 双算。
+- **半截产物清理**：模型复制中途失败留下的半截 .bin 有专门清理（SettingsView:1317 注释 + 逻辑），避免占存储或被误当坏模型。
+- **登录 jar 清理**：见 §15（clear 删所有 jar + 旧全局 + WKWebsite 数据，幂等）。
+
+### 17.3 记录（非缺陷）
+- 存储 UI（storageSection/directorySize/formattedSize）在 App target，只有源码扫描 boundary 测试（已相当细）；directorySize/formattedSize 纯逻辑想直测需下沉 Core——低价值（逻辑简单 + 已被 boundary 覆盖结构），不做。真正有安全风险的清理逻辑（临时文件）在 Core 且本轮已补行为测试。
+
+### 停机依据（本维度）
+临时文件清理的安全属性（只删本视频残留）双端补齐行为测试 + mutation 验证。删除可恢复（废纸篓）、二次确认、失败文案、尺寸计算权限失败降级、分类不双算、半截产物清理——经代码级审查 + 既有 boundary 测试确认健康。存储 UI 纯逻辑下沉 Core 属低价值，不做。
