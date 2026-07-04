@@ -384,22 +384,12 @@ private struct QueueSidebarRow: View {
     }
 
     private var thumbnail: some View {
-        AsyncImage(url: item.thumbnailURL) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().scaledToFill()
-            default:
-                Rectangle()
-                    .fill(.quaternary)
-                    .overlay(Image(systemName: "film").font(.caption2).foregroundStyle(.tertiary))
-            }
-        }
-        .frame(width: 48, height: 27)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
+        VideoThumbnail(
+            url: item.thumbnailURL,
+            cornerRadius: Radius.thumbnailRow,
+            placeholderFont: .caption2
         )
+        .frame(width: 48, height: 27)
     }
 
     /// 右侧状态指示：进行中→进度环；done→对勾；failed→橙色告警；cancelled→灰色。

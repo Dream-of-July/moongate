@@ -1338,26 +1338,8 @@ struct ContentView: View {
 
     private func infoCard(_ info: VideoInfo) -> some View {
         HStack(alignment: .top, spacing: Spacing.lg) {
-            AsyncImage(url: info.thumbnailURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Rectangle()
-                        .fill(.quaternary)
-                        .overlay(
-                            Image(systemName: "film")
-                                .foregroundStyle(.tertiary)
-                        )
-                }
-            }
-            .frame(width: Thumbnail.cardWidth, height: Thumbnail.cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous))
-            // 极细描边让缩略图从卡片背景「浮起」，两种模式下都能形成清晰边界。
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.thumbnailCard, style: .continuous)
-                    .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
-            )
+            VideoThumbnail(url: info.thumbnailURL, cornerRadius: Radius.thumbnailCard)
+                .frame(width: Thumbnail.cardWidth, height: Thumbnail.cardHeight)
             VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(info.title)
                     .font(.headline)

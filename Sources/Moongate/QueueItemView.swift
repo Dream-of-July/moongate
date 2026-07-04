@@ -54,24 +54,8 @@ struct QueueItemView: View {
     // MARK: - 缩略图
 
     private var thumbnail: some View {
-        AsyncImage(url: item.thumbnailURL) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().scaledToFill()
-            default:
-                Rectangle()
-                    .fill(.quaternary)
-                    .overlay(Image(systemName: "film").foregroundStyle(.tertiary))
-            }
-        }
-        .frame(width: Thumbnail.rowWidth, height: Thumbnail.rowHeight)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous))
-        // 与 ContentView 信息卡缩略图统一的 0.5pt 极细描边，让缩略图从行背景「浮起」，
-        // light/dark 两种模式下都能形成清晰边界。
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.thumbnailRow, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
-        )
+        VideoThumbnail(url: item.thumbnailURL, cornerRadius: Radius.thumbnailRow)
+            .frame(width: Thumbnail.rowWidth, height: Thumbnail.rowHeight)
     }
 
     // MARK: - 文案
