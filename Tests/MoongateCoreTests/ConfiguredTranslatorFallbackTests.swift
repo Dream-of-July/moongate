@@ -72,6 +72,79 @@ final class ConfiguredTranslatorFallbackTests: XCTestCase {
         XCTAssertEqual(result.map(\.text), [".", "点火"])
     }
 
+    /// 输出超限时递归对半拆分：整块（30 条）触发 reachedOutputLimit，两个 15 条半块成功。
+    /// 覆盖 translateChunk 的 depth<2 && half>=8 拆分路径——长字幕的关键容错，此前无测试。
+    func testChunkSplitsInHalfWhenOutputLimitReached() async throws {
+        let cues = (1...30).map { i in
+            SubtitleCue(index: i, start: "00:00:\(String(format: "%02d", i)),000",
+                        end: "00:00:\(String(format: "%02d", i)),500", text: "Line \(i).")
+        }
+        let source = try writeSRT("longchunk.en.srt", cues)
+        let sawFullChunk = AttemptCounter()
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, userContent, _, _ in
+                let lineCount = userContent.split(separator: "\n", omittingEmptySubsequences: false).count
+                // 整块 30 条：假装超出输出上限，逼迫对半拆。
+                if lineCount == 30 {
+                    _ = await sawFullChunk.next()
+                    return ModelReply(text: "", reachedOutputLimit: true)
+                }
+                // 15 条半块：正常返回逐行译文。
+                return ModelReply(text: translatedLines(from: userContent), reachedOutputLimit: false)
+            }
+        )
+
+        let output = try await translator.translate(
+            srtFile: source,
+            style: .chineseOnly,
+            context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+            control: nil,
+            progress: { _ in }
+        )
+
+        let result = parseSRT(try String(contentsOf: output, encoding: .utf8))
+        XCTAssertEqual(result.count, 30, "拆分后所有 30 条都应回贴，无丢条")
+        // 全部由半块译出（译文形如「中<编号>」），无一落回原文。
+        XCTAssertEqual(result.map(\.text), (1...30).map { "中\($0)" })
+        let full = await sawFullChunk.value()
+        XCTAssertGreaterThanOrEqual(full, 1, "应至少尝试过整块并触发拆分")
+    }
+
+    /// 输出超限且无法再拆（块太小、无法二分到 >=8）时：抛出本地化的 outputLimitReached，
+    /// 而不是静默产出空译文或崩溃。用一个只有 3 条的输入，整块即触顶。
+    func testUnsplittableOutputLimitThrowsLocalizedError() async throws {
+        let source = try writeSRT("tiny.en.srt", [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "A."),
+            SubtitleCue(index: 2, start: "00:00:03,000", end: "00:00:04,000", text: "B."),
+            SubtitleCue(index: 3, start: "00:00:05,000", end: "00:00:06,000", text: "C.")
+        ])
+        let translator = ConfiguredTranslator(
+            settings: cloudSettings(),
+            appleTranslationExecutor: DefaultAppleTranslationExecutor(),
+            modelSender: { _, _, _, _, _ in
+                ModelReply(text: "", reachedOutputLimit: true)
+            }
+        )
+
+        do {
+            _ = try await translator.translate(
+                srtFile: source,
+                style: .chineseOnly,
+                context: TranslationContext(sourceLanguage: "en", targetLanguage: "zh-Hans"),
+                control: nil,
+                progress: { _ in }
+            )
+            XCTFail("无法拆分的输出超限应抛错，而非静默完成")
+        } catch let MoongateError.translateFailed(reason) {
+            // TranslatorL10n 是 private，断言本地化文案的稳定子串（默认语言 zhHans）：
+            // 「减小每块字幕条数 / 检查 max_tokens」是给用户的可行动指引。
+            XCTAssertTrue(reason.contains("超出模型输出上限") || reason.contains("output limit"),
+                          "应给出「减小分块 / 检查 max_tokens」的可行动文案，实际：\(reason)")
+        }
+    }
+
     func testTranslatorPreservesOutputWhenSourceLanguageLeakageRetryStillLooksBad() async throws {
         let source = try writeSRT("koupen.ja.srt", [
             SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,000", text: "チョコバナナ"),
