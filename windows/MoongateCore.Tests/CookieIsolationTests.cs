@@ -125,6 +125,79 @@ public class CookieIsolationTests : IDisposable
         Assert.Null(NetscapeCookieFile.CookieHeaderFor(new Uri("http://missav.live/"), path));
     }
 
+    /// <summary>已过期的 cookie（expiry &lt;= now）不得进入 Cookie header，未过期的保留。
+    /// 与 macOS testCookieHeaderDropsExpiredCookies 对等；此前 header 测试都用 9999999999。</summary>
+    [Fact]
+    public void CookieHeaderFor_DropsExpiredCookies()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var path = Path.Combine(_dir, "site-example.com.txt");
+        File.WriteAllText(path, string.Join('\n', [
+            "# Netscape HTTP Cookie File",
+            $".example.com\tTRUE\t/\tTRUE\t{now - 3600}\texpired\told",
+            $".example.com\tTRUE\t/\tTRUE\t{now + 3600}\tfresh\tnew",
+        ]) + "\n");
+
+        Assert.Equal("fresh=new",
+            NetscapeCookieFile.CookieHeaderFor(new Uri("https://example.com/"), path));
+    }
+
+    /// <summary>全部 cookie 过期时 header 为 null（无可发送凭证）。</summary>
+    [Fact]
+    public void CookieHeaderFor_AllExpired_ReturnsNull()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var path = Path.Combine(_dir, "site-example.com.txt");
+        File.WriteAllText(path, string.Join('\n', [
+            "# Netscape HTTP Cookie File",
+            $".example.com\tTRUE\t/\tTRUE\t{now - 10}\ta\t1",
+            $".example.com\tTRUE\t/\tTRUE\t{now - 10}\tb\t2",
+        ]) + "\n");
+
+        Assert.Null(NetscapeCookieFile.CookieHeaderFor(new Uri("https://example.com/"), path));
+    }
+
+    /// <summary>会话 cookie（expiry 字段 0）读回为 null（无过期时间），永不因过期被丢。</summary>
+    [Fact]
+    public void SessionCookieWithZeroExpiry_IsNeverDroppedAsExpired()
+    {
+        var path = Path.Combine(_dir, "site-example.com.txt");
+        File.WriteAllText(path, string.Join('\n', [
+            "# Netscape HTTP Cookie File",
+            ".example.com\tTRUE\t/\tTRUE\t0\tsession\tkeep",
+        ]) + "\n");
+
+        var records = NetscapeCookieFile.Read(path);
+        Assert.Single(records);
+        Assert.Null(records[0].ExpiresEpochSeconds);
+
+        Assert.Equal("session=keep",
+            NetscapeCookieFile.CookieHeaderFor(new Uri("https://example.com/"), path));
+    }
+
+    /// <summary>write→read 往返保留过期语义：会话 cookie（ExpiresEpochSeconds=null）写 0、读回 null；
+    /// 持久 cookie 保留正整数过期时间。</summary>
+    [Fact]
+    public void WriteRead_PreservesExpirySemantics()
+    {
+        var path = Path.Combine(_dir, "rt-expiry.txt");
+        var persistent = new CookieRecord
+        {
+            Domain = ".example.com", Path = "/", Name = "persist", Value = "1",
+            IsSecure = true, ExpiresEpochSeconds = 4_000_000_000,
+        };
+        var session = new CookieRecord
+        {
+            Domain = ".example.com", Path = "/", Name = "sess", Value = "2",
+            IsSecure = true, ExpiresEpochSeconds = null,
+        };
+        NetscapeCookieFile.Write([persistent, session], path);
+        var read = NetscapeCookieFile.Read(path);
+
+        Assert.Equal(4_000_000_000, read.Single(c => c.Name == "persist").ExpiresEpochSeconds);
+        Assert.Null(read.Single(c => c.Name == "sess").ExpiresEpochSeconds);
+    }
+
     [Fact]
     public void ContainsAuthCookie_RequiresKnownAuthCookieOnAllowedDomain()
     {
