@@ -57,3 +57,23 @@
 - 正确判为"无需测试"：DesignTokens（20 纯常量，测试即重述定义）、VideoThumbnail 的琐碎视图逻辑（已由 boundary 守护关键行为）。
 - 已知不做（真实回归风险，非低风险）：QueueStatusFormatter dedup（QueueItem 深耦 App target，抽取需大迁移）。
 
+## 六、队列持久化 / 退出处理 —— 确认健康（有意的临时队列设计，非缺口）
+只读审查"App 重启后队列状态"这一维度：
+- **队列是内存态**（`@Published var items = []`，无持久化/恢复）。这是**有意设计**，不是遗漏——退出时有明确的中止确认（App.swift `abortConfirmationMessage`）：仅当有未到终态任务时警告"N 个任务进行中，关闭会全部中止"，用户显式选择"保留任务/中止任务"，**无静默数据丢失**。
+- **计数精确**：`openTaskCount = items.filter isOpen`，`isOpen` 干净排除终态（done/failed/cancelled）——确认只对真正进行中的任务警告，不会把已完成项算进去误警。
+- **测试守护**：`MacOSAppBoundaryTests.testAbortConfirmationExplainsChoicesWithoutChangingButtonsOrReturnMapping`（按钮 + 返回值映射）+ `MacOSQueueBoundaryTests`（openTaskCount/pausedOpenTaskCount）。
+- **判断**：当前行为安全、诚实、已测。**非缺陷**。"重启后恢复下载"是竞品（Downie/Parabolic）有的增强，但需序列化 QueueItem + 可续传部分文件 + 重挂 yt-dlp resume——是**较大功能，属七月的产品路线决策**，不是低风险自主修项。记录为增强候选，不自主做。
+
+
+## 七、平台特定 URL 解析 / 下载覆盖（B站/YouTube/TikTok）—— 确认健康
+只读审查用户点名的平台覆盖维度：
+- **平台识别广且有针对性**：`Engine.isNativeExtractorHost` 覆盖 YouTube / Bilibili / TikTok / Douyin / Xiaohongshu——这些被标记为 yt-dlp 原生 extractor，解析失败直接给真实原因而非回退 PageSniffer 显示误导性"页面加载失败"。
+- **短链/风控/登录引导到位**：短链覆盖 `vt.tiktok.com` / `v.douyin.com` / `xhslink.com` / `b23.tv`；Bilibili HTTP 412 风控给可操作的中文提示（等待/换网络/别反复登录）；未登录 412 触发登录引导 WebView；per-site cookie 隔离（youtube/bilibili 显式 + 其它 `dynamicKey(forHost:)` 动态）。
+- **测试守护**：`LoginDetectionTests.testNativeExtractorHostsIncludeShortVideoSites`（TikTok/Douyin/Xiaohongshu 含短链 + 非平台 host 反例，用 `_testIsNativeExtractorHost` 钩子）、`testBilibili412WithoutSavedCookiesPromptsLogin` / `WithSavedCookiesKeepsRiskControlHint`、`CookieSitesTests`(8)。
+- **判断**：平台覆盖思虑周全、测试充分。**非缺陷**。TikTok 无专门 CookieSite 是合理的——靠 yt-dlp 原生支持 + 动态 cookie 隔离，无需硬编码。
+
+## 审查收敛观察（诚实评估）
+截至本轮，用户点名的维度（网页下载/平台覆盖、分词器/分段、画质调节、字幕调节/大小、登录到全路径、首次使用、性能、错误状态、i18n、并发、跨平台）已系统审完。近几轮结果从"发现可修缺口"转为"确认健康 + 证据化"，是收敛信号：
+- **本分支已修的低风险缺口**（测试守护为主）：StageSlotPool 行为测试、SplitLayout/VideoThumbnail boundary、iconButton a11y label、颜色继承 guard、双端 fallback 可测化、Windows 三语键集守护、语言标签/ai- 前缀双端修复、字幕外观三设置双端对等等。
+- **剩余均为需七月决策或有回归风险的项**（已证据化，不自主做）：基准字号 13/15 对齐、Bilibili 探测 port Windows、readability eval 双语口径修正（动基线）、平台字幕可读性提示（动 timingWarning 触发面）、CHANGELOG/发布、三栏设默认、队列持久化/续传、QueueStatusFormatter dedup。
+- 停机依据：可自主、可验证、不改现有行为/基线的缺口已基本清空；继续深挖要么触碰上述决策项，要么是边际递减的重复确认。
