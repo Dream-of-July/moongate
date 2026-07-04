@@ -58,6 +58,13 @@ public static class LanguageCatalog
     {
         if (string.IsNullOrWhiteSpace(code)) return "";
         var folded = code.Trim().ToLowerInvariant();
+        // Bilibili 的 AI 字幕码是 "ai-zh"/"ai-en"，其中 "ai" 只是生成方式标记，真正的语言在后缀。
+        // 不剥掉的话按 "-" 切分会得到伪语言 "ai"，导致中文 AI 字幕永远匹配不上中文源语言而被跳过走 ASR。
+        // 与 macOS LanguageCatalog.normalize 一致。
+        if (folded.StartsWith("ai-", StringComparison.Ordinal) && folded.Length > 3)
+        {
+            folded = folded[3..];
+        }
         if (AliasNormalization.TryGetValue(folded, out var mapped)) return mapped;
         if (folded.StartsWith("zh-", StringComparison.Ordinal))
         {

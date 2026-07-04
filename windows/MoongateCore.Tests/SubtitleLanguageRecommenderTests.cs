@@ -200,6 +200,9 @@ public class SubtitleLanguageRecommenderTests
         Assert.Equal("he", LanguageCatalog.Normalize("iw"));
         Assert.Equal("id", LanguageCatalog.Normalize("in"));
         Assert.Equal("si", LanguageCatalog.Normalize("si"));
+        // Bilibili AI 字幕码 "ai-zh"/"ai-en"：剥掉 "ai" 生成标记，取真实语言（与 macOS 一致）。
+        Assert.Equal("zh-Hans", LanguageCatalog.Normalize("ai-zh"));
+        Assert.Equal("en", LanguageCatalog.Normalize("ai-en"));
 
         Assert.False(LanguageCatalog.IsRareLanguage("en"));
         Assert.True(LanguageCatalog.IsRareLanguage("si"));
