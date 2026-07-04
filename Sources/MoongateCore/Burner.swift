@@ -216,10 +216,16 @@ public struct FFmpegBurner: SubtitleBurner {
             let cues = parseSRT(srtText)
             let subtitleFilter: String
             if cues.isEmpty {
-                // 解析不出来就按原样走 SRT + force_style 的老路
+                // 解析不出来就按原样走 SRT + force_style 的老路。
+                // 外观设置也带上：字号按倍率缩放（下限 8）、Alignment 用位置、PrimaryColour 用颜色（ASS BGR，&H 前缀），
+                // 与 makeASS 主路径及 Windows 端兜底路径行为一致——否则用户设的字号/位置/颜色在这条路径会被静默丢弃。
                 try fm.copyItem(at: subtitle, to: tempDir.appendingPathComponent("subs.srt"))
+                let safeScale = subtitleFontScale.isFinite && subtitleFontScale > 0 ? subtitleFontScale : 1.0
+                let forcedSize = max(8, Int((15.0 * safeScale).rounded()))
                 subtitleFilter = "subtitles=subs.srt:force_style="
-                    + "'FontName=\(Self.chineseFontName),FontSize=15,Outline=1,Shadow=0,MarginV=20'"
+                    + "'FontName=\(Self.chineseFontName),FontSize=\(forcedSize),"
+                    + "PrimaryColour=&H00\(subtitleColorBGRHex),Alignment=\(subtitleAlignment),"
+                    + "Outline=1,Shadow=0,MarginV=20'"
             } else {
                 // 字幕坐标系/字号按视频长宽比自适应（缩放不改变比例，用源尺寸即可）
                 let aspect: Double = {
