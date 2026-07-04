@@ -36,3 +36,10 @@ cues=parse_srt(open('<SRT路径>',encoding='utf-8').read())
 print(evaluate_readability(cues,'x',language='zh-Hans')['median_reading_speed_cps'])
 "
 ```
+
+## 追加：尝试写 bilingual-aware 评测函数的教训（已回退，未合入）
+试着新增一个旁路的 `evaluate_bilingual_readability`（按行分语言判 CPS/预算），实测发现**比不加更糟**，已回退：
+- **反而回归单语样本**：华为(单语中文)从 99% 掉到 75%——因为朴素"每行按单行上限判"比原 `_exceeds_display_budget` 的**两行 wrap 预算**(2×max_chars_per_line)更严，把单语可 wrap 的长行误判 too_long。
+- **双语样本 too_long 仍高**：Spotify 330 条——双语的英文原文行本就常 >42 字，但烧录时它是 80% 字号的次行，显示预算不同于普通两行。正确建模需要"译文行按 CJK 单行、原文行按其字号折算预算"，比单纯分行复杂。
+- **正确结论**：双语可读性度量需要同时正确建模 (a) 两行 wrap 预算 vs 双语固定两行、(b) 次行 80% 字号的等效字符预算、(c) CPS 只算主行——三者缺一就会给错信号。这不是一个小旁路函数能可靠做对的，需专门设计 + 用双语 baseline 语料验证精确率。**故不自主合入；作为 eval 工具的专项改进交七月，附本次失败教训避免重蹈。**
+- 唯一被新函数正确捕捉的真信号：Spotify `too_fast` 从 115 → 5（按译文行算 CPS 才对）——印证"合并计字符高估 too_fast"这个方向是对的，但整体函数因 too_long 建模错误不可用。
