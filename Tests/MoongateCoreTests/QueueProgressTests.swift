@@ -221,4 +221,55 @@ final class QueueProgressTests: XCTestCase {
         XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds(" 02:00 "), 120)
         XCTAssertEqual(QueueProgressEstimator.parseEtaSeconds("00:00"), 0)
     }
+
+    // MARK: - estimatedRemainingSeconds 降级边界（ETA 不可信时不给数字）
+
+    /// 有可信的 source ETA（来自 yt-dlp）时直接采用，标为精确（非估算）。
+    func testEstimatedRemainingPrefersSourceEtaAsExact() throws {
+        let est = try XCTUnwrap(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 100, phaseProgress: 0.5, sourceEtaSeconds: 42))
+        XCTAssertEqual(est.seconds, 42, accuracy: 1e-9)
+        XCTAssertFalse(est.isApproximate, "source ETA 是精确值，不应标为约数")
+    }
+
+    /// 非法的 source ETA（负数 / 非有限）不被采用；回落到自估算（此处进度足够→给约数）。
+    func testEstimatedRemainingRejectsInvalidSourceEtaAndFallsBackToSlope() throws {
+        for badEta in [-1.0, Double.nan, Double.infinity] {
+            let est = try XCTUnwrap(QueueProgressEstimator.estimatedRemainingSeconds(
+                elapsedSeconds: 10, phaseProgress: 0.25, sourceEtaSeconds: badEta))
+            // 非法 source ETA 被拒后走斜率自估：10 * (1-0.25)/0.25 = 30，标为约数。
+            XCTAssertEqual(est.seconds, 30, accuracy: 1e-9)
+            XCTAssertTrue(est.isApproximate)
+        }
+    }
+
+    /// 刚开始（elapsed < 最小采样时长）→ nil，UI 降级为「正在估算」而非跳数字。
+    func testEstimatedRemainingIsNilWhenTooEarly() {
+        XCTAssertNil(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 1, phaseProgress: 0.5, sourceEtaSeconds: nil),
+            "elapsed < minimumElapsedSeconds(3) 时不给不可信估算")
+    }
+
+    /// 进度过小（< 最小进度）→ nil，避免用极小分母外推出荒谬的剩余时间。
+    func testEstimatedRemainingIsNilWhenProgressTooSmall() {
+        XCTAssertNil(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 100, phaseProgress: 0.01, sourceEtaSeconds: nil),
+            "progress < minimumProgress(0.03) 时不外推")
+    }
+
+    /// 进度已满（>=1）或缺失 → nil（无剩余可估）。
+    func testEstimatedRemainingIsNilWhenComplete() {
+        XCTAssertNil(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 100, phaseProgress: 1.0, sourceEtaSeconds: nil))
+        XCTAssertNil(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 100, phaseProgress: nil, sourceEtaSeconds: nil))
+    }
+
+    /// source ETA 为 0（下载即将结束）是合法精确值，应采用而非当作缺失。
+    func testEstimatedRemainingAcceptsZeroSourceEta() throws {
+        let est = try XCTUnwrap(QueueProgressEstimator.estimatedRemainingSeconds(
+            elapsedSeconds: 100, phaseProgress: 0.99, sourceEtaSeconds: 0))
+        XCTAssertEqual(est.seconds, 0, accuracy: 1e-9)
+        XCTAssertFalse(est.isApproximate)
+    }
 }
