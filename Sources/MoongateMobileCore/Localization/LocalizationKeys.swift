@@ -141,6 +141,7 @@ public enum L {
         public static let willBurnSubtitle = "L.Ready.WillBurnSubtitle"
         public static let willTranslateSubtitle = "L.Ready.WillTranslateSubtitle"
         public static let openSettings = "L.Ready.OpenSettings"
+        public static let adjustSubtitleStyle = "L.Ready.AdjustSubtitleStyle"
         public static let currentEngine = "L.Ready.CurrentEngine"
         public static let status = "L.Ready.Status"
         public static let primaryReason = "L.Ready.PrimaryReason"

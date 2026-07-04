@@ -121,6 +121,7 @@ extension LocalizationTables {
         L.Ready.willBurnSubtitle: "將燒錄：%@",
         L.Ready.willTranslateSubtitle: "將翻譯：%@",
         L.Ready.openSettings: "去設定",
+        L.Ready.adjustSubtitleStyle: "調整字幕大小、位置與顏色",
         L.Ready.currentEngine: "目前引擎",
         L.Ready.status: "狀態",
         L.Ready.primaryReason: "主要原因",

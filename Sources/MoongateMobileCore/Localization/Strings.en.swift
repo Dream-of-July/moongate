@@ -120,6 +120,7 @@ extension LocalizationTables {
         L.Ready.willBurnSubtitle: "Will burn in: %@",
         L.Ready.willTranslateSubtitle: "Will translate: %@",
         L.Ready.openSettings: "Open Settings",
+        L.Ready.adjustSubtitleStyle: "Adjust subtitle size, position, and color",
         L.Ready.currentEngine: "Current engine",
         L.Ready.status: "Status",
         L.Ready.primaryReason: "Primary reason",

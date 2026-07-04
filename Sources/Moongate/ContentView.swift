@@ -441,6 +441,17 @@ struct ContentView: View {
                                 Divider().padding(.horizontal, Spacing.lg)
                                 subtitleSourceRows(info, state: subtitleState)
                             }
+                            // 仅烧录模式下字幕外观（大小/位置/颜色）才生效——就地给一个跳转设置的入口，
+                            // 省得用户为调外观翻找设置窗口（复用 openSettings(paneID:) 深链到「字幕」分区）。
+                            if subtitleState.intent.requiresBurnIn {
+                                Divider().padding(.horizontal, Spacing.lg)
+                                Button(localizer.t(L.Ready.adjustSubtitleStyle)) {
+                                    model.openSettings(paneID: "subtitles")
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .padding(.horizontal, Spacing.lg)
+                            }
                         }
                     }
                 }
