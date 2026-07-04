@@ -48,3 +48,12 @@
   - **✅ 已解决（后续 commit）**：复核依赖后确认这是零逻辑的纯迁移（StageSlotPool 只依赖 TaskControlToken + MoongateError，均已在 MoongateCore；只被 QueueManager 引用），已下沉到 `Sources/MoongateCore/StageSlotPool.swift` 并补 5 个行为单测（`StageSlotPoolTests`）。原判"有回归风险"过度保守——实为可安全自主的关系解耦。build + 725 测试全绿。
   - ~~给七月的可执行建议（非本轮）~~：已自主完成，无需七月决策。
 
+## 四、登录流程 / web 下载批量反馈 —— 确认健康（第三轮只读）
+- **登录失败路径覆盖充分**：`MacOSLoginBoundaryTests` 10 个用例覆盖 cookie 导出按站点过滤+写 per-site jar、失败起始 URL 需 jar 可用才重试、导航加载态维护（不误报 cancelled）、cookie 就绪只显存在性、host-only 显示等。失败文案本地化齐（`L.Login.exportFailed`/`noUsableCookiesForPage`/`loadFailed`）。C# 侧 `WindowsLoginCookieExportVerifiesJarMatchesStartUrlBeforeRetrying` 对等。R8 视觉精修未扰动这些逻辑（测试全绿）。无缺口。
+- **web 下载批量反馈**：`processBatch` 累计 added/duplicated/failedHosts → `enqueueNotice`（`L.Main.batchAdded/batchDuplicateCount/batchFailedCount`），失败站点展示 `prefix(2)` 有界，逐个 URL 失败不中断整批（catch 累计继续）。取消用 session token 作废陈旧回调。反馈完整、有界、本地化。无缺口。
+
+## 五、本分支新代码测试覆盖收口
+- StageSlotPool 行为测试(5)、SplitLayout boundary(5)、VideoThumbnail boundary(2)、颜色继承 guard、双端 fallback 可测化、Windows 三语键集守护——本分支所有实质新代码均有测试守护。
+- 正确判为"无需测试"：DesignTokens（20 纯常量，测试即重述定义）、VideoThumbnail 的琐碎视图逻辑（已由 boundary 守护关键行为）。
+- 已知不做（真实回归风险，非低风险）：QueueStatusFormatter dedup（QueueItem 深耦 App target，抽取需大迁移）。
+
