@@ -641,6 +641,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(localizer.t(L.Settings.localASRDeleteModel))
+                    .accessibilityLabel(localizer.t(L.Settings.localASRDeleteModel))
                 }
             } else if entry.installState == .badHash {
                 Button(localizer.t(L.Settings.localASRSetupRepair)) {
@@ -735,6 +736,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(localizer.t(L.Settings.localASRDeleteImportedModel))
+                    .accessibilityLabel(localizer.t(L.Settings.localASRDeleteImportedModel))
                 }
             }
             .padding(.vertical, 7)
