@@ -1799,14 +1799,7 @@ final class QueueManager: ObservableObject {
             character.isLetter || character.isNumber || character == "-" ? character : "-"
         }
         let stem = "imported-subtitle.\(String(safeLanguage))"
-        let fm = FileManager.default
-        var candidate = directory.appendingPathComponent(stem).appendingPathExtension(ext)
-        var index = 2
-        while fm.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent("\(stem)-\(index)").appendingPathExtension(ext)
-            index += 1
-        }
-        return candidate
+        return UniqueFilename.url(in: directory, stem: stem, ext: ext)
     }
 
     private func prepareLocalASRSourceSubtitleIfNeeded(

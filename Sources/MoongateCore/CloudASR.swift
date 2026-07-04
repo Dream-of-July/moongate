@@ -407,14 +407,8 @@ public struct OpenAICloudASRSubtitleGenerator: CloudASRSubtitleGenerator {
         let base = videoFile.deletingPathExtension().lastPathComponent
         let stem = "\(base).cloud-asr.\(language)"
         let fm = FileManager.default
-        var candidate = directory.appendingPathComponent(stem).appendingPathExtension("srt")
-        var index = 2
-        while fm.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent("\(stem)-\(index)").appendingPathExtension("srt")
-            index += 1
-        }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        return candidate
+        return UniqueFilename.url(in: directory, stem: stem, ext: "srt")
     }
 
     private static func sanitizedLanguageCode(_ value: String) -> String {

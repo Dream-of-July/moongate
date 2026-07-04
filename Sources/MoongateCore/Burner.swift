@@ -367,12 +367,10 @@ public struct FFmpegBurner: SubtitleBurner {
         let stem = video.deletingPathExtension().lastPathComponent
         let directory = video.deletingLastPathComponent()
         let tag = outputTag ?? CoreL10n.t(L.Queue.subtitleVersionTag)
-        var destination = directory.appendingPathComponent("\(stem)\(tag).mp4")
-        var serial = 2
-        while fm.fileExists(atPath: destination.path) {
-            destination = directory.appendingPathComponent("\(stem)\(tag) \(serial).mp4")
-            serial += 1
-        }
+        // 空格分隔以保留「<原名>（字幕版） 2.mp4」的既有观感（与 -<n> 的 sidecar 命名有意不同）。
+        let destination = UniqueFilename.url(
+            in: directory, stem: "\(stem)\(tag)", ext: "mp4", separator: " "
+        )
         do {
             try fm.moveItem(at: produced, to: destination)
         } catch {

@@ -1466,17 +1466,9 @@ struct SettingsView: View {
     }
 
     private func uniqueImportedModelDestination(directoryURL: URL, fileName: String) -> URL {
-        let fm = FileManager.default
         let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         let ext = URL(fileURLWithPath: fileName).pathExtension
-        var candidate = directoryURL.appendingPathComponent(fileName, isDirectory: false)
-        var index = 2
-        while fm.fileExists(atPath: candidate.path) {
-            let nextName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
-            candidate = directoryURL.appendingPathComponent(nextName, isDirectory: false)
-            index += 1
-        }
-        return candidate
+        return UniqueFilename.url(in: directoryURL, stem: base, ext: ext)
     }
 
     private func importedLocalASRModelID(for url: URL) -> String {
