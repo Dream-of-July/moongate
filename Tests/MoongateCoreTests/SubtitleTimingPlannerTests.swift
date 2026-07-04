@@ -51,4 +51,56 @@ final class SubtitleTimingPlannerTests: XCTestCase {
         XCTAssertEqual(SubtitleTimingPlanner.speechTokens("내가 서 있는 곳"), [])
         XCTAssertEqual(SubtitleTimingPlanner.visibleCharacters("你 好 world"), 7)
     }
+
+    // MARK: - shouldAlignToSpeechWindow 判定边界（决定是否按语音窗对齐时序）
+
+    func testShouldAlignReturnsFalseWhenSourceAnchorsAvailable() {
+        // 有源锚点时永不走语音对齐（早退守卫，最高优先级）。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: "hello there", originalDuration: 30,
+            speechAlignTimings: true, canUseSourceAnchors: true, endsSentence: false),
+            "有源锚点时应直接返回 false，不做语音对齐")
+    }
+
+    func testShouldAlignShortLatinPhraseAlignsRegardlessOfDuration() {
+        // 拉丁 <= 3 词的短语：无条件对齐（即便 speechAlignTimings=false、时长短）。
+        XCTAssertTrue(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: "copy that now", originalDuration: 1.0,
+            speechAlignTimings: false, canUseSourceAnchors: false, endsSentence: false),
+            "拉丁 3 词短语应对齐")
+    }
+
+    func testShouldAlignLongLatinNeedsSpeechAlignAndLongDuration() {
+        // 拉丁 > 4 词、非 4 词特例：仅当 speechAlignTimings 且 时长 > normalReadableCueSeconds(9s) 才对齐。
+        let text = "this is a much longer spoken sentence with many words"
+        // speechAlignTimings=false → 不对齐（不满足最后一条 return 的前置）。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: text, originalDuration: 20,
+            speechAlignTimings: false, canUseSourceAnchors: false, endsSentence: true),
+            "长拉丁句在 speechAlignTimings=false 时不应对齐")
+        // speechAlignTimings=true 且时长 > 9s → 对齐。
+        XCTAssertTrue(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: text, originalDuration: 20,
+            speechAlignTimings: true, canUseSourceAnchors: false, endsSentence: true),
+            "长拉丁句在 speechAlignTimings 且时长>9s 时应对齐")
+        // speechAlignTimings=true 但时长 <= 9s → 不对齐（时长边界）。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: text, originalDuration: 5,
+            speechAlignTimings: true, canUseSourceAnchors: false, endsSentence: true),
+            "长拉丁句时长未超 normalReadableCueSeconds(9s) 不应对齐")
+    }
+
+    func testShouldAlignCJKRequiresShortVisibleCountAndLongDuration() {
+        // CJK：visibleCount <= 12 且（speechAlignTimings 或时长>9s）且时长超语音可读秒+0.5 才对齐。
+        // 短 CJK（6 字）+ 长时长 + speechAlignTimings → 对齐。
+        XCTAssertTrue(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: "今天我们继续", originalDuration: 30,
+            speechAlignTimings: true, canUseSourceAnchors: false, endsSentence: false),
+            "短 CJK + 长时长应对齐")
+        // 长 CJK（>12 可见字符）→ 不对齐（visibleCount<=12 边界外）。
+        XCTAssertFalse(SubtitleTimingPlanner.shouldAlignToSpeechWindow(
+            text: "今天我们继续深入讨论这个复杂的话题内容", originalDuration: 30,
+            speechAlignTimings: true, canUseSourceAnchors: false, endsSentence: false),
+            "CJK 可见字符 >12 不应对齐")
+    }
 }
