@@ -79,7 +79,8 @@ internal sealed class FakeBurner : ISubtitleBurner
     public Task<string> BurnAsync(
         string video, string subtitle, int? maxHeight, TaskControlToken? control,
         Action<double> progress, EncodeBackend backend = EncodeBackend.Auto, bool alwaysH264 = false,
-        string? outputTag = null, CancellationToken ct = default)
+        string? outputTag = null, double fontScale = 1.0, int alignment = 2,
+        string primaryColorBgrHex = "FFFFFF", CancellationToken ct = default)
     {
         Interlocked.Increment(ref CallCount);
         LastOutputTag = outputTag;
@@ -1353,7 +1354,8 @@ public class QueueManagerTests
         public Task<string> BurnAsync(
             string video, string subtitle, int? maxHeight, TaskControlToken? control,
             Action<double> progress, EncodeBackend backend = EncodeBackend.Auto, bool alwaysH264 = false,
-            string? outputTag = null, CancellationToken ct = default) =>
+            string? outputTag = null, double fontScale = 1.0, int alignment = 2,
+            string primaryColorBgrHex = "FFFFFF", CancellationToken ct = default) =>
             Task.FromException<string>(error);
     }
 

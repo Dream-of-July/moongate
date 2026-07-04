@@ -559,6 +559,105 @@ public enum SubtitleStyle
 }
 
 /// <summary>
+/// 烧录字幕整体字号缩放档位（作用于双语两级字号的基准）。
+/// JSON 序列化值与 macOS 版一致（small / standard / large / extraLarge）。
+/// </summary>
+public enum SubtitleFontScale
+{
+    /// <summary>小。</summary>
+    Small,
+    /// <summary>标准（现状，倍率 1.0）。</summary>
+    Standard,
+    /// <summary>大。</summary>
+    Large,
+    /// <summary>特大。</summary>
+    ExtraLarge,
+}
+
+/// <summary>
+/// 烧录字幕的垂直位置。作用于 ASS Style 的 Alignment（2=底部居中，8=顶部居中）。
+/// JSON 序列化值与 macOS 版一致（bottom / top）。
+/// </summary>
+public enum SubtitlePosition
+{
+    /// <summary>底部（现状）。</summary>
+    Bottom,
+    /// <summary>顶部。</summary>
+    Top,
+}
+
+/// <summary>
+/// 烧录字幕译文颜色。作用于 ASS Style 的 PrimaryColour（译文与原文统一色），
+/// 黑色描边始终不变以保可读性。白=当前默认（现状），黄=深色画面上更醒目的 CJK 常见偏好。
+/// JSON 序列化值与 macOS 版一致（white / yellow）。
+/// </summary>
+public enum SubtitleColor
+{
+    /// <summary>白色（现状默认）。</summary>
+    White,
+    /// <summary>黄色。</summary>
+    Yellow,
+}
+
+/// <summary>三个烧录外观枚举的换算属性，与 macOS 端映射一一对应。</summary>
+public static class SubtitleAppearanceExtensions
+{
+    /// <summary>相对标准字号的缩放倍率（standard=1.0=现状）。乘到 ASS 基准字号。</summary>
+    public static double Multiplier(this SubtitleFontScale scale) => scale switch
+    {
+        SubtitleFontScale.Small => 0.82,
+        SubtitleFontScale.Large => 1.24,
+        SubtitleFontScale.ExtraLarge => 1.5,
+        _ => 1.0,
+    };
+
+    /// <summary>ASS Alignment 值（numpad 布局：2=底部居中，8=顶部居中）。</summary>
+    public static int AssAlignment(this SubtitlePosition position) =>
+        position == SubtitlePosition.Top ? 8 : 2;
+
+    /// <summary>
+    /// ASS PrimaryColour 的 RGB 部分（ASS 用 BGR 字节序，十六进制，不含 alpha 与 &amp;H 前缀）。
+    /// 白=FFFFFF；黄=RGB(255,255,0)→BGR 字节 00(B) FF(G) FF(R)→"00FFFF"。
+    /// </summary>
+    public static string AssBgrHex(this SubtitleColor color) =>
+        color == SubtitleColor.Yellow ? "00FFFF" : "FFFFFF";
+
+    /// <summary>JSON 持久化值（与 macOS rawValue 一致）。</summary>
+    public static string RawValue(this SubtitleFontScale scale) => scale switch
+    {
+        SubtitleFontScale.Small => "small",
+        SubtitleFontScale.Large => "large",
+        SubtitleFontScale.ExtraLarge => "extraLarge",
+        _ => "standard",
+    };
+
+    /// <summary>缺键/未知值回退默认 Standard，保证老配置与 macOS 配置互通。</summary>
+    public static SubtitleFontScale ToSubtitleFontScale(string? raw) => raw switch
+    {
+        "small" => SubtitleFontScale.Small,
+        "large" => SubtitleFontScale.Large,
+        "extraLarge" => SubtitleFontScale.ExtraLarge,
+        _ => SubtitleFontScale.Standard,
+    };
+
+    /// <summary>JSON 持久化值（与 macOS rawValue 一致）。</summary>
+    public static string RawValue(this SubtitlePosition position) =>
+        position == SubtitlePosition.Top ? "top" : "bottom";
+
+    /// <summary>缺键/未知值回退默认 Bottom。</summary>
+    public static SubtitlePosition ToSubtitlePosition(string? raw) =>
+        raw == "top" ? SubtitlePosition.Top : SubtitlePosition.Bottom;
+
+    /// <summary>JSON 持久化值（与 macOS rawValue 一致）。</summary>
+    public static string RawValue(this SubtitleColor color) =>
+        color == SubtitleColor.Yellow ? "yellow" : "white";
+
+    /// <summary>缺键/未知值回退默认 White。</summary>
+    public static SubtitleColor ToSubtitleColor(string? raw) =>
+        raw == "yellow" ? SubtitleColor.Yellow : SubtitleColor.White;
+}
+
+/// <summary>
 /// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
 /// </summary>
 public sealed class SubtitleCueSourceFragment
@@ -667,6 +766,7 @@ public interface ISubtitleBurner
     /// maxHeight 非空且源更高时缩放到该高度；progress 为 0...1。
     /// backend 决定用硬件（NVENC/QSV/AMF）还是软件编码器；alwaysH264=true 时无视源编码强制 H.264（兼容优先）。
     /// control 非空时支持暂停/取消（挂起/终止 ffmpeg 进程树）。失败抛 BurnFailed。返回输出文件路径。
+    /// fontScale/alignment/primaryColorBgrHex 控制烧录字幕外观（字号倍率 / 垂直位置 / 译文颜色），默认值 = 现状。
     /// </summary>
     Task<string> BurnAsync(
         string video,
@@ -677,5 +777,8 @@ public interface ISubtitleBurner
         EncodeBackend backend = EncodeBackend.Auto,
         bool alwaysH264 = false,
         string? outputTag = null,
+        double fontScale = 1.0,
+        int alignment = 2,
+        string primaryColorBgrHex = "FFFFFF",
         CancellationToken ct = default);
 }
