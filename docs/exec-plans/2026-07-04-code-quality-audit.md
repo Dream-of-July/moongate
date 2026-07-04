@@ -143,3 +143,19 @@
 ### 停机依据（本维度）
 macOS 解析器鲁棒性契约已补直接测试（含可判别 BOM 用例 + mutation 验证），两端持平。BOM 安全全链统一、非-UTF8 优雅降级。编码自动探测是需 eval 的算法层改进，不自主做。
 
+## 十二、下载产物命名冲突 / 去重（多次下载同视频 / 重复导入）
+只读审查用户点名的场景：同一视频多次下载、重复导入字幕、重跑云端 ASR、导入模型重名——产物文件是否会互相覆盖。**发现并修 1 个明确低风险缺口（重复实现 + 零测试），Windows 侧记录为对等候选。**
+
+### 12.1 ✅ 已修：四处 hand-rolled 去重命名循环收敛 + 补测（commit `b98eb80`）
+- **缺口**：macOS 有**四处**等价的「找不冲突文件名 + 序号后缀」循环，全部无测试：`QueueManager.importedSubtitleDestination`（导入字幕，`-<n>`）、`CloudASR.outputURL`（云端 ASR sidecar，`-<n>`）、`SettingsView.uniqueImportedModelDestination`（导入模型，`-<n>`）、`Burner` 输出移动（`（字幕版） <n>`，空格分隔 + 固定 `.mp4`）。任一处回归会**静默覆盖**用户已有产物。
+- **修复**：抽 `MoongateCore.UniqueFilename.url(in:stem:ext:separator:fileExists:)` 单一可测来源（`fileExists` 可注入，不碰真实 FS），四处全部改用。**`separator` 参数精确保留各点既有命名**——三个 sidecar 保 `-<n>`，Burner 传 `separator: " "` 保「（字幕版） 2.mp4」既有观感。行为完全不变（全量 783 测试含真实 Burner/CloudASR 输出路径测试全绿；调用点净 -30/+7）。
+- **测试**：`UniqueFilenameTests`(8)——无冲突/单次冲突/连续冲突/首个空位填充/空扩展名/空格分隔（mutation 验证守护 Burner 命名）/含点主名保扩展名/结果落在目录内。
+- **判断**：逻辑本就正确（序号从 2 起、逐个递增、不覆盖），非行为缺陷；缺口是「四处重复 + 零测试」的可维护性 + 回归风险。属可自主的低风险收敛，符合 [[StageSlotPool/CredentialMasking 下沉 Core]] 的既有模式。
+
+### 12.2 Windows 对等观察（记录，未改）
+- Windows/C# 有同类去重循环：`CloudAsr.cs` 内**两份**近乎相同的 `UniqueOutputPath`/`CloudAlignedOutputPath`（`-{index}`）+ `Burner.cs` 的 ` {serial}.mp4`（空格），同样**无冲突/序号测试**。功能与 macOS 等价（同 `-<n>` / ` <n>` 模式）。
+- **未本轮做**：C# 侧收敛需跨文件重构（CloudAsr 两份 + Burner）且私有方法需测试缝，风险与本地可验证性权衡下，超出本轮「小步低风险」范围。记录为对等候选：可仿 macOS 抽一个 C# `UniqueFilename` 助手 + 补冲突测试。非需七月决策，是后续可自主的对等收敛项。
+
+### 停机依据（本维度）
+macOS 四处去重命名已收敛到单一可测来源 + 8 测试（mutation 验证），行为零变化。Windows 等价逻辑健在但内部重复 + 无测试，记录为可自主的后续对等项（跨文件重构，本轮控制风险未做）。产物覆盖风险在 macOS 侧已被测试守护。
+
