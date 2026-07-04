@@ -179,3 +179,21 @@ macOS 四处去重命名已收敛到单一可测来源 + 8 测试（mutation 验
 ### 停机依据（本维度）
 翻译分块的容错主干（递归拆分、缺失回补、源回退、部分失败可见）经代码级审查健康且现补齐了拆分/超限的直接测试；清掉一处死存储让代码诚实。「超长单 cue 无法拆分」已有明确本地化错误（非崩溃/非静默）。把翻译质量做成用户可见提示是需七月决策的触发面变更，记录不自主做。
 
+## 十四、Windows 侧对等收敛（去重命名 + 翻译分块/超限）
+把 §12/§13 的 macOS 覆盖对等到 Windows/C#。**补 6 个测试 + 发现并记录 1 处行为分歧，无风险重构。**
+
+### 14.1 ✅ 去重命名测试对等（commit `1d7d288`，`ProductFileNamingCollisionTests` 4）
+- C# 去重命名方法（`QueueManager.ImportedSubtitleDestination`、`OpenAICloudAsrSubtitleGenerator.UniqueOutputPath`、`AlignedOpenAICloudAsrSubtitleGenerator.CloudAlignedOutputPath`）均 `private static` 且无冲突测试。把它们 `private`→`internal`（零行为变化；`InternalsVisibleTo("MoongateCore.Tests")` 已设 + `FriendlyDownloadReason` 是 internal-被测的既有先例），补测：首选名/`-2`/`-3` 递增、非法字符 `/`→`-`、空语言→auto、两套云端生成器命名完全一致。
+- **未做的重构（记录）**：`UniqueOutputPath` 与 `CloudAlignedOutputPath` 在两个不同类里**逐字节相同**——真重复，但收敛需跨类共享 helper（中等重构 + 私有测试缝），本轮按边界只补测不重构。候选：抽一个 C# `UniqueFilename` 静态助手（仿 macOS）。Transcoder/Burner 的 ` <n>`（空格）循环内联在大函数里，同样记录不动。
+
+### 14.2 ✅ 翻译分块/超限测试对等（commit `1d7d288`，`ConfiguredTranslatorTests` +2）
+- Windows 有 `ResegmentForReadability_OutputLimitHalvesChunkAndRetries` + provider 级输出超限标志，但**主 `TranslateAsync` 的输出超限拆分 / 无法拆分路径无测试**。补：30 条整块触顶→两 15 条半块成功→30 条全回贴；3 条无法拆分→逐行回退原文。
+
+### 14.3 ⚠️ 发现的行为分歧（记录，未擅改任一端）
+- **无法拆分的输出超限**：**macOS 抛 `outputLimitReached`（整体翻译失败）**；**Windows 走 `RepairMissingTranslationsAsync` 逐行补漏、回退原文（整体完成）**。
+  - 两端 `depth<2 && half>=8` 的拆分逻辑一致；分歧只在「拆不动之后」：macOS 抛错，Windows 降级为源回退（与它自己的 missing-lines 路径一致）。
+  - **判断**：Windows 的降级**对用户更宽容**（不整体失败，得到「至少有原文」的字幕），macOS 更严格（明确告知需减小分块）。两者都合理，属**产品行为取舍**（失败 vs 源回退），**需七月决策后再统一**，不擅改任一端。测试已分别锁定两端实际行为，防无意漂移。
+
+### 停机依据（本维度）
+Windows 去重命名 + 翻译超限/拆分已补 6 测试对等 macOS（visibility 加宽零行为变化）。CloudAsr 两份逐字节重复的真重构记录为后续候选（跨类 helper，控风险未做）。发现的 macOS-抛错 vs Windows-源回退分歧已证据化，需七月定统一方向；两端行为均已被测试锁定。
+
