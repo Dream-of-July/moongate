@@ -65,6 +65,14 @@ Moongate 是成熟的 macOS SwiftUI 视频下载+转写+字幕工具（0.8.2 已
 - R18 配置页token收尾+Layout.readableContentWidth / R19 验收总结文档 / R20 choosingState maxWidth统一 + **运行时验证里程碑**(隔离app打包启动稳定=首次运行时验证) / R21 三栏"添加"真实化(addTasks复用processBatch+add sheet) / R22 字幕预览a11y / R23 三栏detail加载态 / R24 抽VideoThumbnail共享组件(3处) / R25 去emptyDetailSubtitle尾句号 / R26 字幕颜色白/黄(+预览) / R27 ready页深链到字幕外观设置(requiresBurnIn时→subtitles pane)。
 - 累积:716测试全绿(多检查点),debug&release build绿,CLI正常,0警告,Dynamic Type无隐患,文案自然。核心缺口已系统覆盖,继续找边际真问题。
 
+### R28-R31 跨平台对等（本机 dotnet 10.0.300 验证 C#）
+- R28 Windows/C# 补齐字幕大小/位置/颜色(settings.json 键值与 macOS 一致跨平台互通,MoongateCore+WPF build 0错,792测试绿) / R29 Windows 镜像 R4 语言标签校正(ScriptCorrectedLanguageCode,802测试绿) / R30 Windows LanguageCatalog 剥离 Bilibili "ai-" 前缀(中文AI字幕匹配修复,与macOS一致)。
+- **教训**:给 macOS 加字幕/ASR 功能会在 Windows 端留对等缺口,core 逻辑改动需双端同步。本机 dotnet 可验证 C# core+Tests(MoongateApp.Tests 需 Windows VM)。
+
+### 待七月决策的对等缺口（需产品决策,非本轮自主完成）
+- **Bilibili 字幕探测+登录提示**(BilibiliSubtitleProbe/Engine platformSubtitleHint/invalidateInfoCache)：macOS 有(master 遗留 WIP,R1 收尾),**Windows 端完全缺失**。这是较大的完整功能(探测 Bilibili 字幕 API + PlatformSubtitleHint 模型 + Engine 缓存失效 + WPF 登录提示 UI),属跨平台功能路线决策,非机械镜像。此缺口在本分支前已存在(非本次引入的回归)。建议七月决定是否/何时port到Windows。
+- 三栏"添加"已在 R21 用 addTasks 真实化(macOS);若三栏未来上 Windows,需对等。
+
 ## 5. 风险与回滚
 
 每轮独立小 commit，可回滚。每轮 `swift build --product Moongate` 验证，涉及 Core 逻辑加/更新单测。
