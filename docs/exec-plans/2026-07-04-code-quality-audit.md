@@ -86,3 +86,24 @@
   - **三栏**（SplitLayoutView:649）：额外要求 `queue.hasLocalASRGenerator` 才显示，未配置时**整颗按钮隐藏**。
   - **判断**：三栏行为**UX 上更干净**（不给一颗点了才发现没配置的「死按钮」），但与 commit 63「matches legacy across all stages」的措辞不符，且两端不一致。两种都合理，取舍是产品决策：(a) 统一到 legacy「常显 + 引导配置」——可发现性强，但有一次无效点击；(b) 统一到三栏「配置后才显」——干净，但用户不知道有此功能。**flag 默认关，无用户影响，不自主改**，记录供七月定方向后双端对齐。
 
+## 九、真实用户环境边界（文件权限/磁盘/离线/iCloud/路径）
+只读审查用户真实环境的错误处理、文案与覆盖。**发现并修 1 个明确低风险缺口（双端对等），其余确认健康。**
+
+### 9.1 ✅ 已修：磁盘满 / 输出目录不可写的下载失败文案（双端）
+- **缺口**：`friendlyDownloadReason`(mac Engine.swift) / `FriendlyDownloadReason`(win Engine.cs) 只分类 403 + 网络（win 另有证书信任），**磁盘满 / 只读卷 / 权限拒绝 / iCloud 优化存储位置** 这类文件系统写入失败落到通用兜底「下载过程中出现错误」+ 一行裸 stderr，用户不知该清理磁盘还是换目录——而这些是高频真实环境。
+- **修复**：双端各加两个分类器，**排在网络判断之后**（不吞网络错误）：磁盘满(`No space left`/`Errno 28`/`ENOSPC`/`disk quota`；win `WinError 112`)→引导清理磁盘重试；写权限/只读(`Permission denied`/`Errno 13`/`EACCES`/`read-only file system`/`Errno 30`/`unable to open for writing`/`create directory`；win `WinError 5`/`process cannot access the file`)→引导设置里换输出文件夹重试。裸 EPERM(`errno 1`)故意排除（过宽会误伤）。
+- **测试**：mac 新建 `DownloadFailureReasonTests`（6，`friendlyDownloadReason` 此前**零覆盖**，顺带守护了既有 403/网络分支 + 网络 Errno 不被误判为磁盘/权限）；win `EngineParsingTests` +3。**mac 765 + win/C# 809 全绿**。commit `51b9294`。
+
+### 9.2 确认健康（非缺陷，未改）
+- **输出目录确定**：`ViewModel.appDownloadsDirectory` 已有 fallback（`urls(for:).first ?? homeDir/Downloads`，防越界崩溃，对抗审查已改）。`sanitizedFolderName` 处理路径分隔符/控制字符/换行/超长截断(80)/Windows 结尾点号——**路径含空格/中文安全**（空格保留、CJK 不动，只去 `/\:\0` 与换行）。
+- **目录创建**：`download()` 用 `try? createDirectory`，创建失败虽被静默吞，但随后 yt-dlp 写入必报权限/空间错误 → 现已被 9.1 的分类器兜住成可行动文案。链路完整。
+- **analyze 离线/网络**：`friendlyAnalyzeMessage`(mac) / `FriendlyAnalyzeMessage`(win) 已覆盖网络错误 + 无可用清晰度（风控）。analyze 不写盘，磁盘/权限不适用——合理无缺口。
+- **依赖缺失**：`binaryNotFound` 用本地化 key + DependencySetupView 专门引导（R8 已精修）；`errorDescription` 全 case 本地化可行动（前几轮 §一/§3.2 已确认）。
+- **iCloud dataless 导入字幕**：`importSubtitleFile` 选择时只校验扩展名，实际 `copyItem` 在下载流水线 `appendImportedSubtitleFileIfNeeded`(throws) 里；dataless 文件在 macOS 上 copyItem 通常触发自动下载或抛错（非崩溃），失败经 partialFailure 流程兜底。属边缘场景，无低风险专项修法，不自主做。
+
+### 9.3 平台差异（非缺陷，记录）
+- **证书信任错误**：win `FriendlyDownloadReason` 有 `IsCertificateTrustError` 专项分支（企业自签根证书/系统时间错乱），mac 两个函数都无——但 mac 的 SSL 错误被 `isLikelyNetworkError` 的 `"ssl"` 标志兜住，给「网络不稳/检查代理」提示，方向大致对（同样引导查代理），只是不如专项精确。加 mac 证书专项分支需评估 mac SSL 错误形态 + 引入平台特定新分支，非本轮低风险范围，记录供未来对齐。
+
+### 停机依据（本维度）
+文件系统写入失败文案是真实高频缺口，已双端对等修复 + 测试。其余环境边界（输出目录/路径含空格中文/analyze 离线/依赖缺失/iCloud 导入）经代码级审查确认已有合理处理或属边缘无低风险修法。证书信任分支是平台差异非缺陷。
+
