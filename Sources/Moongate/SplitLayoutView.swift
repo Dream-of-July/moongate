@@ -469,6 +469,11 @@ private struct QueueDetailView: View {
             switch phase {
             case .success(let image):
                 image.resizable().scaledToFill()
+            case .empty where item.thumbnailURL != nil:
+                // 缩略图加载中：轻量 ProgressView，避免立刻闪现「无缩略图」占位（HIG progressive-loading）。
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay(ProgressView().controlSize(.small))
             default:
                 Rectangle()
                     .fill(.quaternary)
