@@ -29,3 +29,22 @@
 
 ## 停机依据（本两维度）
 两维度经代码级证据审查均健康；未发现 P0/P1 或低风险覆盖缺口。真正的性能/内存回归验证需在真机长时间运行 + Instruments 采样（GUI/运行时，本 shell 无法做），建议 Windows VM / 本机手动跑长批量下载时用活动监视器观察——已加入手动 QA 建议范畴。代码静态层面无待修项。
+
+## 三、下载失败引导 / 多语言文案 / 队列并发边界（第二轮只读审查）
+
+### 3.1 多语言文案 —— 确认健康
+- **占位符跨三语逐 key 一致**：脚本核验 775 key，`%@`/`%d` 数量三语全一致（0 不一致），三语 key 数相等（775/775/775）——无格式化崩溃/参数错位风险。
+- **本分支新增文案自然、无 AI 味、简繁正确**：idleSupportedSites / 字幕大小·位置·颜色 / 预览 / 调整字幕… 逐条复审；zhHans 用简体（颜色/预览），zhHant 用繁體（顏色/預覽），已核验各文件变体正确、无简繁串档。
+- 复现：`grep '.<key>:' Strings.{en,zhHans,zhHant}.swift`；占位符核验脚本见 session。
+
+### 3.2 下载失败恢复引导 —— 确认健康
+- 队列项失败态按钮按类型分支：`needsLogin != nil` → 登录并重试（`loginAndRetry`）+ 重试 + 删除；一般失败 → 重试 + 删除。
+- 主 `failedState`（ContentView）按 `failedNeedsDependency` / `failedNeedsLogin` 上下文给依赖配置 / 登录 / 重试。
+- 登录成功后 `retryFailedNeedingLogin` 自动重试该站点失败项。恢复路径完整、可行动（与对抗审查结论一致）。
+
+### 3.3 队列并发边界 —— 健康，但有一处已记录的测试覆盖限制
+- **逻辑正确**：pause/resume/cancel、代际（generation）守卫、槽位释放顺序均有源码扫描测试守护（`testPauseDoesNotReleaseTranslationSlot`、`testPauseResumeReportSuccessAndConfirmPauseBeforeReleasingSlot` 等）；`StageSlotPool.acquire` 用 `withCheckedContinuation` 挂起等待、`release/wakeAll` 唤醒，是正确的 async 信号量（非忙等，见第二节）。
+- **覆盖限制（已诊断根因，不自主修）**：`StageSlotPool` 这个 async 信号量原语**只有"按检查"和源码扫描测试，没有行为单测**（实际 acquire N / 阻塞 N+1 / release 唤醒）。根因：它位于 `Moongate`（App 可执行 target），而 SwiftPM **可执行 target 无法被其它 target `@testable import`**——这正是队列 boundary 测试读源码文本而非 import 的原因。
+  - **为何不自主修**：让它可行为测试需把 `StageSlotPool` 移到 `MoongateCore` 库 target。这是对**关键并发原语的重构**，有回归风险，超出"低风险文档/测试补充"范围，触及"不改变现有行为"的谨慎线。
+  - **给七月的可执行建议（非本轮）**：若要补行为测试，可把 `StageSlotPool`（连同 `TaskControlToken` 等纯并发原语）下沉到 MoongateCore，再在 MoongateCoreTests 写确定性并发测试（acquire 占满→下一个 await 挂起→release 后被唤醒→容量调大 wakeAll 重竞争）。属结构性改动，建议独立小分支 + 全量回归。
+
