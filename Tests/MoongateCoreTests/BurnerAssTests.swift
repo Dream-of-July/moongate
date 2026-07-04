@@ -267,4 +267,37 @@ final class BurnerAssTests: XCTestCase {
         }
         XCTAssertTrue(styleLine.contains("&H0AFFFFFF"), "默认应保持白色译文填充 &H0AFFFFFF：\(styleLine)")
     }
+
+    // MARK: - SRT 兜底路径（parseSRT 返回空时）也应应用字幕外观设置
+
+    func testSRTForceStyleFallbackAppliesAppearanceSettings() {
+        // 大号(1.24)+顶部(8)+黄色(00FFFF)：force_style 应带上缩放字号、Alignment=8、黄色 PrimaryColour。
+        let filter = FFmpegBurner.srtForceStyleFilter(
+            fontScale: SubtitleFontScale.large.multiplier,
+            alignment: SubtitlePosition.top.assAlignment,
+            primaryColorBGRHex: SubtitleColor.yellow.assBGRHex
+        )
+        // 15 * 1.24 = 18.6 → 19。
+        XCTAssertTrue(filter.contains("FontSize=19"), "大号应把基准 15 缩放到 19：\(filter)")
+        XCTAssertTrue(filter.contains("Alignment=8"), "顶部应为 Alignment=8：\(filter)")
+        XCTAssertTrue(filter.contains("PrimaryColour=&H0000FFFF"), "黄色应为 &H00 + 00FFFF：\(filter)")
+    }
+
+    func testSRTForceStyleFallbackDefaultsMatchLegacy() {
+        // 默认（标准/底部/白色）：应等价于旧硬编码 FontSize=15、Alignment=2、白色。
+        let filter = FFmpegBurner.srtForceStyleFilter(
+            fontScale: SubtitleFontScale.standard.multiplier,
+            alignment: SubtitlePosition.bottom.assAlignment,
+            primaryColorBGRHex: SubtitleColor.white.assBGRHex
+        )
+        XCTAssertTrue(filter.contains("FontSize=15"), "标准应保持 15pt：\(filter)")
+        XCTAssertTrue(filter.contains("Alignment=2"), "底部应为 Alignment=2：\(filter)")
+        XCTAssertTrue(filter.contains("PrimaryColour=&H00FFFFFF"), "白色 PrimaryColour：\(filter)")
+    }
+
+    func testSRTForceStyleFallbackClampsInvalidScale() {
+        // 非法倍率（0）回落 1.0，字号仍为 15，不会得到 0 或负数。
+        let filter = FFmpegBurner.srtForceStyleFilter(fontScale: 0, alignment: 2, primaryColorBGRHex: "FFFFFF")
+        XCTAssertTrue(filter.contains("FontSize=15"), "非法倍率应回落 1.0 → 15pt：\(filter)")
+    }
 }
