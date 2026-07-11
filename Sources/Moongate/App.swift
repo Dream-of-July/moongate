@@ -67,6 +67,11 @@ struct MoongateApp: App {
                 .keyboardShortcut("v", modifiers: [.command, .shift])
             }
             CommandGroup(after: .toolbar) {
+                Button("显示或隐藏信息栏") {
+                    NotificationCenter.default.post(name: AppWorkspaceCommand.inspectorToggleRequested, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .control])
+
                 Toggle("资料库工作台", isOn: $useLibraryWorkspace)
             }
         }

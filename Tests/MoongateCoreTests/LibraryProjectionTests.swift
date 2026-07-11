@@ -2,6 +2,17 @@ import XCTest
 @testable import MoongateCore
 
 final class LibraryProjectionTests: XCTestCase {
+    func testQueuedDraftIsEditableButCancellingIsRunning() {
+        XCTAssertTrue(LibraryItemState.queued.isActive)
+        XCTAssertTrue(LibraryItemState.queued.isQueued)
+        XCTAssertFalse(LibraryItemState.queued.isRunning)
+
+        XCTAssertTrue(LibraryItemState.cancelling.isActive)
+        XCTAssertFalse(LibraryItemState.cancelling.isQueued)
+        XCTAssertTrue(LibraryItemState.cancelling.isRunning)
+        XCTAssertFalse(LibraryItemState.cancelling.needsAttention)
+    }
+
     func testSortsPinnedThenActiveThenRecentlyUpdated() {
         let pinned = makeItem(title: "Pinned", state: .completed, pinned: true, timestamp: 1)
         let active = makeItem(title: "Active", state: .downloading, timestamp: 2)

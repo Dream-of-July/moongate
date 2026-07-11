@@ -89,6 +89,7 @@ final class QueueManager: ObservableObject {
     /// 队列项当前所处阶段。暂停态不单列，由 QueueItem.isPaused 叠加表示。
     enum ItemStage: Equatable {
         case queued
+        case cancelling
         case downloading
         case translating
         case burning
@@ -133,8 +134,8 @@ final class QueueManager: ObservableObject {
         let info: VideoInfo
         var request: DownloadRequest
         var chineseMode: ChineseSubtitleMode
-        /// 本项使用的设置快照（字幕样式、烧录画质、翻译凭证）
-        let settings: AppSettings
+        /// 待开始时可编辑；`start(id:)` 会在后续生命周期切片中冻结为运行快照。
+        var settings: AppSettings
         var stage: ItemStage
         /// 0...1；nil 表示不确定（处理 / 翻译启动等）
         var progress: Double?
@@ -171,6 +172,8 @@ final class QueueManager: ObservableObject {
         var control: TaskControlToken
         /// 流水线代际：每次 enqueue/retry 递增；@MainActor 写回前校验，作废陈旧回调。
         var generation: Int = 0
+        /// 重新处理任务可跳过网络下载，但仍会在启动时按冻结配置执行后处理。
+        var skipDownloadWhenStarted: Bool
         var task: Task<Void, Never>?
 
         @MainActor
@@ -195,6 +198,19 @@ final class QueueManager: ObservableObject {
             clearProgress()
             overallProgress = 1
         }
+    }
+
+    /// A single pipeline attempt. The queue item stays editable only until this
+    /// context is created; later updates must not leak into an already-started
+    /// Task, including one that has not yet reached its first await.
+    private struct RunContext {
+        let id: UUID
+        let generation: Int
+        let control: TaskControlToken
+        let request: DownloadRequest
+        let mode: ChineseSubtitleMode
+        let settings: AppSettings
+        let skipDownload: Bool
     }
 
     @Published var items: [QueueItem] = []
@@ -288,22 +304,43 @@ final class QueueManager: ObservableObject {
 
     // MARK: - 槽位辅助
 
+    private func runMatches(_ context: RunContext) -> Bool {
+        guard let current = item(context.id) else { return false }
+        return current.generation == context.generation && current.control === context.control
+    }
+
+    /// Returns false for an obsolete or cancelled attempt. A visible cancelling
+    /// task is settled here so a Task cancelled before its first await cannot
+    /// remain stuck in the intermediate state.
+    @discardableResult
+    private func ensureRunActive(_ context: RunContext) -> Bool {
+        guard runMatches(context), let current = item(context.id) else { return false }
+        guard !context.control.isCancelled, current.stage != .cancelling else {
+            finishCancelled(id: context.id, generation: context.generation)
+            return false
+        }
+        return true
+    }
+
     /// 等槽位（满员时先把状态文案改成等待提示），拿到后按代际登记为持有。
     private func acquireSlot(
-        _ pool: StageSlotPool, id: UUID, generation: Int,
-        control: TaskControlToken, waitingText: String
+        _ pool: StageSlotPool,
+        context: RunContext,
+        waitingText: String
     ) async throws {
         if !pool.hasFreeSlot {
-            update(id, generation: generation) { $0.statusText = waitingText }
+            update(context.id, generation: context.generation) { $0.statusText = waitingText }
         }
-        try await pool.acquire(id: id, control: control)
-        // 等待期间可能已被 retry 换代：旧代际拿到的槽立即归还，避免错记到新代际名下。
-        guard item(id)?.generation == generation else {
+        try await pool.acquire(id: context.id, control: context.control)
+        // 等待期间可能已被 retry / remove / cancel：旧代际拿到的槽立即归还，避免错记。
+        guard ensureRunActive(context) else {
             pool.release()
             throw MoongateError.cancelled
         }
-        holdingPool[id] = (generation, pool)
-        update(id, generation: generation) { if $0.statusText == waitingText { $0.statusText = nil } }
+        holdingPool[context.id] = (context.generation, pool)
+        update(context.id, generation: context.generation) {
+            if $0.statusText == waitingText { $0.statusText = nil }
+        }
     }
 
     /// 阶段结束（成功或失败）释放槽位；只释放本代际登记的，暂停已让位时自然空操作。
@@ -334,7 +371,7 @@ final class QueueManager: ObservableObject {
 
     private static func isOpen(_ stage: ItemStage) -> Bool {
         switch stage {
-        case .queued, .downloading, .translating, .burning:
+        case .queued, .cancelling, .downloading, .translating, .burning:
             return true
         case .done, .failed, .cancelled:
             return false
@@ -445,8 +482,43 @@ final class QueueManager: ObservableObject {
         }
     }
 
+    /// 仅待开始草稿可改配置。运行任务的配置必须由其启动快照决定。
     @discardableResult
-    func enqueue(info: VideoInfo, request: DownloadRequest, chineseMode: ChineseSubtitleMode, settings: AppSettings) -> UUID {
+    func updateQueuedConfiguration(
+        id: UUID,
+        request: DownloadRequest,
+        mode: ChineseSubtitleMode,
+        settings: AppSettings
+    ) -> Bool {
+        guard let target = item(id),
+              target.stage == .queued,
+              target.task == nil,
+              !target.control.isCancelled else {
+            return false
+        }
+
+        update(id) {
+            $0.request = request
+            $0.chineseMode = mode
+            $0.settings = settings
+            $0.progressPlan = Self.progressPlan(for: request, mode: mode)
+            $0.workPlan = Self.workPlan(for: request, mode: mode)
+            $0.clearProgress(resetOverall: true)
+            $0.statusText = nil
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+        }
+        return true
+    }
+
+    @discardableResult
+    func enqueue(
+        info: VideoInfo,
+        request: DownloadRequest,
+        chineseMode: ChineseSubtitleMode,
+        settings: AppSettings,
+        startImmediately: Bool = true
+    ) -> UUID {
         let id = UUID()
         let control = TaskControlToken()
         let item = QueueItem(
@@ -470,14 +542,13 @@ final class QueueManager: ObservableObject {
             statusText: nil,
             resultFiles: [],
             isPaused: false,
-            control: control
+            control: control,
+            skipDownloadWhenStarted: false
         )
         items.append(item)
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runPipeline(id: id, skipDownload: false)
+        if startImmediately {
+            _ = beginRun(id: id)
         }
-        update(id) { $0.task = task }
         return id
     }
 
@@ -493,7 +564,8 @@ final class QueueManager: ObservableObject {
         existingFiles: [URL],
         libraryItemID: UUID,
         libraryVersionID: UUID,
-        reuseExistingArtifacts: Bool
+        reuseExistingArtifacts: Bool,
+        startImmediately: Bool = true
     ) -> UUID {
         let id = UUID()
         let control = TaskControlToken()
@@ -518,31 +590,76 @@ final class QueueManager: ObservableObject {
             statusText: nil,
             resultFiles: existingFiles,
             isPaused: false,
-            control: control
+            control: control,
+            skipDownloadWhenStarted: reuseExistingArtifacts
         )
         items.append(item)
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runPipeline(id: id, skipDownload: reuseExistingArtifacts)
+        if startImmediately {
+            _ = beginRun(id: id)
         }
-        update(id) { $0.task = task }
         return id
     }
 
     // MARK: - 流水线
 
-    /// 跑完整条流水线。skipDownload=true 用于重试：已下载产物在 resultFiles 里，跳过下载阶段。
-    private func runPipeline(id: UUID, skipDownload: Bool) async {
-        guard let current = item(id) else { return }
-        let control = current.control
-        let settings = current.settings
-        let mode = current.chineseMode
-        // 启动代际：每次 @MainActor 写回前校验，作废重试后陈旧回调的写入。
-        let generation = current.generation
+    private func beginRun(id: UUID) -> Bool {
+        guard let target = item(id),
+              target.stage == .queued,
+              target.task == nil,
+              !target.control.isCancelled else {
+            return false
+        }
+
+        let context = RunContext(
+            id: id,
+            generation: target.generation,
+            control: target.control,
+            request: target.request,
+            mode: target.chineseMode,
+            settings: target.settings,
+            skipDownload: target.skipDownloadWhenStarted
+        )
+        notifiedTerminalIDs.remove(id)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runPipeline(context)
+        }
+        update(id) { $0.task = task }
+        return true
+    }
+
+    /// Starts one deferred draft and freezes its current request, mode, and settings.
+    @discardableResult
+    func start(id: UUID) -> Bool {
+        beginRun(id: id)
+    }
+
+    /// Starts every deferred draft in queue order. Already-started and terminal items are ignored.
+    @discardableResult
+    func startAll() -> Int {
+        let ids = items.compactMap { item -> UUID? in
+            item.stage == .queued && item.task == nil ? item.id : nil
+        }
+        var started = 0
+        for id in ids where beginRun(id: id) {
+            started += 1
+        }
+        return started
+    }
+
+    /// Runs one immutable configuration snapshot for a queue generation.
+    private func runPipeline(_ context: RunContext) async {
+        guard ensureRunActive(context), let current = item(context.id) else { return }
+        let id = context.id
+        let control = context.control
+        let settings = context.settings
+        let mode = context.mode
+        let request = context.request
+        let generation = context.generation
 
         // 1. 下载
         var downloadFiles: [URL]
-        if skipDownload {
+        if context.skipDownload {
             downloadFiles = current.resultFiles
             update(id, generation: generation) {
                 $0.overallProgress = QueueProgressEstimator.taskOverallProgress(

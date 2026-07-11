@@ -64,6 +64,33 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "1100–1379 pt 和 900–1099 pt 初始都应收起 Inspector")
     }
 
+    func testWorkspaceToolbarKeepsOnlyInspectorAndListOwnsNewDownload() throws {
+        let source = try libraryWorkspaceViewSource()
+        let toolbar = try XCTUnwrap(functionBody(named: "workspaceToolbar", in: source))
+        let list = try XCTUnwrap(functionBody(named: "libraryList", in: source))
+
+        XCTAssertTrue(toolbar.contains("systemImage: \"sidebar.right\""),
+                      "右上角只保留可发现的 Inspector 开关")
+        XCTAssertFalse(toolbar.contains("systemImage: \"plus\""),
+                       "新建下载不应继续挤在右侧工具栏")
+        XCTAssertFalse(toolbar.contains("systemImage: \"sidebar.left\""),
+                       "NavigationSplitView 已提供系统侧栏控制，不能再在右侧复制一个")
+        XCTAssertTrue(list.contains("Label(\"新建下载\", systemImage: \"plus\")"),
+                      "新建下载应属于当前资料列表的标题区")
+        XCTAssertTrue(list.contains("AppWorkspaceCommand.newDownloadRequested"),
+                      "列表标题区的新增动作必须接入同一真实 Sheet 命令")
+    }
+
+    func testWorkspaceToolbarProvidesInspectorMenuEquivalent() throws {
+        let app = try appSource()
+        let workspace = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(app.contains("AppWorkspaceCommand.inspectorToggleRequested"),
+                      "Inspector toolbar action 必须有菜单栏等价入口")
+        XCTAssertTrue(workspace.contains("AppWorkspaceCommand.inspectorToggleRequested"),
+                      "工作台应消费菜单栏 Inspector 切换命令")
+    }
+
     func testMovingFilesToTrashDoesNotOfferIndexOnlyUndo() throws {
         let source = try libraryWorkspaceModelSource()
         let trash = try XCTUnwrap(functionBody(named: "moveArtifactsToTrash", in: source))
@@ -276,6 +303,12 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources").appendingPathComponent("Moongate")
             .appendingPathComponent("ContentView.swift"))
+    }
+
+    private func appSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources").appendingPathComponent("Moongate")
+            .appendingPathComponent("App.swift"))
     }
 
     private func libraryWorkspaceModelSource() throws -> String {

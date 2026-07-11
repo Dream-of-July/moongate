@@ -10,6 +10,7 @@ import MoongateCore
 enum AppWorkspaceCommand {
     static let newDownloadRequested = Notification.Name("com.moongate.workspace.newDownloadRequested")
     static let searchRequested = Notification.Name("com.moongate.workspace.searchRequested")
+    static let inspectorToggleRequested = Notification.Name("com.moongate.workspace.inspectorToggleRequested")
 }
 
 /// 根级「新建下载」sheet。它复用既有批量入队引擎，因此不会在新布局下绕开依赖检查、登录或默认设置。

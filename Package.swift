@@ -20,7 +20,7 @@ var packageTargets: [Target] = [
     ),
     .testTarget(
         name: "MoongateCoreTests",
-        dependencies: ["MoongateCore", "MoongateMobileCore"],
+        dependencies: ["MoongateCore", "MoongateMobileCore", "Moongate"],
         path: "Tests/MoongateCoreTests"
     ),
 ]

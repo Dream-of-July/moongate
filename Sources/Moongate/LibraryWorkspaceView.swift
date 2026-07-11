@@ -41,6 +41,9 @@ struct LibraryWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .moongateLibrarySearchFocus)) { _ in
             searchFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: AppWorkspaceCommand.inspectorToggleRequested)) { _ in
+            workspace.toggleInspector()
+        }
         .sheet(isPresented: $workspace.showRecoverySheet) {
             recoverySheet
         }
@@ -68,14 +71,7 @@ struct LibraryWorkspaceView: View {
 
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            Button {
-                NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
-            } label: {
-                Label("新建下载", systemImage: "plus")
-            }
-            .help("新建下载（⌘N）")
-
+        ToolbarItem(placement: .primaryAction) {
             Button {
                 workspace.toggleInspector()
             } label: {
@@ -85,13 +81,6 @@ struct LibraryWorkspaceView: View {
                 )
             }
             .help(workspace.showInspector ? "隐藏信息栏" : "显示信息栏")
-
-            Button {
-                columnVisibility = columnVisibility == .all ? .doubleColumn : .all
-            } label: {
-                Label("显示侧栏", systemImage: "sidebar.left")
-            }
-            .help("显示或隐藏资料库侧栏")
         }
     }
 
@@ -159,6 +148,15 @@ struct LibraryWorkspaceView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("清除搜索")
                 }
+
+                Button {
+                    NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
+                } label: {
+                    Label("新建下载", systemImage: "plus")
+                }
+                .labelStyle(.iconOnly)
+                .help("新建下载（⌘N）")
+                .accessibilityLabel("新建下载")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
