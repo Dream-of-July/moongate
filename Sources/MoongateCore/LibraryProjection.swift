@@ -1,6 +1,6 @@
 import Foundation
 
-public enum LibraryFilter: Sendable, Equatable {
+public enum LibraryFilter: Sendable, Equatable, Hashable {
     case all
     case active
     case needsAttention

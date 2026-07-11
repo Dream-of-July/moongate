@@ -268,6 +268,9 @@ public struct LibraryItem: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public var title: String
     public var source: LibrarySourceDescriptor?
+    /// Sanitized remote thumbnail descriptor. It is optional so a recovered
+    /// local file can still be represented without inventing a preview URL.
+    public var thumbnail: LibrarySourceDescriptor?
     public var tags: [String]
     public var isPinned: Bool
     public var note: String?
@@ -279,6 +282,7 @@ public struct LibraryItem: Codable, Sendable, Equatable, Identifiable {
         id: UUID = UUID(),
         title: String,
         source: LibrarySourceDescriptor? = nil,
+        thumbnail: LibrarySourceDescriptor? = nil,
         tags: [String] = [],
         isPinned: Bool = false,
         note: String? = nil,
@@ -289,6 +293,7 @@ public struct LibraryItem: Codable, Sendable, Equatable, Identifiable {
         self.id = id
         self.title = title
         self.source = source
+        self.thumbnail = thumbnail
         self.tags = tags
         self.isPinned = isPinned
         self.note = note
@@ -301,6 +306,49 @@ public struct LibraryItem: Codable, Sendable, Equatable, Identifiable {
         versions.max { lhs, rhs in
             lhs.number == rhs.number ? lhs.createdAt < rhs.createdAt : lhs.number < rhs.number
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case source
+        case thumbnail
+        case tags
+        case isPinned
+        case note
+        case versions
+        case createdAt
+        case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            title: try container.decode(String.self, forKey: .title),
+            source: try container.decodeIfPresent(LibrarySourceDescriptor.self, forKey: .source),
+            thumbnail: try container.decodeIfPresent(LibrarySourceDescriptor.self, forKey: .thumbnail),
+            tags: try container.decodeIfPresent([String].self, forKey: .tags) ?? [],
+            isPinned: try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false,
+            note: try container.decodeIfPresent(String.self, forKey: .note),
+            versions: try container.decodeIfPresent([LibraryVersion].self, forKey: .versions) ?? [],
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(),
+            updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(source, forKey: .source)
+        try container.encodeIfPresent(thumbnail, forKey: .thumbnail)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(isPinned, forKey: .isPinned)
+        try container.encodeIfPresent(note, forKey: .note)
+        try container.encode(versions, forKey: .versions)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 

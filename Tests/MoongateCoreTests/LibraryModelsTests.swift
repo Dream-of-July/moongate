@@ -67,4 +67,20 @@ final class LibraryModelsTests: XCTestCase {
         XCTAssertFalse(json.contains("secret"))
         XCTAssertEqual(decoded.items[0].source?.urlString, "https://example.com/watch")
     }
+
+    func testItemRoundTripsSanitizedThumbnailDescriptor() throws {
+        let item = LibraryItem(
+            title: "Mate 80",
+            thumbnail: try XCTUnwrap(
+                LibrarySourceDescriptor(urlString: "https://images.example.com/mate.png?signature=private#crop")
+            )
+        )
+
+        let decoded = try JSONDecoder().decode(
+            LibraryItem.self,
+            from: JSONEncoder().encode(item)
+        )
+
+        XCTAssertEqual(decoded.thumbnail?.urlString, "https://images.example.com/mate.png")
+    }
 }
