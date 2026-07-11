@@ -16,16 +16,28 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let pipeline = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
         let helper = try XCTUnwrap(functionBody(named: "transcodeExistingVideoIfNeeded", in: source))
 
-        XCTAssertTrue(pipeline.contains("if skipDownload"))
+        XCTAssertTrue(pipeline.contains("if context.skipDownload"))
         XCTAssertTrue(pipeline.contains("transcodeExistingVideoIfNeeded("),
                       "有 vN 副本时应复用统一转码路径")
-        XCTAssertTrue(source.contains("await self.runPipeline(id: id, skipDownload: reuseExistingArtifacts)"),
+        XCTAssertTrue(source.contains("await self.runPipeline(context)"),
                       "重新处理必须由明确的 reuse 标记决定是否下载")
         XCTAssertTrue(helper.contains("Transcoder().transcode("))
         XCTAssertFalse(helper.contains("engine.download("),
                        "本地格式重新处理不能偷偷重新下载源视频")
         XCTAssertTrue(source.contains("libraryVersionID: UUID"),
                       "队列版本身份必须由调用方透传，而不是在执行期临时生成")
+    }
+
+    func testReprocessTranscodingPreservesItsInitialArtifact() throws {
+        let source = try queueManagerSource()
+        let helper = try XCTUnwrap(functionBody(named: "transcodeExistingVideoIfNeeded", in: source))
+
+        XCTAssertTrue(source.contains("initialFiles: [URL]"),
+                      "转码 helper 必须知道哪些文件来自重新处理的初始快照")
+        XCTAssertTrue(helper.contains("isInitialArtifact"),
+                      "重新处理的输入文件必须显式被标记为要保留")
+        XCTAssertTrue(helper.contains("if transcoded != videoFile && !isInitialArtifact"),
+                      "重新处理不能在转码完成后删除旧版本的输入产物")
     }
 
     func testQueueHeaderExposesReadableTaskSummaryWithoutChangingActions() throws {
@@ -139,7 +151,7 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         XCTAssertTrue(retryBody.contains("$0.chineseMode = retryMode"))
         XCTAssertTrue(retryBody.contains("$0.progressPlan = Self.progressPlan(for: request, mode: retryMode)"))
         XCTAssertTrue(retryBody.contains("$0.workPlan = Self.workPlan(for: request, mode: retryMode)"))
-        XCTAssertTrue(retryBody.contains("runPipeline(id: id, skipDownload: true)"))
+        XCTAssertTrue(retryBody.contains("_ = beginRun(id: id)"))
         XCTAssertTrue(helperBody.contains("SubtitleLanguageRecommender.inferredLocalASRLanguageCode(title: $0)"))
         XCTAssertTrue(helperBody.contains("languageCode.isEmpty ? (inferredLanguageCode ?? \"auto\") : languageCode"))
         XCTAssertTrue(helperBody.contains("source?.label ?? CoreL10n.t(L.Ready.localASRAutoDetectLabel)"))
@@ -234,8 +246,8 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let pipelineBody = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
 
         XCTAssertTrue(pipelineBody.contains("let shouldResolveSourceOnly = mode == .off"))
-        XCTAssertTrue(pipelineBody.contains("current.request.primarySubtitleTrack != nil"))
-        XCTAssertTrue(pipelineBody.contains("current.request.importedSubtitleFileURL != nil"))
+        XCTAssertTrue(pipelineBody.contains("request.primarySubtitleTrack != nil"))
+        XCTAssertTrue(pipelineBody.contains("request.importedSubtitleFileURL != nil"))
         XCTAssertTrue(pipelineBody.contains("guard mode != .off || shouldResolveSourceOnly else"))
         XCTAssertTrue(pipelineBody.contains("if shouldResolveSourceOnly"))
         XCTAssertLessThan(
@@ -250,7 +262,7 @@ final class MacOSQueueBoundaryTests: XCTestCase {
 
         XCTAssertTrue(pipelineBody.contains("retainedSubtitleFiles"),
                       "重新获取画质不能以下载结果覆盖已隔离的字幕 sidecar")
-        XCTAssertTrue(pipelineBody.contains("current.resultFiles.filter"))
+        XCTAssertTrue(pipelineBody.contains("context.initialFiles.filter"))
         XCTAssertTrue(pipelineBody.contains("downloadFiles.append(subtitle)"))
     }
 
@@ -259,7 +271,7 @@ final class MacOSQueueBoundaryTests: XCTestCase {
         let pipelineBody = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
         let pickerBody = try XCTUnwrap(functionBody(named: "pickSourceSubtitle", in: source))
 
-        XCTAssertTrue(pipelineBody.contains("current.request.primarySubtitleTrack"))
+        XCTAssertTrue(pipelineBody.contains("request.primarySubtitleTrack"))
         XCTAssertTrue(pipelineBody.contains("preferredTrack: primarySubtitleTrack"))
         XCTAssertTrue(pipelineBody.contains("sourceLanguage: primarySubtitleTrack?.languageCode"))
         XCTAssertFalse(pipelineBody.contains("sourceLanguage: preferredLang"))

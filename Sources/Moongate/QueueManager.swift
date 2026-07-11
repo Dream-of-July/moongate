@@ -211,6 +211,10 @@ final class QueueManager: ObservableObject {
         let mode: ChineseSubtitleMode
         let settings: AppSettings
         let skipDownload: Bool
+        /// Existing artifacts are part of the attempt snapshot too. In
+        /// particular, a deferred reprocess must not silently pick up files
+        /// written by a later retry before this attempt begins.
+        let initialFiles: [URL]
     }
 
     @Published var items: [QueueItem] = []
@@ -309,17 +313,43 @@ final class QueueManager: ObservableObject {
         return current.generation == context.generation && current.control === context.control
     }
 
-    /// Returns false for an obsolete or cancelled attempt. A visible cancelling
-    /// task is settled here so a Task cancelled before its first await cannot
-    /// remain stuck in the intermediate state.
+    private func isRunActive(id: UUID, generation: Int, control: TaskControlToken) -> Bool {
+        guard let current = item(id) else { return false }
+        return current.generation == generation
+            && current.control === control
+            && !control.isCancelled
+            && current.stage != .cancelling
+    }
+
+    /// Returns false for an obsolete or cancelled attempt. Cancellation is
+    /// settled by runPipeline's outer defer, after any nested slot release has
+    /// converged, so the visible state cannot outrun the actual pipeline.
     @discardableResult
     private func ensureRunActive(_ context: RunContext) -> Bool {
-        guard runMatches(context), let current = item(context.id) else { return false }
-        guard !context.control.isCancelled, current.stage != .cancelling else {
-            finishCancelled(id: context.id, generation: context.generation)
-            return false
+        isRunActive(id: context.id, generation: context.generation, control: context.control)
+    }
+
+    private func finishCancelled(id: UUID, generation: Int) {
+        guard let current = item(id), current.generation == generation else { return }
+        guard current.control.isCancelled || current.stage == .cancelling else { return }
+        update(id, generation: generation) {
+            $0.stage = .cancelled
+            $0.isPaused = false
+            $0.clearProgress()
+            $0.statusText = $0.resultFiles.isEmpty
+                ? CoreL10n.t(L.Queue.cancelled)
+                : CoreL10n.t(L.Queue.cancelledSaved)
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+            $0.task = nil
         }
-        return true
+        clearProgressTracking(id)
+    }
+
+    private func settleRunCancellationIfNeeded(_ context: RunContext) {
+        guard runMatches(context) else { return }
+        guard context.control.isCancelled || item(context.id)?.stage == .cancelling else { return }
+        finishCancelled(id: context.id, generation: context.generation)
     }
 
     /// 等槽位（满员时先把状态文案改成等待提示），拿到后按代际登记为持有。
@@ -617,7 +647,8 @@ final class QueueManager: ObservableObject {
             request: target.request,
             mode: target.chineseMode,
             settings: target.settings,
-            skipDownload: target.skipDownloadWhenStarted
+            skipDownload: target.skipDownloadWhenStarted,
+            initialFiles: target.resultFiles
         )
         notifiedTerminalIDs.remove(id)
         let task = Task { [weak self] in
@@ -649,7 +680,16 @@ final class QueueManager: ObservableObject {
 
     /// Runs one immutable configuration snapshot for a queue generation.
     private func runPipeline(_ context: RunContext) async {
-        guard ensureRunActive(context), let current = item(context.id) else { return }
+        defer {
+            // Nested stage defers run first; don't expose a terminal cancel
+            // until the pool bookkeeping for this run has converged.
+            releaseSlot(context.id, generation: context.generation)
+            if resumePool[context.id]?.generation == context.generation {
+                resumePool.removeValue(forKey: context.id)
+            }
+            settleRunCancellationIfNeeded(context)
+        }
+        guard ensureRunActive(context), let info = item(context.id)?.info else { return }
         let id = context.id
         let control = context.control
         let settings = context.settings
@@ -660,7 +700,7 @@ final class QueueManager: ObservableObject {
         // 1. 下载
         var downloadFiles: [URL]
         if context.skipDownload {
-            downloadFiles = current.resultFiles
+            downloadFiles = context.initialFiles
             update(id, generation: generation) {
                 $0.overallProgress = QueueProgressEstimator.taskOverallProgress(
                     workPlan: $0.workPlan,
@@ -674,20 +714,19 @@ final class QueueManager: ObservableObject {
             // network engine again just because the requested output format
             // needs conversion. Reuse the normal transcode implementation
             // while holding the same bounded processing slot as downloads.
-            if Transcoder.needsProcessing(current.request.outputFormat) {
-                let requestedHDRFallback = current.request.preferHDR
+            if Transcoder.needsProcessing(request.outputFormat) {
+                let requestedHDRFallback = request.preferHDR
                 do {
                     try await acquireSlot(
                         downloadPool,
-                        id: id,
-                        generation: generation,
-                        control: control,
+                        context: context,
                         waitingText: CoreL10n.t(L.Queue.waitingForDownloadSlot)
                     )
                     defer { releaseSlot(id, generation: generation) }
                     downloadFiles = try await transcodeExistingVideoIfNeeded(
                         downloadFiles,
-                        request: current.request,
+                        initialFiles: context.initialFiles,
+                        request: request,
                         settings: settings,
                         id: id,
                         generation: generation,
@@ -703,9 +742,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(
                     downloadPool,
-                    id: id,
-                    generation: generation,
-                    control: control,
+                    context: context,
                     waitingText: CoreL10n.t(L.Queue.waitingForDownloadSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
@@ -717,18 +754,18 @@ final class QueueManager: ObservableObject {
                     $0.postDownloadProcessingKind = nil
                     self.applyProgress(&$0, id: id, generation: generation, phase: .download, phaseProgress: nil)
                 }
-                let result = try await engine.download(current.request, control: control) { [weak self] p in
+                let result = try await engine.download(request, control: control) { [weak self] p in
                     Task { @MainActor in
                         self?.applyDownloadProgress(id: id, generation: generation, p)
                     }
                 }
-                guard item(id)?.generation == generation else { return }
+                guard ensureRunActive(context) else { return }
                 downloadFiles = result.files
                 // A quality/original-format refresh may start with isolated
                 // v1 subtitle artifacts. Keep those alongside the freshly
                 // downloaded video; otherwise mode == .off would complete
                 // and silently drop them from the vN library projection.
-                let retainedSubtitleFiles = current.resultFiles.filter { file in
+                let retainedSubtitleFiles = context.initialFiles.filter { file in
                     ["srt", "vtt", "ass"].contains(file.pathExtension.lowercased())
                 }
                 for subtitle in retainedSubtitleFiles where !downloadFiles.contains(subtitle) {
@@ -738,10 +775,11 @@ final class QueueManager: ObservableObject {
                 update(id, generation: generation) { $0.resultFiles = downloadFiles; $0.clearProgress() }
                 // Downloads and isolated reprocesses share this path, so a
                 // non-original output is converted exactly once in either case.
-                let requestedHDRFallback = current.request.preferHDR
+                let requestedHDRFallback = request.preferHDR
                 downloadFiles = try await transcodeExistingVideoIfNeeded(
                     downloadFiles,
-                    request: current.request,
+                    initialFiles: context.initialFiles,
+                    request: request,
                     settings: settings,
                     id: id,
                     generation: generation,
@@ -757,24 +795,25 @@ final class QueueManager: ObservableObject {
         do {
             downloadFiles = try appendImportedSubtitleFileIfNeeded(
                 files: downloadFiles,
-                request: current.request
+                request: request
             )
             downloadFiles = try await prepareLocalASRSourceSubtitleIfNeeded(
                 files: downloadFiles,
-                request: current.request,
+                request: request,
                 id: id,
                 generation: generation,
                 control: control
             )
             downloadFiles = try await prepareCloudASRSourceSubtitleIfNeeded(
                 files: downloadFiles,
-                request: current.request,
+                request: request,
                 id: id,
                 generation: generation,
                 control: control
             )
+            guard ensureRunActive(context) else { return }
         } catch {
-            guard item(id)?.generation == generation else { return }
+            guard runMatches(context) else { return }
             settlePartial(
                 id,
                 generation: generation,
@@ -786,9 +825,9 @@ final class QueueManager: ObservableObject {
         }
 
         let shouldResolveSourceOnly = mode == .off
-            && (current.request.primarySubtitleTrack != nil
-                || current.request.importedSubtitleFileURL != nil
-                || current.request.subtitleSourcePolicy == .cloudASR)
+            && (request.primarySubtitleTrack != nil
+                || request.importedSubtitleFileURL != nil
+                || request.subtitleSourcePolicy == .cloudASR)
 
         // 完全不处理字幕：直接完成。下载源字幕 SRT 仍要走来源解析和任务详情披露。
         guard mode != .off || shouldResolveSourceOnly else {
@@ -797,11 +836,11 @@ final class QueueManager: ObservableObject {
         }
 
         // 找翻译源字幕；没有就完成并提示已跳过
-        let primarySubtitleTrack = current.request.primarySubtitleTrack
-        let preferredLang = current.request.effectivePreferredLanguageCode
+        let primarySubtitleTrack = request.primarySubtitleTrack
+        let preferredLang = request.effectivePreferredLanguageCode
             ?? primarySubtitleTrack?.languageCode
-            ?? current.request.subtitleLangs.first
-            ?? current.request.autoSubtitleLangs.first
+            ?? request.subtitleLangs.first
+            ?? request.autoSubtitleLangs.first
         guard var sourceSubtitle = Self.pickSourceSubtitle(
             from: downloadFiles,
             preferredLang: preferredLang,
@@ -825,12 +864,13 @@ final class QueueManager: ObservableObject {
                 downloadFiles: &downloadFiles,
                 preferredLang: preferredLang,
                 primarySubtitleTrack: primarySubtitleTrack,
-                request: current.request,
-                info: current.info,
+                request: request,
+                info: info,
                 id: id,
                 generation: generation,
                 control: control
             )
+            guard ensureRunActive(context) else { return }
             sourceSubtitle = resolution.selectedFile
             if let note = resolution.note {
                 update(id, generation: generation) {
@@ -841,18 +881,9 @@ final class QueueManager: ObservableObject {
                 update(id, generation: generation) { $0.resolvedSubtitleSource = resolution.resolved }
             }
         } catch {
-            guard item(id)?.generation == generation else { return }
+            guard runMatches(context) else { return }
             // 用户取消要如实中止；其余错误（回退 whisper 生成失败）不阻塞，沿用原平台字幕继续翻译。
-            if isCancellation(error) {
-                update(id, generation: generation) {
-                    $0.stage = .cancelled
-                    $0.isPaused = false
-                    $0.clearProgress()
-                    $0.statusText = CoreL10n.t(L.Queue.cancelled)
-                    $0.isPostDownloadProcessing = false
-                    $0.postDownloadProcessingKind = nil
-                }
-                clearProgressTracking(id)
+            if isCancellation(error) || !ensureRunActive(context) {
                 return
             }
         }
@@ -882,9 +913,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(
                     burnPool,
-                    id: id,
-                    generation: generation,
-                    control: control,
+                    context: context,
                     waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
@@ -917,7 +946,7 @@ final class QueueManager: ObservableObject {
                         }
                     }
                 }
-                guard item(id)?.generation == generation else { return }
+                guard ensureRunActive(context) else { return }
                 completeProgressPhase(id, generation: generation, phase: .burn)
                 update(id, generation: generation) {
                     $0.resultFiles.removeAll { $0 == burned }
@@ -925,7 +954,7 @@ final class QueueManager: ObservableObject {
                 }
                 finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: CoreL10n.t(L.Queue.burnedOriginalSubtitle))
             } catch {
-                guard item(id)?.generation == generation else { return }
+                guard runMatches(context) else { return }
                 settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
             }
             return
@@ -961,9 +990,7 @@ final class QueueManager: ObservableObject {
             do {
                 try await acquireSlot(
                     burnPool,
-                    id: id,
-                    generation: generation,
-                    control: control,
+                    context: context,
                     waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
                 )
                 defer { releaseSlot(id, generation: generation) }
@@ -995,7 +1022,7 @@ final class QueueManager: ObservableObject {
                         }
                     }
                 }
-                guard item(id)?.generation == generation else { return }
+                guard ensureRunActive(context) else { return }
                 completeProgressPhase(id, generation: generation, phase: .burn)
                 update(id, generation: generation) {
                     $0.resultFiles.removeAll { $0 == burned }
@@ -1003,7 +1030,7 @@ final class QueueManager: ObservableObject {
                 }
                 finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: CoreL10n.t(L.Queue.burnedSourceTargetSubtitle))
             } catch {
-                guard item(id)?.generation == generation else { return }
+                guard runMatches(context) else { return }
                 settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
             }
             return
@@ -1014,9 +1041,7 @@ final class QueueManager: ObservableObject {
         do {
             try await acquireSlot(
                 translatePool,
-                id: id,
-                generation: generation,
-                control: control,
+                context: context,
                 waitingText: CoreL10n.t(L.Queue.waitingForTranslationSlot)
             )
             defer { releaseSlot(id, generation: generation) }
@@ -1042,14 +1067,14 @@ final class QueueManager: ObservableObject {
                         }
                     }
                 }
-            guard item(id)?.generation == generation else { return }
+            guard ensureRunActive(context) else { return }
             completeProgressPhase(id, generation: generation, phase: .translate)
             update(id, generation: generation) {
                 $0.clearProgress()
                 if !$0.resultFiles.contains(zhSrt) { $0.resultFiles.append(zhSrt) }
             }
         } catch {
-            guard item(id)?.generation == generation else { return }
+            guard runMatches(context) else { return }
             settlePartial(id, generation: generation, files: downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseTranslation))
             return
         }
@@ -1069,9 +1094,7 @@ final class QueueManager: ObservableObject {
         do {
             try await acquireSlot(
                 burnPool,
-                id: id,
-                generation: generation,
-                control: control,
+                context: context,
                 waitingText: CoreL10n.t(L.Queue.waitingForBurnSlot)
             )
             defer { releaseSlot(id, generation: generation) }
@@ -1102,7 +1125,7 @@ final class QueueManager: ObservableObject {
                         }
                     }
                 }
-            guard item(id)?.generation == generation else { return }
+            guard ensureRunActive(context) else { return }
             completeProgressPhase(id, generation: generation, phase: .burn)
             update(id, generation: generation) {
                 $0.resultFiles.removeAll { $0 == burned }
@@ -1110,7 +1133,7 @@ final class QueueManager: ObservableObject {
             }
             finishDone(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, statusText: nil)
         } catch {
-            guard item(id)?.generation == generation else { return }
+            guard runMatches(context) else { return }
             settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
         }
     }
@@ -1121,6 +1144,7 @@ final class QueueManager: ObservableObject {
     /// format change cannot accidentally download twice or skip conversion.
     private func transcodeExistingVideoIfNeeded(
         _ files: [URL],
+        initialFiles: [URL],
         request: DownloadRequest,
         settings: AppSettings,
         id: UUID,
@@ -1128,6 +1152,9 @@ final class QueueManager: ObservableObject {
         control: TaskControlToken,
         sourceIsHDRFallback: Bool
     ) async throws -> [URL] {
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         guard Transcoder.needsProcessing(request.outputFormat),
               let videoFile = files.first(where: {
                   Self.videoExtensions.contains($0.pathExtension.lowercased())
@@ -1154,15 +1181,21 @@ final class QueueManager: ObservableObject {
             control: control
         ) { [weak self] fraction in
             Task { @MainActor in
-                guard let self, self.item(id)?.generation == generation else { return }
+                guard let self,
+                      self.isRunActive(id: id, generation: generation, control: control) else { return }
                 self.update(id, generation: generation) {
                     self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: fraction)
                 }
             }
         }
-        guard item(id)?.generation == generation else { throw CancellationError() }
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
 
-        if transcoded != videoFile {
+        let isInitialArtifact = initialFiles.contains {
+            $0.standardizedFileURL == videoFile.standardizedFileURL
+        }
+        if transcoded != videoFile && !isInitialArtifact {
             try? FileManager.default.removeItem(at: videoFile)
         }
         var resultFiles = files.map { $0 == videoFile ? transcoded : $0 }
@@ -1179,17 +1212,9 @@ final class QueueManager: ObservableObject {
     }
 
     private func finishPipelineFailure(id: UUID, generation: Int, error: Error) {
-        guard item(id)?.generation == generation else { return }
-        if isCancellation(error) {
-            update(id, generation: generation) {
-                $0.stage = .cancelled
-                $0.isPaused = false
-                $0.clearProgress()
-                $0.statusText = CoreL10n.t(L.Queue.cancelled)
-                $0.isPostDownloadProcessing = false
-                $0.postDownloadProcessingKind = nil
-            }
-        } else {
+        guard let current = item(id), current.generation == generation else { return }
+        guard !current.control.isCancelled, current.stage != .cancelling else { return }
+        if !isCancellation(error) {
             update(id, generation: generation) {
                 $0.stage = .failed(Self.shortReason(of: error))
                 $0.isPaused = false
@@ -1198,6 +1223,7 @@ final class QueueManager: ObservableObject {
                 $0.needsLogin = Self.loginPrompt(from: error)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
+                $0.task = nil
             }
         }
         clearProgressTracking(id)
@@ -1330,18 +1356,9 @@ final class QueueManager: ObservableObject {
     /// 部分成功：下载产物已落盘 → .done + 失败说明（可重试字幕处理）；否则视为 .failed。
     /// 取消（MoongateError.cancelled / Task 取消）→ .cancelled，保留已下产物。
     private func settlePartial(_ id: UUID, generation: Int, files: [URL], error: Error, phase: String) {
-        if isCancellation(error) {
-            update(id, generation: generation) {
-                $0.stage = .cancelled
-                $0.isPaused = false
-                $0.clearProgress()
-                $0.statusText = files.isEmpty ? CoreL10n.t(L.Queue.cancelled) : CoreL10n.t(L.Queue.cancelledSaved)
-                $0.isPostDownloadProcessing = false
-                $0.postDownloadProcessingKind = nil
-            }
-            clearProgressTracking(id)
-            return
-        }
+        guard let current = item(id), current.generation == generation else { return }
+        guard !current.control.isCancelled, current.stage != .cancelling else { return }
+        guard !isCancellation(error) else { return }
         let reason = Self.shortReason(of: error)
         if !files.isEmpty {
             update(id, generation: generation) {
@@ -1352,6 +1369,7 @@ final class QueueManager: ObservableObject {
                 $0.statusText = CoreL10n.t(L.Queue.partialSubtitleFailed, phase, reason)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
+                $0.task = nil
             }
             clearProgressTracking(id)
         } else {
@@ -1363,12 +1381,15 @@ final class QueueManager: ObservableObject {
                 $0.needsLogin = Self.loginPrompt(from: error)
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
+                $0.task = nil
             }
             clearProgressTracking(id)
         }
     }
 
     private func finishDone(_ id: UUID, generation: Int, files: [URL], statusText: String?) {
+        guard let current = item(id), current.generation == generation else { return }
+        guard !current.control.isCancelled, current.stage != .cancelling else { return }
         update(id, generation: generation) {
             $0.stage = .done
             $0.isPaused = false
@@ -1378,6 +1399,7 @@ final class QueueManager: ObservableObject {
             $0.postDownloadProcessingKind = nil
             $0.resultFiles = files.isEmpty ? $0.resultFiles : files
             $0.statusText = statusText
+            $0.task = nil
         }
         clearProgressTracking(id)
     }
@@ -1386,7 +1408,10 @@ final class QueueManager: ObservableObject {
 
     @discardableResult
     func pause(_ id: UUID) -> Bool {
-        guard let target = item(id), Self.isOpen(target.stage), !target.isPaused else { return false }
+        guard let target = item(id),
+              Self.isOpen(target.stage),
+              target.stage != .cancelling,
+              !target.isPaused else { return false }
         guard target.control.pause() else { return false }
         // 让出占用的下载/压制槽位给其它任务；恢复时重新排队领取。
         // 翻译请求不是本地可挂起进程，暂停后仍可能有分块请求在飞行中，不能释放翻译并发位。
@@ -1403,7 +1428,7 @@ final class QueueManager: ObservableObject {
 
     @discardableResult
     func resume(_ id: UUID) -> Bool {
-        guard let target = item(id), target.isPaused else { return false }
+        guard let target = item(id), target.stage != .cancelling, target.isPaused else { return false }
         guard let parked = resumePool.removeValue(forKey: id),
               parked.generation == target.generation else {
             // 没让过位（翻译阶段 / 排队中暂停）：直接恢复，acquire 循环或 gate 会接着走。
@@ -1421,7 +1446,7 @@ final class QueueManager: ObservableObject {
             guard let self else { return }
             do {
                 try await parked.pool.acquire(id: id, control: control, respectPause: false)
-                guard self.item(id)?.generation == generation else {
+                guard self.isRunActive(id: id, generation: generation, control: control) else {
                     parked.pool.release()
                     return
                 }
@@ -1438,7 +1463,22 @@ final class QueueManager: ObservableObject {
     }
 
     func cancel(_ id: UUID) {
-        guard let target = item(id) else { return }
+        guard let target = item(id), Self.isOpen(target.stage), target.stage != .cancelling else { return }
+        if target.stage == .queued, target.task == nil {
+            target.control.cancel()
+            finishCancelled(id: id, generation: target.generation)
+            return
+        }
+        update(id, generation: target.generation) {
+            $0.stage = .cancelling
+            $0.isPaused = false
+            $0.clearProgress()
+            $0.statusText = CoreL10n.text(
+                en: "Cancelling…", zhHans: "正在取消…", zhHant: "正在取消…"
+            )
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+        }
         resumePool.removeValue(forKey: id)
         clearProgressTracking(id)
         target.control.cancel()
@@ -1449,11 +1489,17 @@ final class QueueManager: ObservableObject {
 
     func remove(_ id: UUID) {
         guard let target = item(id) else { return }
+        guard target.stage != .cancelling else { return }
+        if Self.isOpen(target.stage) {
+            cancel(id)
+            return
+        }
         resumePool.removeValue(forKey: id)
         clearProgressTracking(id)
         target.control.cancel()
         target.task?.cancel()
         wakeFromAllPools(id)
+        notifiedTerminalIDs.remove(id)
         items.removeAll { $0.id == id }
     }
 
@@ -1472,7 +1518,7 @@ final class QueueManager: ObservableObject {
     }
 
     func retry(_ id: UUID) {
-        guard let old = item(id) else { return }
+        guard let old = item(id), !Self.isOpen(old.stage) else { return }
         // 旧 control 若仍登记着进程，确保释放；清掉旧代际的槽位记账。
         resumePool.removeValue(forKey: id)
         clearProgressTracking(id)
@@ -1497,16 +1543,15 @@ final class QueueManager: ObservableObject {
             $0.needsLogin = nil
             $0.statusText = skipDownload ? nil : CoreL10n.t(L.Queue.retryDownloadAndProcess)
             if !skipDownload { $0.resultFiles = [] }
+            $0.skipDownloadWhenStarted = skipDownload
+            $0.task = nil
         }
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runPipeline(id: id, skipDownload: skipDownload)
-        }
-        update(id) { $0.task = task }
+        _ = beginRun(id: id)
     }
 
     func retryWithLocalASR(_ id: UUID) {
         guard let old = item(id),
+              !Self.isOpen(old.stage),
               localASRGenerator != nil else { return }
         let request = Self.localASRRetryRequest(for: old.request)
         let retryMode: ChineseSubtitleMode = .burnIn
@@ -1538,12 +1583,10 @@ final class QueueManager: ObservableObject {
             $0.needsLogin = nil
             $0.timingWarning = false
             $0.statusText = nil
+            $0.skipDownloadWhenStarted = true
+            $0.task = nil
         }
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runPipeline(id: id, skipDownload: true)
-        }
-        update(id) { $0.task = task }
+        _ = beginRun(id: id)
     }
 
     private static func localASRRetryRequest(for request: DownloadRequest) -> DownloadRequest {
@@ -1594,6 +1637,8 @@ final class QueueManager: ObservableObject {
 
     /// 一次移除所有已到终态（done/failed/cancelled）的项。
     func clearFinished() {
+        let finishedIDs = items.filter { !Self.isOpen($0.stage) }.map(\.id)
+        notifiedTerminalIDs.subtract(Set(finishedIDs))
         items.removeAll { !Self.isOpen($0.stage) }
     }
 
@@ -1679,6 +1724,9 @@ final class QueueManager: ObservableObject {
         generation: Int,
         control: TaskControlToken
     ) async throws -> SubtitleSourceResolution {
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         let language = preferredLang ?? Self.langCode(of: pickedSource) ?? ""
         let pickedIsLocalASR = Self.isLocalASRSubtitle(pickedSource.lastPathComponent)
         let pickedIsCloudASR = Self.isCloudASRSubtitle(pickedSource.lastPathComponent)
@@ -1866,7 +1914,9 @@ final class QueueManager: ObservableObject {
             }
         }
         let sourceSRT = generated.url
-        guard item(id)?.generation == generation else { throw MoongateError.cancelled }
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         completeProgressPhase(id, generation: generation, phase: .audioExtract)
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
@@ -1902,7 +1952,9 @@ final class QueueManager: ObservableObject {
             }
         }
         // 云端识别可能耗时数秒；与本地路径(1636)一致,await 后重查 generation,避免取消后仍按陈旧结果继续。
-        guard item(id)?.generation == generation else { throw MoongateError.cancelled }
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
 
         let snapshot = downloadFiles
         update(id, generation: generation) {
@@ -2033,6 +2085,9 @@ final class QueueManager: ObservableObject {
         generation: Int,
         control: TaskControlToken
     ) async throws -> [URL] {
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         guard let languageCode = Self.localASRLanguageCode(in: request) else {
             return files
         }
@@ -2076,7 +2131,9 @@ final class QueueManager: ObservableObject {
         }
         // 严重质量问题(重复循环/语言误判)**不再让整个任务失败**——whisper 是用户显式选择的源,没有更好的可换,
         // 硬失败只会让用户一无所得。与 autoBest 路径一致:照常产出字幕,由下方 localASRSourceNote 附诚实告警。
-        guard item(id)?.generation == generation else { return files }
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         completeProgressPhase(id, generation: generation, phase: .audioExtract)
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
@@ -2101,6 +2158,9 @@ final class QueueManager: ObservableObject {
         generation: Int,
         control: TaskControlToken
     ) async throws -> [URL] {
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         guard request.subtitleSourcePolicy == .cloudASR else { return files }
         guard let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
             return files
@@ -2127,7 +2187,9 @@ final class QueueManager: ObservableObject {
             promptMetadata: promptMetadata,
             control: control
         )
-        guard item(id)?.generation == generation else { return files }
+        guard isRunActive(id: id, generation: generation, control: control) else {
+            throw MoongateError.cancelled
+        }
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
         var nextFiles = files

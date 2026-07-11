@@ -183,6 +183,26 @@ final class QueueManagerLifecycleTests: XCTestCase {
         try await waitForStage(.cancelled, id: id, in: queue)
     }
 
+    func testRetryAfterCancellationStartsExactlyOneFreshAttempt() async throws {
+        let engine = ControlledDownloadEngine(mode: .suspended(makeDownloadResult()))
+        let queue = QueueManager(engine: engine)
+        let id = queue.enqueue(
+            info: makeVideoInfo(), request: makeRequest(), chineseMode: .off, settings: AppSettings()
+        )
+        await engine.waitForSuspendedDownloads(1)
+        queue.cancel(id)
+        await engine.completeNextDownload()
+        try await waitForStage(.cancelled, id: id, in: queue)
+
+        queue.retry(id)
+        await engine.waitForSuspendedDownloads(1)
+        let downloadCallCount = await engine.downloadCallCount
+        XCTAssertEqual(downloadCallCount, 2)
+        queue.cancel(id)
+        await engine.completeNextDownload()
+        try await waitForStage(.cancelled, id: id, in: queue)
+    }
+
     func testDeferredReprocessRetainsProvidedLibraryIDsUntilExplicitStart() async throws {
         let engine = ControlledDownloadEngine(mode: .suspended(makeDownloadResult()))
         let queue = QueueManager(engine: engine)
