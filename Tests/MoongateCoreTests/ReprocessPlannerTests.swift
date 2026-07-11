@@ -35,39 +35,116 @@ final class ReprocessPlannerTests: XCTestCase {
         XCTAssertEqual(modelPlan.steps, [.translate, .burn])
     }
 
-    func testASROrSubtitleSourcePlansTranscriptionAndNecessaryDownstreamSteps() {
+    func testNewTranslationAndSubtitleStyleUseEditedDraftForPlan() {
+        let request = ReprocessRequest(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.targetLanguage, .subtitleStyle],
+            configuration: LibraryProcessingConfiguration(
+                targetLanguage: "zh-Hans",
+                subtitleStyle: "bilingual"
+            )
+        )
+
+        XCTAssertTrue(request.needsTranslation)
+        XCTAssertTrue(request.needsBurn)
+        XCTAssertEqual(ReprocessPlanner.plan(for: request).steps, [.translate, .burn])
+    }
+
+    func testASRModelPlansTranscriptionAndNecessaryDownstreamSteps() {
         let asrPlan = ReprocessPlanner.plan(for: .init(
             sourceVersionID: sourceVersionID,
             changedFields: [.transcriptionModel],
             needsTranslation: true,
             needsBurn: true
         ))
-        let sourcePlan = ReprocessPlanner.plan(for: .init(
-            sourceVersionID: sourceVersionID,
-            changedFields: [.subtitleSource],
-            needsTranslation: true,
-            needsBurn: true
-        ))
 
         XCTAssertEqual(asrPlan.steps, [.transcribe, .translate, .burn])
-        XCTAssertEqual(sourcePlan.steps, [.transcribe, .translate, .burn])
     }
 
-    func testFormatOrQualityPlansTranscodeThenBurn() {
+    func testSubtitleSourceUsesASROnlyForASRSources() {
+        let localASR = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.subtitleSource],
+            configuration: LibraryProcessingConfiguration(
+                subtitleSource: SubtitleSourceKind.localASR.rawValue,
+                targetLanguage: "zh-Hans"
+            )
+        ))
+        let cloudASR = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.subtitleSource],
+            configuration: LibraryProcessingConfiguration(
+                subtitleSource: SubtitleSourceKind.cloudASR.rawValue,
+                targetLanguage: "zh-Hans"
+            )
+        ))
+        let manual = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.subtitleSource],
+            configuration: LibraryProcessingConfiguration(
+                subtitleSource: SubtitleSourceKind.manual.rawValue,
+                targetLanguage: "zh-Hans"
+            )
+        ))
+
+        XCTAssertEqual(localASR.steps, [.transcribe, .translate])
+        XCTAssertEqual(cloudASR.steps, [.transcribe, .translate])
+        XCTAssertEqual(manual.steps, [.translate])
+    }
+
+    func testOutputFormatUsesLocalTranscodeButOriginalRefreshesSource() {
         let formatPlan = ReprocessPlanner.plan(for: .init(
             sourceVersionID: sourceVersionID,
             changedFields: [.outputFormat],
-            needsTranslation: false,
-            needsBurn: true
+            configuration: LibraryProcessingConfiguration(outputFormat: OutputFormat.mp4H264.rawValue)
+        ))
+        let originalPlan = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.outputFormat],
+            configuration: LibraryProcessingConfiguration(outputFormat: OutputFormat.original.rawValue)
         ))
         let qualityPlan = ReprocessPlanner.plan(for: .init(
             sourceVersionID: sourceVersionID,
             changedFields: [.quality],
-            needsTranslation: false,
-            needsBurn: true
+            configuration: LibraryProcessingConfiguration(quality: "best")
         ))
 
-        XCTAssertEqual(formatPlan.steps, [.transcode, .burn])
-        XCTAssertEqual(qualityPlan.steps, [.transcode, .burn])
+        XCTAssertEqual(formatPlan.steps, [.transcode])
+        XCTAssertEqual(originalPlan.steps, [.refreshVideo])
+        XCTAssertEqual(qualityPlan.steps, [.refreshVideo])
+    }
+
+    func testDefaultOutputFormatRefreshesSourceInsteadOfCopyingAnOldTranscode() {
+        let plan = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.outputFormat],
+            configuration: LibraryProcessingConfiguration(outputFormat: nil)
+        ))
+
+        XCTAssertEqual(plan.steps, [.refreshVideo])
+    }
+
+    func testQualityRefreshRetainsRequestedOutputConversion() {
+        let plan = ReprocessPlanner.plan(for: .init(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.quality],
+            configuration: LibraryProcessingConfiguration(
+                outputFormat: OutputFormat.mp4H264.rawValue,
+                quality: "best"
+            )
+        ))
+
+        XCTAssertEqual(plan.steps, [.refreshVideo, .transcode])
+    }
+
+    func testPlanKeepsExplicitOutputVersionIdentity() {
+        let outputVersionID = UUID()
+        let plan = ReprocessPlan(
+            sourceVersionID: sourceVersionID,
+            outputVersionID: outputVersionID,
+            steps: [.transcode]
+        )
+
+        XCTAssertEqual(plan.outputVersionID, outputVersionID)
     }
 }

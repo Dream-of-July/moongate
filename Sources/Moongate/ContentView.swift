@@ -20,21 +20,74 @@ struct ContentView: View {
     @State private var emptyStateAppeared = false
     /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
     @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
-    /// 实验性「备忘录式三栏布局」原型开关（默认关闭）。开启后走 SplitLayoutView，
-    /// 关闭时完全等价于原有界面。手动开启：在 App 里执行
-    /// `defaults write <bundleID> experimental.splitLayout -bool YES` 后重启，或在调试构建里改此默认值。
-    @AppStorage("experimental.splitLayout") private var useSplitLayout = false
+    /// 0.9 资料库工作台开关。测试版默认走新的稳定三栏路径；关闭后仍可立即回退原下载界面。
+    @AppStorage("libraryWorkspace.enabled") private var useLibraryWorkspace = true
+    /// 资料库模型由根视图持有；即使暂时回退 legacy，也持续同步实时队列与持久资料库。
+    @StateObject private var libraryWorkspace: LibraryWorkspaceModel
+    /// 「新建下载」是根级 sheet：无论当前显示资料库还是 legacy，菜单与工具栏入口都走同一流程。
+    @State private var showNewDownloadSheet = false
 
     init(model: ViewModel) {
         self.model = model
         self._updater = ObservedObject(wrappedValue: model.updater)
+        self._libraryWorkspace = StateObject(wrappedValue: LibraryWorkspaceModel(model: model))
     }
 
     var body: some View {
-        if useSplitLayout {
-            SplitLayoutView(model: model)
-        } else {
-            legacyBody
+        Group {
+            if useLibraryWorkspace {
+                LibraryWorkspaceView(model: model, workspace: libraryWorkspace)
+            } else {
+                legacyBody
+            }
+        }
+        .frame(minWidth: 900, minHeight: 640)
+        .onAppear {
+            model.onAppear()
+            urlFieldFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.prefillFromClipboardIfAppropriate()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppWorkspaceCommand.newDownloadRequested)) { _ in
+            showNewDownloadSheet = true
+        }
+        .onChange(of: model.requestUrlFocus) { urlFieldFocused = true }
+        .onChange(of: model.showSettings) { _, show in
+            // 设置改为独立窗口：showSettings 驱动窗口的打开/关闭，
+            // 挂起动作（登录 / 依赖）在设置窗口 onDisappear 时消费。
+            if show {
+                openWindow(id: "settings")
+            } else {
+                dismissWindow(id: "settings")
+            }
+        }
+        .sheet(isPresented: $showNewDownloadSheet) {
+            RootNewDownloadSheet(model: model)
+                .environmentObject(localizer)
+        }
+        .sheet(isPresented: $model.showOnboarding) {
+            OnboardingView(model: model)
+                .environmentObject(localizer)
+        }
+        .sheet(isPresented: $model.showDependencySetup) {
+            DependencySetupSheet(model: model)
+        }
+        .sheet(isPresented: $model.showSourceLanguagePicker) {
+            if case .ready(let info) = model.stage {
+                SourceLanguagePickerSheet(model: model, info: info)
+                    .environmentObject(localizer)
+            }
+        }
+        .sheet(isPresented: loginSheetBinding) {
+            if let site = model.loginSite {
+                LoginSheet(
+                    site: site,
+                    startURL: model.loginStartURL,
+                    onComplete: { model.loginCompleted() },
+                    onCancel: { model.cancelLogin() }
+                )
+            }
         }
     }
 
@@ -61,47 +114,6 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-        }
-        .frame(minWidth: 540, minHeight: 720)
-        .onAppear {
-            model.onAppear()
-            urlFieldFocused = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.prefillFromClipboardIfAppropriate()
-        }
-        .onChange(of: model.requestUrlFocus) { urlFieldFocused = true }
-        .onChange(of: model.showSettings) { _, show in
-            // 设置改为独立窗口：showSettings 驱动窗口的打开/关闭，
-            // 挂起动作（登录 / 依赖）在设置窗口 onDisappear 时消费。
-            if show {
-                openWindow(id: "settings")
-            } else {
-                dismissWindow(id: "settings")
-            }
-        }
-        .sheet(isPresented: $model.showOnboarding) {
-            OnboardingView(model: model)
-                .environmentObject(localizer)
-        }
-        .sheet(isPresented: $model.showDependencySetup) {
-            DependencySetupSheet(model: model)
-        }
-        .sheet(isPresented: $model.showSourceLanguagePicker) {
-            if case .ready(let info) = model.stage {
-                SourceLanguagePickerSheet(model: model, info: info)
-                    .environmentObject(localizer)
-            }
-        }
-        .sheet(isPresented: loginSheetBinding) {
-            if let site = model.loginSite {
-                LoginSheet(
-                    site: site,
-                    startURL: model.loginStartURL,
-                    onComplete: { model.loginCompleted() },
-                    onCancel: { model.cancelLogin() }
-                )
-            }
         }
     }
 

@@ -1,6 +1,33 @@
 import XCTest
 
 final class MacOSQueueBoundaryTests: XCTestCase {
+    func testQueueItemKeepsStableLibraryItemAndVersionIdentity() throws {
+        let source = try queueManagerSource()
+
+        XCTAssertTrue(source.contains("let libraryItemID: UUID"))
+        XCTAssertTrue(source.contains("let libraryVersionID: UUID"))
+        XCTAssertTrue(source.contains("libraryItemID: id"))
+        XCTAssertTrue(source.contains("libraryVersionID: UUID()"))
+        XCTAssertTrue(source.contains("func enqueueReprocess("))
+    }
+
+    func testIsolatedFormatReprocessTranscodesWithoutInvokingDownloadEngine() throws {
+        let source = try queueManagerSource()
+        let pipeline = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
+        let helper = try XCTUnwrap(functionBody(named: "transcodeExistingVideoIfNeeded", in: source))
+
+        XCTAssertTrue(pipeline.contains("if skipDownload"))
+        XCTAssertTrue(pipeline.contains("transcodeExistingVideoIfNeeded("),
+                      "有 vN 副本时应复用统一转码路径")
+        XCTAssertTrue(source.contains("await self.runPipeline(id: id, skipDownload: reuseExistingArtifacts)"),
+                      "重新处理必须由明确的 reuse 标记决定是否下载")
+        XCTAssertTrue(helper.contains("Transcoder().transcode("))
+        XCTAssertFalse(helper.contains("engine.download("),
+                       "本地格式重新处理不能偷偷重新下载源视频")
+        XCTAssertTrue(source.contains("libraryVersionID: UUID"),
+                      "队列版本身份必须由调用方透传，而不是在执行期临时生成")
+    }
+
     func testQueueHeaderExposesReadableTaskSummaryWithoutChangingActions() throws {
         let source = try queueSectionSource()
         let body = try XCTUnwrap(functionBody(named: "body", in: source))
@@ -215,6 +242,16 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             try XCTUnwrap(pipelineBody.range(of: "prepareLocalASRSourceSubtitleIfNeeded")).lowerBound,
             try XCTUnwrap(pipelineBody.range(of: "let shouldResolveSourceOnly = mode == .off")).lowerBound
         )
+    }
+
+    func testFreshReprocessRetainsStagedSubtitleArtifacts() throws {
+        let source = try queueManagerSource()
+        let pipelineBody = try XCTUnwrap(functionBody(named: "runPipeline", in: source))
+
+        XCTAssertTrue(pipelineBody.contains("retainedSubtitleFiles"),
+                      "重新获取画质不能以下载结果覆盖已隔离的字幕 sidecar")
+        XCTAssertTrue(pipelineBody.contains("current.resultFiles.filter"))
+        XCTAssertTrue(pipelineBody.contains("downloadFiles.append(subtitle)"))
     }
 
     func testQueueUsesPrimarySubtitleTrackForSourcePickingAndTranslationContext() throws {

@@ -5,18 +5,106 @@ import XCTest
 /// 锁定原型的关键不变量，防静默回归。
 final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
-    /// 三栏是 feature-flag 隔离的原型，默认关闭；ContentView 在 flag 上二选一，
-    /// legacy 界面零改动。这条守护"默认不影响现有用户"这一硬约束。
-    func testSplitLayoutIsFeatureFlaggedOffByDefault() throws {
+    /// 0.9 将资料库工作台作为默认入口，但仍保留可见的 legacy fallback。
+    /// 这能让本地测试版直接覆盖新路径，同时在发现回归时不阻断既有下载工作流。
+    func testLibraryWorkspaceIsDefaultWithLegacyFallback() throws {
         let content = try contentViewSource()
-        XCTAssertTrue(content.contains("@AppStorage(\"experimental.splitLayout\")"),
-                      "三栏必须由 experimental.splitLayout 开关控制")
-        XCTAssertTrue(content.contains("private var useSplitLayout = false"),
-                      "默认必须为 false（不影响现有界面）")
-        XCTAssertTrue(content.contains("if useSplitLayout {"))
-        XCTAssertTrue(content.contains("SplitLayoutView(model: model)"))
+        XCTAssertTrue(content.contains("@AppStorage(\"libraryWorkspace.enabled\")"),
+                      "资料库工作台必须由可回退的 feature flag 控制")
+        XCTAssertTrue(content.contains("private var useLibraryWorkspace = true"),
+                      "0.9 本地测试版默认应打开资料库工作台")
+        XCTAssertTrue(content.contains("if useLibraryWorkspace {"))
+        XCTAssertTrue(content.contains("LibraryWorkspaceView(model: model, workspace: libraryWorkspace)"))
         XCTAssertTrue(content.contains("legacyBody"),
-                      "原界面必须原样抽成 legacyBody 走 else 分支")
+                      "legacy 界面必须保留为 else 分支回退")
+        XCTAssertTrue(content.contains("@StateObject private var libraryWorkspace"),
+                      "资料库协调器必须由根视图拥有，不能随 workspace/legacy 切换被销毁")
+        XCTAssertTrue(content.contains("LibraryWorkspaceModel(model: model)"),
+                      "根协调器必须订阅同一个实时队列")
+    }
+
+    /// onboarding、依赖检查、登录、设置窗口联动属于 App 根生命周期，不能绑在 legacyBody 上；
+    /// 否则切到资料库工作台就会静默丢失这些入口。
+    func testRootLifecycleModifiersApplyToBothLayouts() throws {
+        let content = try contentViewSource()
+        let legacy = try XCTUnwrap(functionBody(named: "legacyBody", in: content))
+
+        for marker in [
+            "model.onAppear()",
+            "NSApplication.didBecomeActiveNotification",
+            "openWindow(id: \"settings\")",
+            ".sheet(isPresented: $model.showOnboarding)",
+            ".sheet(isPresented: $model.showDependencySetup)",
+            ".sheet(isPresented: loginSheetBinding)"
+        ] {
+            XCTAssertTrue(content.contains(marker), "根视图应保留 \(marker) 生命周期入口")
+            XCTAssertFalse(legacy.contains(marker), "legacyBody 不应独占 \(marker)")
+        }
+    }
+
+    func testLibraryCoordinatorPersistsNewQueueItemsWithoutAProgressDebounce() throws {
+        let source = try libraryWorkspaceModelSource()
+        let receive = try XCTUnwrap(functionBody(named: "receiveQueue", in: source))
+        let schedule = try XCTUnwrap(functionBody(named: "scheduleQueueSynchronization", in: source))
+
+        XCTAssertTrue(receive.contains("guard bootstrapFinished else { return }"),
+                      "初始 Queue publisher 事件必须等资料库 load 完成再写入，避免与持久化读取竞争")
+        XCTAssertTrue(schedule.contains("hasUnpersistedItem"),
+                      "新任务必须区别于普通进度刷新")
+        XCTAssertTrue(schedule.contains("if !hasUnpersistedItem"),
+                      "新任务不应等待 300ms 进度防抖才建立稳定资料记录")
+    }
+
+    func testWorkspaceInspectorDefaultsCollapseBelowWideBreakpoint() throws {
+        let source = try libraryWorkspaceModelSource()
+        let layout = try XCTUnwrap(functionBody(named: "updateLayout", in: source))
+
+        XCTAssertTrue(layout.contains("guard !inspectorPreferenceIsExplicit else { return }"))
+        XCTAssertTrue(layout.contains("showInspector = width >= 1_380"),
+                      "1100–1379 pt 和 900–1099 pt 初始都应收起 Inspector")
+    }
+
+    func testMovingFilesToTrashDoesNotOfferIndexOnlyUndo() throws {
+        let source = try libraryWorkspaceModelSource()
+        let trash = try XCTUnwrap(functionBody(named: "moveArtifactsToTrash", in: source))
+
+        XCTAssertFalse(trash.contains("removeFromLibrary()"),
+                       "移到废纸篓后不能走只恢复索引的撤销路径")
+        XCTAssertTrue(trash.contains("removedItemForUndo = nil"))
+        XCTAssertTrue(trash.contains("undoRemovalAvailable = false"))
+        XCTAssertTrue(trash.contains("store.remove(itemID: item.id)"),
+                      "文件已入废纸篓后仍需移除持久资料库索引")
+    }
+
+    func testIndexRemovalSuppressesResidentQueueItemUntilUndo() throws {
+        let source = try libraryWorkspaceModelSource()
+        let remove = try XCTUnwrap(functionBody(named: "removeFromLibrary", in: source))
+        let undo = try XCTUnwrap(functionBody(named: "undoRemoveFromLibrary", in: source))
+        let synchronize = try XCTUnwrap(functionBody(named: "synchronizeQueue", in: source))
+
+        XCTAssertTrue(remove.contains("suppressedQueueLibraryItemIDs.insert(selectedItemID)"),
+                      "索引移除后，尚在内存的 QueueItem 不能在下一次同步时复活记录")
+        XCTAssertTrue(undo.contains("suppressedQueueLibraryItemIDs.remove(removedItemForUndo.id)"),
+                      "撤销必须重新允许该资料库记录接收实时队列投影")
+        XCTAssertTrue(synchronize.contains("let visibleSnapshots = snapshots.filter"))
+        XCTAssertTrue(synchronize.contains("!suppressedQueueLibraryItemIDs.contains($0.libraryItemID)"))
+    }
+
+    func testProcessingInspectorRepresentsPersistedSubtitleSourceKinds() throws {
+        let source = try libraryWorkspaceViewSource()
+        let editor = try XCTUnwrap(functionBody(named: "processingEditor", in: source))
+
+        for kind in [
+            "importedFile",
+            "manual",
+            "platformAuto",
+            "hlsManifest",
+            "localASR",
+            "cloudASR"
+        ] {
+            XCTAssertTrue(editor.contains("SubtitleSourceKind.\(kind).rawValue"),
+                          "Inspector 必须能显示已经持久化的 \(kind) 字幕来源")
+        }
     }
 
     /// sidebar 按状态分组：进行中(queued/downloading/translating/burning) vs 已完成(done/failed/cancelled)。
@@ -188,6 +276,18 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources").appendingPathComponent("Moongate")
             .appendingPathComponent("ContentView.swift"))
+    }
+
+    private func libraryWorkspaceModelSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources").appendingPathComponent("Moongate")
+            .appendingPathComponent("LibraryWorkspaceModel.swift"))
+    }
+
+    private func libraryWorkspaceViewSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources").appendingPathComponent("Moongate")
+            .appendingPathComponent("LibraryWorkspaceView.swift"))
     }
 
     private func packageRoot() -> URL {

@@ -122,6 +122,12 @@ final class QueueManager: ObservableObject {
 
     struct QueueItem: Identifiable {
         let id: UUID
+        /// Durable-library identity. Normal downloads use a new item id; a
+        /// reprocess task uses a fresh queue id but retains its parent item id.
+        let libraryItemID: UUID
+        /// Stable output-version identity used by the library projection. It is
+        /// separate from QueueItem.id so reprocessing never overwrites v1.
+        let libraryVersionID: UUID
         let title: String
         let thumbnailURL: URL?
         let info: VideoInfo
@@ -439,11 +445,14 @@ final class QueueManager: ObservableObject {
         }
     }
 
-    func enqueue(info: VideoInfo, request: DownloadRequest, chineseMode: ChineseSubtitleMode, settings: AppSettings) {
+    @discardableResult
+    func enqueue(info: VideoInfo, request: DownloadRequest, chineseMode: ChineseSubtitleMode, settings: AppSettings) -> UUID {
         let id = UUID()
         let control = TaskControlToken()
         let item = QueueItem(
             id: id,
+            libraryItemID: id,
+            libraryVersionID: UUID(),
             title: info.title,
             thumbnailURL: info.thumbnailURL,
             info: info,
@@ -469,6 +478,55 @@ final class QueueManager: ObservableObject {
             await self.runPipeline(id: id, skipDownload: false)
         }
         update(id) { $0.task = task }
+        return id
+    }
+
+    /// Starts a new processing task from existing artifacts. It uses a new
+    /// queue/version id while keeping the original library item id, so the UI
+    /// can present the result as v2 instead of replacing v1.
+    @discardableResult
+    func enqueueReprocess(
+        info: VideoInfo,
+        request: DownloadRequest,
+        chineseMode: ChineseSubtitleMode,
+        settings: AppSettings,
+        existingFiles: [URL],
+        libraryItemID: UUID,
+        libraryVersionID: UUID,
+        reuseExistingArtifacts: Bool
+    ) -> UUID {
+        let id = UUID()
+        let control = TaskControlToken()
+        let item = QueueItem(
+            id: id,
+            libraryItemID: libraryItemID,
+            libraryVersionID: libraryVersionID,
+            title: info.title,
+            thumbnailURL: info.thumbnailURL,
+            info: info,
+            request: request,
+            chineseMode: chineseMode,
+            settings: settings,
+            stage: .queued,
+            progress: nil,
+            overallProgress: nil,
+            speedText: nil,
+            remainingSeconds: nil,
+            progressPhase: nil,
+            progressPlan: Self.progressPlan(for: request, mode: chineseMode),
+            workPlan: Self.workPlan(for: request, mode: chineseMode),
+            statusText: nil,
+            resultFiles: existingFiles,
+            isPaused: false,
+            control: control
+        )
+        items.append(item)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runPipeline(id: id, skipDownload: reuseExistingArtifacts)
+        }
+        update(id) { $0.task = task }
+        return id
     }
 
     // MARK: - 流水线
@@ -495,6 +553,35 @@ final class QueueManager: ObservableObject {
                 )
                 $0.clearProgress()
             }
+            // Reprocessing an isolated vN artifact must never call the
+            // network engine again just because the requested output format
+            // needs conversion. Reuse the normal transcode implementation
+            // while holding the same bounded processing slot as downloads.
+            if Transcoder.needsProcessing(current.request.outputFormat) {
+                let requestedHDRFallback = current.request.preferHDR
+                do {
+                    try await acquireSlot(
+                        downloadPool,
+                        id: id,
+                        generation: generation,
+                        control: control,
+                        waitingText: CoreL10n.t(L.Queue.waitingForDownloadSlot)
+                    )
+                    defer { releaseSlot(id, generation: generation) }
+                    downloadFiles = try await transcodeExistingVideoIfNeeded(
+                        downloadFiles,
+                        request: current.request,
+                        settings: settings,
+                        id: id,
+                        generation: generation,
+                        control: control,
+                        sourceIsHDRFallback: requestedHDRFallback
+                    )
+                } catch {
+                    finishPipelineFailure(id: id, generation: generation, error: error)
+                    return
+                }
+            }
         } else {
             do {
                 try await acquireSlot(
@@ -520,100 +607,32 @@ final class QueueManager: ObservableObject {
                 }
                 guard item(id)?.generation == generation else { return }
                 downloadFiles = result.files
+                // A quality/original-format refresh may start with isolated
+                // v1 subtitle artifacts. Keep those alongside the freshly
+                // downloaded video; otherwise mode == .off would complete
+                // and silently drop them from the vN library projection.
+                let retainedSubtitleFiles = current.resultFiles.filter { file in
+                    ["srt", "vtt", "ass"].contains(file.pathExtension.lowercased())
+                }
+                for subtitle in retainedSubtitleFiles where !downloadFiles.contains(subtitle) {
+                    downloadFiles.append(subtitle)
+                }
                 completeProgressPhase(id, generation: generation, phase: .download)
-                update(id, generation: generation) { $0.resultFiles = result.files; $0.clearProgress() }
-
-                // 下载后转码/remux（用户选了非「保持源格式」时）。在下载槽内顺序执行。
-                if Transcoder.needsProcessing(current.request.outputFormat),
-                   let videoFile = downloadFiles.first(where: {
-                       Self.videoExtensions.contains($0.pathExtension.lowercased())
-                   }) {
-                    update(id, generation: generation) {
-                        $0.stage = .downloading
-                        $0.clearProgress()
-                        $0.statusText = nil
-                        $0.isPostDownloadProcessing = true
-                        $0.postDownloadProcessingKind = .transcoding
-                        self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: nil)
-                    }
-                    do {
-                        // Transcoder 会先探测实际下载产物；偏好 HDR 只作为 ffprobe 失败时的兜底。
-                        let requestedHDRFallback = current.request.preferHDR
-                        let transcoded = try await Transcoder().transcode(
-                            inputFile: videoFile,
-                            format: current.request.outputFormat,
-                            sourceVCodec: nil,
-                            sourceIsHDR: requestedHDRFallback,
-                            backend: settings.encodeBackend,
-                            control: control
-                        ) { [weak self] frac in
-                            Task { @MainActor in
-                                guard let self, self.item(id)?.generation == generation else { return }
-                                self.update(id, generation: generation) {
-                                    self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: frac)
-                                }
-                            }
-                        }
-                        guard item(id)?.generation == generation else { return }
-                        // 用转码产物替换原视频文件（删原文件，除非同一路径）。
-                        if transcoded != videoFile {
-                            try? FileManager.default.removeItem(at: videoFile)
-                        }
-                        downloadFiles = downloadFiles.map { $0 == videoFile ? transcoded : $0 }
-                        if !downloadFiles.contains(transcoded) { downloadFiles.append(transcoded) }
-                        completeProgressPhase(id, generation: generation, phase: .transcode)
-                        update(id, generation: generation) {
-                            $0.resultFiles = downloadFiles
-                            $0.clearProgress()
-                            $0.statusText = nil
-                            $0.isPostDownloadProcessing = false
-                            $0.postDownloadProcessingKind = nil
-                        }
-                    } catch {
-                        guard item(id)?.generation == generation else { return }
-                        if isCancellation(error) {
-                            update(id, generation: generation) {
-                                $0.stage = .cancelled; $0.isPaused = false; $0.clearProgress(); $0.statusText = CoreL10n.t(L.Queue.cancelled)
-                                $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
-                            }
-                            clearProgressTracking(id)
-                        } else {
-                            update(id, generation: generation) {
-                                $0.stage = .failed(Self.shortReason(of: error))
-                                $0.isPaused = false; $0.clearProgress()
-                                $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
-                                $0.needsLogin = Self.loginPrompt(from: error)
-                                $0.isPostDownloadProcessing = false; $0.postDownloadProcessingKind = nil
-                            }
-                            clearProgressTracking(id)
-                        }
-                        return
-                    }
-                }
+                update(id, generation: generation) { $0.resultFiles = downloadFiles; $0.clearProgress() }
+                // Downloads and isolated reprocesses share this path, so a
+                // non-original output is converted exactly once in either case.
+                let requestedHDRFallback = current.request.preferHDR
+                downloadFiles = try await transcodeExistingVideoIfNeeded(
+                    downloadFiles,
+                    request: current.request,
+                    settings: settings,
+                    id: id,
+                    generation: generation,
+                    control: control,
+                    sourceIsHDRFallback: requestedHDRFallback
+                )
             } catch {
-                guard item(id)?.generation == generation else { return }
-                if isCancellation(error) {
-                    update(id, generation: generation) {
-                        $0.stage = .cancelled
-                        $0.isPaused = false
-                        $0.clearProgress()
-                        $0.statusText = CoreL10n.t(L.Queue.cancelled)
-                        $0.isPostDownloadProcessing = false
-                        $0.postDownloadProcessingKind = nil
-                    }
-                    clearProgressTracking(id)
-                } else {
-                    update(id, generation: generation) {
-                        $0.stage = .failed(Self.shortReason(of: error))
-                        $0.isPaused = false
-                        $0.clearProgress()
-                        $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
-                        $0.needsLogin = Self.loginPrompt(from: error)
-                        $0.isPostDownloadProcessing = false
-                        $0.postDownloadProcessingKind = nil
-                    }
-                    clearProgressTracking(id)
-                }
+                finishPipelineFailure(id: id, generation: generation, error: error)
                 return
             }
         }
@@ -977,6 +996,94 @@ final class QueueManager: ObservableObject {
             guard item(id)?.generation == generation else { return }
             settlePartial(id, generation: generation, files: item(id)?.resultFiles ?? downloadFiles, error: error, phase: CoreL10n.t(L.Queue.phaseBurn))
         }
+    }
+
+    /// Runs output conversion against a file already owned by this queue item.
+    /// The caller decides whether it is holding a download slot; both a fresh
+    /// download and an isolated vN reprocess use this exact code path so a
+    /// format change cannot accidentally download twice or skip conversion.
+    private func transcodeExistingVideoIfNeeded(
+        _ files: [URL],
+        request: DownloadRequest,
+        settings: AppSettings,
+        id: UUID,
+        generation: Int,
+        control: TaskControlToken,
+        sourceIsHDRFallback: Bool
+    ) async throws -> [URL] {
+        guard Transcoder.needsProcessing(request.outputFormat),
+              let videoFile = files.first(where: {
+                  Self.videoExtensions.contains($0.pathExtension.lowercased())
+              }) else {
+            return files
+        }
+
+        update(id, generation: generation) {
+            $0.stage = .downloading
+            $0.clearProgress()
+            $0.statusText = nil
+            $0.isPostDownloadProcessing = true
+            $0.postDownloadProcessingKind = .transcoding
+            self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: nil)
+        }
+        // Transcoder probes the actual artifact; the HDR preference is only a
+        // fallback when probing is unavailable.
+        let transcoded = try await Transcoder().transcode(
+            inputFile: videoFile,
+            format: request.outputFormat,
+            sourceVCodec: nil,
+            sourceIsHDR: sourceIsHDRFallback,
+            backend: settings.encodeBackend,
+            control: control
+        ) { [weak self] fraction in
+            Task { @MainActor in
+                guard let self, self.item(id)?.generation == generation else { return }
+                self.update(id, generation: generation) {
+                    self.applyProgress(&$0, id: id, generation: generation, phase: .transcode, phaseProgress: fraction)
+                }
+            }
+        }
+        guard item(id)?.generation == generation else { throw CancellationError() }
+
+        if transcoded != videoFile {
+            try? FileManager.default.removeItem(at: videoFile)
+        }
+        var resultFiles = files.map { $0 == videoFile ? transcoded : $0 }
+        if !resultFiles.contains(transcoded) { resultFiles.append(transcoded) }
+        completeProgressPhase(id, generation: generation, phase: .transcode)
+        update(id, generation: generation) {
+            $0.resultFiles = resultFiles
+            $0.clearProgress()
+            $0.statusText = nil
+            $0.isPostDownloadProcessing = false
+            $0.postDownloadProcessingKind = nil
+        }
+        return resultFiles
+    }
+
+    private func finishPipelineFailure(id: UUID, generation: Int, error: Error) {
+        guard item(id)?.generation == generation else { return }
+        if isCancellation(error) {
+            update(id, generation: generation) {
+                $0.stage = .cancelled
+                $0.isPaused = false
+                $0.clearProgress()
+                $0.statusText = CoreL10n.t(L.Queue.cancelled)
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
+            }
+        } else {
+            update(id, generation: generation) {
+                $0.stage = .failed(Self.shortReason(of: error))
+                $0.isPaused = false
+                $0.clearProgress()
+                $0.statusText = CoreL10n.t(L.Queue.failedWithReason, Self.shortReason(of: error))
+                $0.needsLogin = Self.loginPrompt(from: error)
+                $0.isPostDownloadProcessing = false
+                $0.postDownloadProcessingKind = nil
+            }
+        }
+        clearProgressTracking(id)
     }
 
     /// 下载进度显示态：进度分数（nil=不确定）+ 是否「处理中」（合并/收尾，显示不确定）。

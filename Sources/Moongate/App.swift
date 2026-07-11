@@ -9,6 +9,8 @@ struct MoongateApp: App {
     @StateObject private var model: ViewModel
     // 0.7 i18n：运行时界面语言切换器。持久化权威是 AppSettings.appLanguage，运行时权威是 localizer。
     @StateObject private var localizer: Localizer
+    /// 0.9 本地测试默认启用资料库工作台；菜单里可随时回退 legacy 下载界面。
+    @AppStorage("libraryWorkspace.enabled") private var useLibraryWorkspace = true
 
     init() {
         // SEC-CRED-001：在任何 AppSettings.load()（ViewModel/Localizer 初始化即会触发）之前注入
@@ -20,7 +22,7 @@ struct MoongateApp: App {
     }
 
     var body: some Scene {
-        // Window（非 WindowGroup）：单窗口，天然禁掉 Cmd+N 多窗。
+        // Window（非 WindowGroup）：单窗口；Cmd+N 在此语义为新建下载，不会创建第二个窗口。
         Window(localizer.t(L.App.title), id: "main") {
             ContentView(model: model)
                 .environmentObject(localizer)
@@ -30,7 +32,8 @@ struct MoongateApp: App {
                     appDelegate.localizer = localizer
                 }
         }
-        .defaultSize(width: 560, height: 780)
+        .defaultSize(width: 1440, height: 900)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button(localizer.t(L.App.settingsMenu)) {
@@ -38,20 +41,33 @@ struct MoongateApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
-            // 提速常用操作：粘贴链接→解析是首个动作，给它键盘替代（HIG keyboard-shortcuts）。
+            // 提速常用操作都提供菜单栏等价入口（HIG toolbars / keyboard shortcuts）。
             // 放在 .newItem 附近，语义上属于 File 菜单「新建」区域。
             CommandGroup(after: .newItem) {
-                // Cmd+L：类浏览器地址栏，聚焦 URL 输入框（ContentView 监听 requestUrlFocus）。
                 Button(localizer.t(L.App.newDownloadCommand)) {
+                    NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+
+                // Cmd+L：兼容 legacy 工作流，聚焦链接输入框（ContentView 监听 requestUrlFocus）。
+                Button(localizer.t(L.Main.urlInputAccessibility)) {
                     model.requestUrlFocus += 1
                 }
                 .keyboardShortcut("l", modifiers: .command)
+
+                Button("搜索资料库") {
+                    NotificationCenter.default.post(name: AppWorkspaceCommand.searchRequested, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
 
                 // Cmd+Shift+V：粘贴变体，直接从剪贴板粘贴并解析。
                 Button(localizer.t(L.App.pasteAndParseCommand)) {
                     model.pasteAndParse()
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .toolbar) {
+                Toggle("资料库工作台", isOn: $useLibraryWorkspace)
             }
         }
 

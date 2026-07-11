@@ -22,6 +22,40 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("model.consumePendingSettingsActions()"))
     }
 
+    func testLibraryWorkspaceWindowAndCommandsHaveNativeFallbacks() throws {
+        let source = try appSource()
+        let content = try contentViewSource()
+        let rootHost = try appRootHostSource()
+
+        XCTAssertTrue(source.contains(".defaultSize(width: 1440, height: 900)"))
+        XCTAssertTrue(source.contains(".windowResizability(.contentMinSize)"))
+        XCTAssertTrue(content.contains(".frame(minWidth: 900, minHeight: 640)"))
+
+        XCTAssertTrue(source.contains("AppWorkspaceCommand.newDownloadRequested"))
+        XCTAssertTrue(source.contains(".keyboardShortcut(\"n\", modifiers: .command)"))
+        XCTAssertTrue(source.contains("AppWorkspaceCommand.searchRequested"))
+        XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
+        XCTAssertTrue(source.contains("Toggle(\"资料库工作台\""),
+                      "新布局必须保留菜单级 legacy fallback")
+        XCTAssertTrue(rootHost.contains("model.addTasks(from: urlText)"),
+                      "⌘N 的新建下载 sheet 必须接入真实批量入队流程")
+    }
+
+    func testReprocessChecksASRReadinessBeforeCreatingAnIsolatedTask() throws {
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(prefix: "func enqueueLibraryReprocess", in: source))
+
+        XCTAssertTrue(body.contains("subtitleKind == .localASR, !queue.hasLocalASRGenerator"))
+        XCTAssertTrue(body.contains("subtitleKind == .cloudASR, !queue.hasCloudASRGenerator"))
+        XCTAssertTrue(body.contains("openLocalASRSettings()"))
+        XCTAssertTrue(body.contains("openCloudASRSettings()"))
+        XCTAssertLessThan(
+            try XCTUnwrap(body.range(of: "subtitleKind == .localASR")).lowerBound,
+            try XCTUnwrap(body.range(of: "let subtitleTrack")).lowerBound,
+            "ASR 依赖必须在构建并入队请求前失败"
+        )
+    }
+
     func testAbortConfirmationExplainsChoicesWithoutChangingButtonsOrReturnMapping() throws {
         let source = try appSource()
         let body = try XCTUnwrap(functionBody(prefix: "private func confirmAbortDownload", in: source))
@@ -49,6 +83,27 @@ final class MacOSAppBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("App.swift"))
+    }
+
+    private func contentViewSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("ContentView.swift"))
+    }
+
+    private func appRootHostSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("AppRootHost.swift"))
+    }
+
+    private func viewModelSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("ViewModel.swift"))
     }
 
     private func packageRoot() -> URL {

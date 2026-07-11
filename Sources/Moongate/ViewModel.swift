@@ -740,6 +740,242 @@ final class ViewModel: ObservableObject {
         requestUrlFocus += 1
     }
 
+    /// Creates a distinct QueueItem for a completed library version. Each
+    /// reprocess gets an isolated output folder, and only a source-quality
+    /// refresh is allowed to call the network engine again.
+    @discardableResult
+    func enqueueLibraryReprocess(
+        item: MoongateCore.LibraryItem,
+        configuration: LibraryProcessingConfiguration,
+        plan: ReprocessPlan
+    ) async throws -> UUID {
+        guard let sourceVersion = item.latestVersion else {
+            throw MoongateError.analyzeFailed("找不到可重新处理的版本。")
+        }
+        guard let sourceURL = item.source?.urlString else {
+            throw MoongateError.analyzeFailed("已恢复文件没有可重新处理的来源链接。")
+        }
+
+        hydrateCredentials()
+        let existingFiles = sourceVersion.artifacts.compactMap { artifact -> URL? in
+            let root = Self.appDownloadsDirectory.standardizedFileURL
+            let candidate = root.appendingPathComponent(artifact.relativePath).standardizedFileURL
+            let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+            guard candidate.path.hasPrefix(rootPrefix),
+                  FileManager.default.fileExists(atPath: candidate.path) else {
+                return nil
+            }
+            return candidate
+        }
+        guard existingFiles.contains(where: { QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
+            throw MoongateError.analyzeFailed("找不到原始视频文件，无法创建重新处理任务。")
+        }
+
+        let outputFormat: OutputFormat
+        if let rawOutputFormat = configuration.outputFormat?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawOutputFormat.isEmpty {
+            guard let parsed = OutputFormat(rawValue: rawOutputFormat) else {
+                throw MoongateError.analyzeFailed("输出格式无效。请从列表中选择保持源格式、H.264、H.265 或 MKV。")
+            }
+            outputFormat = parsed
+        } else {
+            outputFormat = .original
+        }
+        let needsBurn = plan.steps.contains(.burn)
+        let needsTranslation = plan.steps.contains(.translate)
+        let requiresASR = plan.steps.contains(.transcribe)
+        let subtitleSourceChanged = sourceVersion.processing.configuration.subtitleSource != configuration.subtitleSource
+        let reusesCompletedSubtitle = needsBurn && !needsTranslation && !requiresASR && !subtitleSourceChanged
+        let requiresSubtitleInput = needsBurn || needsTranslation || requiresASR || subtitleSourceChanged
+        let refreshesSourceVideo = plan.steps.contains(.refreshVideo)
+        let configuredSubtitleKind: SubtitleSourceKind?
+        if let rawSubtitleSource = configuration.subtitleSource?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawSubtitleSource.isEmpty {
+            guard let parsed = SubtitleSourceKind(rawValue: rawSubtitleSource) else {
+                throw MoongateError.analyzeFailed("字幕来源无效。请从列表中选择已有字幕、本地识别或云端识别。")
+            }
+            configuredSubtitleKind = parsed
+        } else {
+            configuredSubtitleKind = nil
+        }
+        let mode: ChineseSubtitleMode
+        if needsBurn {
+            mode = needsTranslation ? .burnIn : .burnOriginal
+        } else if needsTranslation {
+            mode = .srtOnly
+        } else {
+            mode = .off
+        }
+        guard dependenciesReady(for: mode) else {
+            throw MoongateError.analyzeFailed("请先完成所需依赖配置。")
+        }
+
+        var taskSettings = settings
+        if let rawStyle = configuration.subtitleStyle,
+           let style = SubtitleStyle(rawValue: rawStyle) {
+            taskSettings.subtitleStyle = style
+        }
+        if let targetLanguage = configuration.targetLanguage,
+           !targetLanguage.isEmpty {
+            taskSettings.translationTargetLanguage = targetLanguage
+        }
+        if let translationModel = configuration.translationModel,
+           !translationModel.isEmpty {
+            if taskSettings.translationFollowsDefault {
+                taskSettings.aiModel = translationModel
+            } else {
+                taskSettings.translationModel = translationModel
+            }
+        }
+        if requiresASR,
+           let transcriptionModel = configuration.transcriptionModel,
+           !transcriptionModel.isEmpty {
+            taskSettings.localASRModelID = transcriptionModel
+        }
+        guard let sourceVideo = existingFiles.first(where: {
+            QueueManager.videoExtensions.contains($0.pathExtension.lowercased())
+        }) else {
+            throw MoongateError.analyzeFailed("找不到原始视频文件，无法创建重新处理任务。")
+        }
+        let versionDirectory = try ReprocessWorkspace.createVersionDirectory(
+            beside: sourceVideo.deletingLastPathComponent(),
+            versionNumber: sourceVersion.number + 1
+        )
+        // A source-quality refresh downloads a new video into vN. Keep only
+        // reusable subtitles there; copying v1's video would create an
+        // unindexed duplicate once the fresh download completes.
+        let artifactsToCopy = refreshesSourceVideo
+            ? existingFiles.filter { !QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }
+            : existingFiles
+        let isolatedFiles = try ReprocessWorkspace.copyArtifacts(artifactsToCopy, to: versionDirectory)
+        if !refreshesSourceVideo,
+           !isolatedFiles.contains(where: { QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }) {
+            throw MoongateError.analyzeFailed("无法为重新处理准备独立的视频版本。")
+        }
+
+        let subtitleFiles = isolatedFiles.filter {
+            ["srt", "vtt"].contains($0.pathExtension.lowercased())
+        }
+        let translatedSubtitle = subtitleFiles.first {
+            TranslationLanguage.isTranslatedSubtitleFileName($0.lastPathComponent)
+        }
+        let existingSourceSubtitle = subtitleFiles.first {
+            !TranslationLanguage.isTranslatedSubtitleFileName($0.lastPathComponent)
+        }
+
+        let subtitleKind: SubtitleSourceKind?
+        let selectedSubtitle: URL?
+        if reusesCompletedSubtitle {
+            guard let reusableSubtitle = translatedSubtitle ?? existingSourceSubtitle else {
+                throw MoongateError.analyzeFailed("未找到可复用字幕，无法只重新压制。请选择新的字幕来源或重新转录。")
+            }
+            subtitleKind = .importedFile
+            selectedSubtitle = reusableSubtitle
+        } else if requiresASR {
+            subtitleKind = configuredSubtitleKind == .cloudASR ? .cloudASR : .localASR
+            selectedSubtitle = nil
+        } else if requiresSubtitleInput {
+            guard let configuredSubtitleKind else {
+                throw MoongateError.analyzeFailed("请选择要使用的已有字幕来源，或改为本地/云端识别。")
+            }
+            switch configuredSubtitleKind {
+            case .localASR, .cloudASR:
+                // The planner normally reaches this through `requiresASR`.
+                // Keep the choice explicit if a migrated record gets here.
+                subtitleKind = configuredSubtitleKind
+                selectedSubtitle = nil
+            case .manual, .platformAuto, .hlsManifest, .importedFile:
+                guard let existingSourceSubtitle else {
+                    throw MoongateError.analyzeFailed("当前版本没有可复用的源字幕；请选择本地或云端识别。")
+                }
+                // 0.9 can select a known existing subtitle but cannot invent
+                // a new remote/manual track without a picker. Normalise it to
+                // importedFile and pass the exact isolated path below.
+                subtitleKind = .importedFile
+                selectedSubtitle = existingSourceSubtitle
+            }
+        } else {
+            subtitleKind = nil
+            selectedSubtitle = nil
+        }
+        if subtitleKind == .localASR, !queue.hasLocalASRGenerator {
+            openLocalASRSettings()
+            throw MoongateError.analyzeFailed("本地语音识别尚未配置。请先在设置中完成安装。")
+        }
+        if subtitleKind == .cloudASR, !queue.hasCloudASRGenerator {
+            openCloudASRSettings()
+            throw MoongateError.analyzeFailed("云端语音识别尚未配置。请先在设置中完成配置。")
+        }
+
+        let subtitleTrack = subtitleKind.map { kind in
+            SubtitleChoice(
+                languageCode: "auto",
+                label: {
+                    switch kind {
+                    case .localASR: "本地识别字幕"
+                    case .cloudASR: "云端识别字幕"
+                    default: "已有字幕"
+                    }
+                }(),
+                sourceKind: kind,
+                provider: kind == .localASR ? "whisper.cpp" : "library",
+                variant: "reprocess",
+                metadata: selectedSubtitle.map { ["path": $0.path] } ?? [:]
+            )
+        }
+        let sourcePolicy: SubtitleSourcePolicy
+        switch subtitleKind {
+        case .localASR: sourcePolicy = .forceLocalASR
+        case .cloudASR: sourcePolicy = .cloudASR
+        case .importedFile: sourcePolicy = .importedFile
+        case .manual, .platformAuto, .hlsManifest, .none: sourcePolicy = .autoBest
+        }
+
+        let formatID = configuration.quality?.isEmpty == false ? configuration.quality! : "best"
+        let request = DownloadRequest(
+            url: sourceURL,
+            videoID: "library-\(item.id.uuidString)",
+            formatID: formatID,
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: subtitleTrack.map { [$0] } ?? [],
+            primarySubtitleTrackID: subtitleTrack?.id,
+            preferredSubtitleLanguageCode: subtitleTrack?.languageCode,
+            sourceLanguageIntent: .automatic,
+            subtitleSourcePolicy: sourcePolicy,
+            importedSubtitleFileURL: selectedSubtitle,
+            destinationDirectory: versionDirectory,
+            preferredTitle: item.title,
+            outputFormat: outputFormat
+        )
+        let info = VideoInfo(
+            sourceURL: sourceURL,
+            videoID: "library-\(item.id.uuidString)",
+            title: item.title,
+            durationText: nil,
+            thumbnailURL: item.thumbnail.flatMap { URL(string: $0.urlString) },
+            uploader: nil,
+            formats: [FormatChoice(id: formatID, label: "资料库重新处理")],
+            subtitles: subtitleTrack.map { [$0] } ?? []
+        )
+        let reuseExistingArtifacts = !refreshesSourceVideo
+        let taskID = queue.enqueueReprocess(
+            info: info,
+            request: request,
+            chineseMode: mode,
+            settings: taskSettings,
+            existingFiles: isolatedFiles,
+            libraryItemID: item.id,
+            libraryVersionID: plan.outputVersionID,
+            reuseExistingArtifacts: reuseExistingArtifacts
+        )
+        enqueueNotice = "已创建重新处理任务：\(item.title)"
+        queueExpanded = true
+        return taskID
+    }
+
     /// 把当前选档页的选择即时记住（持久化为「上次下载选项」），供下次选档页恢复。
     /// 仅在 ready（用户正在选档）时记：恢复发生在 analyzing 阶段、入队后的清空发生在 idle 阶段，
     /// 都不会触发记忆，避免「恢复值/清空值」污染记忆。无变化时不落盘，避免每次切换都写磁盘。
