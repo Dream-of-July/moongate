@@ -330,4 +330,26 @@ public struct LibraryEnvelope: Codable, Sendable, Equatable {
         self.tags = tags
         self.items = items
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case tags
+        case items
+    }
+
+    /// A version-less file is the v0 library shape. The store owns advancing it
+    /// to `currentSchemaVersion` after decoding so migration remains explicit.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        tags = try container.decodeIfPresent([LibraryTag].self, forKey: .tags) ?? []
+        items = try container.decodeIfPresent([LibraryItem].self, forKey: .items) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(items, forKey: .items)
+    }
 }
