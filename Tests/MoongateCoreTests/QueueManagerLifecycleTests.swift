@@ -60,7 +60,7 @@ final class QueueManagerLifecycleTests: XCTestCase {
         XCTAssertEqual(updated.workPlan.phases.map(\.phase), [.download, .transcode, .translate, .burn])
     }
 
-    func testForceLocalDraftDoesNotStartUntilItsSelectedModelIsReady() async throws {
+    func testForceLocalDraftWithoutReusableSubtitleShowsActionableSetupMessage() async throws {
         let engine = ControlledDownloadEngine(mode: .immediate(makeDownloadResult()))
         let queue = QueueManager(engine: engine)
         let localTrack = SubtitleChoice(
@@ -94,9 +94,133 @@ final class QueueManagerLifecycleTests: XCTestCase {
         XCTAssertFalse(queue.start(id: id))
         let item = try XCTUnwrap(queue.items.first { $0.id == id })
         XCTAssertTrue(item.isDeferredDraft)
-        XCTAssertTrue(item.statusText?.contains("本地转录模型") == true)
+        XCTAssertTrue(item.statusText?.contains("本机字幕识别未启用") == true)
+        XCTAssertTrue(item.statusText?.contains("自动字幕") == true)
+        XCTAssertTrue(item.statusText?.contains("字幕与语言") == true)
+        XCTAssertFalse(item.statusText?.contains("准备中心") == true)
+        XCTAssertFalse(item.statusText?.lowercased().contains("whisper") == true)
+        XCTAssertFalse(item.statusText?.lowercased().contains("runtime") == true)
+        XCTAssertFalse(item.statusText?.contains("模型") == true)
         let downloadCallCount = await engine.downloadCallCount
         XCTAssertEqual(downloadCallCount, 0)
+    }
+
+    func testDeferredLocalASRReprocessReusesExistingSubtitleWithoutGenerator() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("queue-local-asr-reuse-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let video = directory.appendingPathComponent("reused-local-asr.mp4")
+        try Data().write(to: video)
+        let subtitle = directory.appendingPathComponent("reused-local-asr.local-asr.en.srt")
+        try healthyLocalASRSubtitle().write(to: subtitle, atomically: true, encoding: .utf8)
+
+        let track = SubtitleChoice(
+            languageCode: "en",
+            label: "English · Local recognition",
+            sourceKind: .localASR
+        )
+        let request = DownloadRequest(
+            url: "https://example.com/reuse-local-asr",
+            videoID: "queue-lifecycle-reuse",
+            formatID: "best",
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [track],
+            primarySubtitleTrackID: track.id,
+            preferredSubtitleLanguageCode: "en",
+            subtitleSourcePolicy: .forceLocalASR,
+            destinationDirectory: directory
+        )
+        let engine = ControlledDownloadEngine(mode: .immediate(makeDownloadResult()))
+        let queue = QueueManager(engine: engine)
+        let id = queue.enqueueReprocess(
+            info: makeVideoInfo(),
+            request: request,
+            chineseMode: .off,
+            settings: AppSettings(localASREnabled: true),
+            existingFiles: [video, subtitle],
+            libraryItemID: UUID(),
+            libraryVersionID: UUID(),
+            reuseExistingArtifacts: true,
+            startImmediately: false
+        )
+
+        XCTAssertTrue(queue.start(id: id))
+        try await waitForStage(.done, id: id, in: queue)
+
+        let completed = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertTrue(completed.resultFiles.contains(subtitle))
+        XCTAssertNil(completed.executedModels.transcription)
+        let downloadCallCount = await engine.downloadCallCount
+        XCTAssertEqual(downloadCallCount, 0)
+    }
+
+    func testRetryClearsPreviousExecutedModelsBeforeNewAttemptStarts() async throws {
+        let engine = ControlledDownloadEngine(mode: .suspended(makeDownloadResult()))
+        let queue = QueueManager(engine: engine)
+        let id = queue.enqueue(
+            info: makeVideoInfo(),
+            request: makeRequest(),
+            chineseMode: .off,
+            settings: AppSettings(),
+            startImmediately: false
+        )
+        let index = try XCTUnwrap(queue.items.firstIndex { $0.id == id })
+        queue.items[index].stage = .failed("previous attempt failed")
+        queue.items[index].executedModels = LibraryActualModels(
+            transcription: "previous-transcriber",
+            translation: "previous-translator"
+        )
+
+        queue.retry(id)
+
+        let retried = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertNil(retried.executedModels.transcription)
+        XCTAssertNil(retried.executedModels.translation)
+
+        await engine.waitForSuspendedDownloads(1)
+        queue.cancel(id)
+        await engine.completeNextDownload()
+        try await waitForStage(.cancelled, id: id, in: queue)
+    }
+
+    func testRetryWithLocalASRClearsPreviousExecutedModelsBeforeNewAttemptStarts() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("queue-local-asr-retry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let video = directory.appendingPathComponent("retry-local-asr.mp4")
+        try Data().write(to: video)
+
+        let queue = QueueManager(
+            engine: ControlledDownloadEngine(mode: .immediate(makeDownloadResult())),
+            localASRGenerator: SleepingLocalASRGenerator()
+        )
+        let id = queue.enqueue(
+            info: makeVideoInfo(),
+            request: makeRequest(),
+            chineseMode: .off,
+            settings: AppSettings(localASREnabled: true, localASRModelID: "fixture"),
+            startImmediately: false
+        )
+        let index = try XCTUnwrap(queue.items.firstIndex { $0.id == id })
+        queue.items[index].stage = .done
+        queue.items[index].resultFiles = [video]
+        queue.items[index].executedModels = LibraryActualModels(
+            transcription: "previous-transcriber",
+            translation: "previous-translator"
+        )
+
+        queue.retryWithLocalASR(id)
+
+        let retried = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertNil(retried.executedModels.transcription)
+        XCTAssertNil(retried.executedModels.translation)
+
+        queue.cancel(id)
+        try await waitForStage(.cancelled, id: id, in: queue)
     }
 
     func testStartedRunUsesItsFrozenLocalASRResourceInsteadOfMutableQueueReadiness() async throws {
@@ -436,6 +560,43 @@ private final class TaggedLocalASRGenerator: LocalASRSubtitleGenerator, @uncheck
         progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
         return GeneratedLocalASRSource(url: output, confidence: nil)
     }
+}
+
+private final class SleepingLocalASRGenerator: LocalASRSubtitleGenerator, @unchecked Sendable {
+    func generateSourceSubtitle(
+        videoFile: URL,
+        languageCode: String,
+        promptMetadata: ASRPromptMetadata?,
+        control: TaskControlToken?,
+        progress: @escaping @Sendable (ASRProgress) -> Void
+    ) async throws -> GeneratedLocalASRSource {
+        try await Task.sleep(nanoseconds: 60_000_000_000)
+        throw CancellationError()
+    }
+}
+
+private func healthyLocalASRSubtitle() -> String {
+    let lines = [
+        "The meeting starts with a short introduction from the host.",
+        "Everyone shares the main thing they want to finish today.",
+        "We compare the results carefully before making a decision.",
+        "The next section explains how the video will be processed.",
+        "Please keep the original captions when they are already available.",
+        "A local transcript can be reused without downloading it again.",
+        "The review finishes with a clear list of follow-up actions.",
+        "We leave enough time to answer questions from the audience.",
+        "The final version keeps the source file and its subtitles together.",
+        "Thank you for watching and see you in the next update.",
+    ]
+    return lines.enumerated().map { index, text in
+        let start = index * 2
+        let end = start + 1
+        return """
+        \(index + 1)
+        00:00:\(String(format: "%02d", start)),000 --> 00:00:\(String(format: "%02d", end)),500
+        \(text)
+        """
+    }.joined(separator: "\n\n")
 }
 
 private func makeVideoInfo() -> VideoInfo {

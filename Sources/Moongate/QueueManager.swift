@@ -675,9 +675,16 @@ final class QueueManager: ObservableObject {
             initialFiles: target.resultFiles
         )
         let asr = makeASRRunResources(settings: snapshot.settings)
-        if Self.localASRLanguageCode(in: snapshot.request) != nil, asr.local == nil {
+        if Self.needsFreshLocalASRSource(
+            for: snapshot.request,
+            initialFiles: snapshot.initialFiles
+        ), asr.local == nil {
             update(id) {
-                $0.statusText = "所选的本地转录模型尚未准备好。请在准备中心安装模型，或选择已准备好的模型。"
+                $0.statusText = CoreL10n.text(
+                    en: "Local subtitle recognition isn't enabled. Choose automatic captions or enable it in Subtitles & Languages.",
+                    zhHans: "本机字幕识别未启用。请改用自动字幕，或在“字幕与语言”中启用。",
+                    zhHant: "本機字幕識別未啟用。請改用自動字幕，或在「字幕與語言」中啟用。"
+                )
             }
             return false
         }
@@ -1617,6 +1624,7 @@ final class QueueManager: ObservableObject {
             $0.postDownloadProcessingKind = nil
             $0.partialFailure = false
             $0.needsLogin = nil
+            $0.executedModels = .init()
             $0.statusText = skipDownload ? nil : CoreL10n.t(L.Queue.retryDownloadAndProcess)
             if !skipDownload { $0.resultFiles = [] }
             $0.skipDownloadWhenStarted = skipDownload
@@ -1658,6 +1666,7 @@ final class QueueManager: ObservableObject {
             $0.partialFailure = false
             $0.needsLogin = nil
             $0.timingWarning = false
+            $0.executedModels = .init()
             $0.statusText = nil
             $0.skipDownloadWhenStarted = true
             $0.task = nil
@@ -2363,6 +2372,24 @@ final class QueueManager: ObservableObject {
         return request.requestedSubtitleTracks
             .first(where: { $0.sourceKind == .localASR })?
             .languageCode
+    }
+
+    /// A reused local-ASR subtitle is a valid source for a reprocess task and
+    /// must not be blocked just because the local generator is no longer
+    /// installed. Only require the generator when a fresh source is needed.
+    private static func needsFreshLocalASRSource(
+        for request: DownloadRequest,
+        initialFiles: [URL]
+    ) -> Bool {
+        guard let languageCode = localASRLanguageCode(in: request) else { return false }
+        guard let existing = existingLocalASRSubtitle(in: initialFiles, languageCode: languageCode) else {
+            return true
+        }
+        return !existingLocalASRSubtitleIsUsable(
+            existing,
+            languageCode: languageCode,
+            request: request
+        )
     }
 
     private static func existingLocalASRSubtitle(in files: [URL], languageCode: String) -> URL? {
