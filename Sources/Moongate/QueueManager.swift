@@ -207,14 +207,13 @@ final class QueueManager: ObservableObject {
         let id: UUID
         let generation: Int
         let control: TaskControlToken
-        let request: DownloadRequest
-        let mode: ChineseSubtitleMode
-        let settings: AppSettings
-        let skipDownload: Bool
-        /// Existing artifacts are part of the attempt snapshot too. In
-        /// particular, a deferred reprocess must not silently pick up files
-        /// written by a later retry before this attempt begins.
-        let initialFiles: [URL]
+        let snapshot: ProcessingSnapshot
+
+        var request: DownloadRequest { snapshot.request }
+        var mode: ChineseSubtitleMode { snapshot.mode }
+        var settings: AppSettings { snapshot.settings }
+        var skipDownload: Bool { snapshot.skipDownload }
+        var initialFiles: [URL] { snapshot.initialFiles }
     }
 
     @Published var items: [QueueItem] = []
@@ -644,11 +643,13 @@ final class QueueManager: ObservableObject {
             id: id,
             generation: target.generation,
             control: target.control,
-            request: target.request,
-            mode: target.chineseMode,
-            settings: target.settings,
-            skipDownload: target.skipDownloadWhenStarted,
-            initialFiles: target.resultFiles
+            snapshot: ProcessingSnapshot(
+                request: target.request,
+                mode: target.chineseMode,
+                settings: target.settings,
+                skipDownload: target.skipDownloadWhenStarted,
+                initialFiles: target.resultFiles
+            )
         )
         notifiedTerminalIDs.remove(id)
         let task = Task { [weak self] in

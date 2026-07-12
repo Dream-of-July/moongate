@@ -73,6 +73,10 @@ struct QueueItemView: View {
         case .queued:
             // 等槽位/等待恢复等具体原因（QueueManager 写入），没有就显示通用文案
             return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
+        case .cancelling:
+            return item.statusText ?? CoreL10n.text(
+                en: "Cancelling…", zhHans: "正在取消…", zhHant: "正在取消…"
+            )
         case .downloading:
             if let localASRText = localASRProgressText { return statusWithDetails(localASRText, includeSpeed: false) }
             if item.isPostDownloadProcessing { return statusWithDetails(postDownloadProcessingText, includeSpeed: false) }
@@ -179,7 +183,7 @@ struct QueueItemView: View {
         switch item.stage {
         case .queued, .downloading, .translating, .burning:
             return true
-        case .done, .failed, .cancelled:
+        case .cancelling, .done, .failed, .cancelled:
             return false
         }
     }
@@ -299,6 +303,8 @@ struct QueueItemView: View {
         switch item.stage {
         case .queued:
             return localizer.t(L.Queue.queueProgress)
+        case .cancelling:
+            return CoreL10n.text(en: "Cancelling task", zhHans: "正在取消任务", zhHant: "正在取消任務")
         case .downloading:
             switch item.progressPhase {
             case .audioExtract:
@@ -334,6 +340,10 @@ struct QueueItemView: View {
         switch item.stage {
         case .queued:
             return item.statusText ?? localizer.t(L.Queue.queued)
+        case .cancelling:
+            return item.statusText ?? CoreL10n.text(
+                en: "Cancelling…", zhHans: "正在取消…", zhHant: "正在取消…"
+            )
         case .downloading:
             switch item.progressPhase {
             case .audioExtract:
@@ -374,6 +384,10 @@ struct QueueItemView: View {
                 }
                 iconButton("xmark", help: localizer.t(L.Queue.cancelAction), hint: localizer.t(L.Queue.cancelHint), action: onCancel)
             }
+        case .cancelling:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel(CoreL10n.text(en: "Cancelling task", zhHans: "正在取消任务", zhHant: "正在取消任務"))
         case .done:
             HStack(spacing: Spacing.sm) {
                 if item.partialFailure {

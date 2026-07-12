@@ -60,7 +60,7 @@ struct SplitLayoutView: View {
     private var activeItems: [QueueManager.QueueItem] {
         queue.items.filter { item in
             switch item.stage {
-            case .queued, .downloading, .translating, .burning:
+            case .queued, .cancelling, .downloading, .translating, .burning:
                 return true
             case .done, .failed, .cancelled:
                 return false
@@ -74,7 +74,7 @@ struct SplitLayoutView: View {
             switch item.stage {
             case .done, .failed, .cancelled:
                 return true
-            case .queued, .downloading, .translating, .burning:
+            case .queued, .cancelling, .downloading, .translating, .burning:
                 return false
             }
         }
@@ -282,6 +282,10 @@ private struct QueueStatusFormatter {
         switch item.stage {
         case .queued:
             return item.statusText ?? localizer.t(L.Queue.queuedEllipsis)
+        case .cancelling:
+            return item.statusText ?? CoreL10n.text(
+                en: "Cancelling…", zhHans: "正在取消…", zhHant: "正在取消…"
+            )
         case .downloading:
             // 下载 stage 内可能实际处于本地 ASR 各子阶段或下载后处理（转码）——与 QueueItemView 一致地优先判定。
             if let asr = localASRProgressText {
@@ -439,6 +443,8 @@ private struct QueueSidebarRow: View {
         switch item.stage {
         case .queued, .downloading, .translating, .burning:
             ProgressRingView(progress: item.overallProgress ?? 0, finished: false)
+        case .cancelling:
+            ProgressView().controlSize(.small)
         case .done:
             ProgressRingView(progress: 1, finished: true)
         case .failed:
@@ -585,7 +591,7 @@ private struct QueueDetailView: View {
         switch item.stage {
         case .queued, .downloading, .translating, .burning:
             return true
-        case .done, .failed, .cancelled:
+        case .cancelling, .done, .failed, .cancelled:
             return false
         }
     }
@@ -609,6 +615,8 @@ private struct QueueDetailView: View {
         switch item.stage {
         case .queued, .downloading, .translating, .burning:
             ProgressRingView(progress: item.overallProgress ?? 0, finished: false)
+        case .cancelling:
+            ProgressView().controlSize(.small)
         case .done:
             ProgressRingView(progress: 1, finished: true)
         case .failed:
@@ -646,6 +654,10 @@ private struct QueueDetailView: View {
                     actionButton("pause.fill", title: localizer.t(L.Queue.pause)) { queue.pause(item.id) }
                 }
                 actionButton("xmark", title: localizer.t(L.Queue.cancelAction)) { queue.cancel(item.id) }
+            case .cancelling:
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(CoreL10n.text(en: "Cancelling task", zhHans: "正在取消任务", zhHant: "正在取消任務"))
             case .done:
                 // 部分成功（视频下好、字幕处理失败）：只重跑字幕处理，与 legacy 一致。
                 if item.partialFailure {
@@ -710,4 +722,3 @@ private struct QueueDetailView: View {
     }
 
 }
-

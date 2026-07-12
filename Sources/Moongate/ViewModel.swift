@@ -6,7 +6,7 @@ import MoongateCore
 #endif
 
 /// 字幕处理方式（ready 页「字幕处理」分组的选项）
-enum ChineseSubtitleMode: String, CaseIterable, Codable {
+enum ChineseSubtitleMode: String, CaseIterable, Codable, Sendable {
     case off
     case srtOnly
     case burnIn
@@ -441,6 +441,173 @@ final class ViewModel: ObservableObject {
         processBatch(urls)
     }
 
+    /// Resolves links into stable library records without starting their
+    /// processing pipelines. The per-task configuration stays editable until
+    /// the user explicitly starts this item or the queued batch.
+    func enqueueDeferredDrafts(from text: String, configuration: QueuedProcessingConfiguration) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isParsing else { return }
+        let urls = Self.extractURLs(from: trimmed)
+        guard !urls.isEmpty else {
+            enqueueNotice = CoreL10n.t(L.Main.invalidURL)
+            return
+        }
+        processBatch(urls, queuedConfiguration: configuration, startImmediately: false)
+    }
+
+    @discardableResult
+    func startQueuedTask(id: UUID) -> Bool {
+        hydrateCredentials()
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+        let settingsWithCredentials = applyingCurrentCredentials(to: item.settings)
+        guard queue.updateQueuedConfiguration(
+            id: id,
+            request: item.request,
+            mode: item.chineseMode,
+            settings: settingsWithCredentials
+        ) else {
+            return false
+        }
+        return queue.start(id: id)
+    }
+
+    @discardableResult
+    func startAllQueuedTasks() -> Int {
+        let queuedIDs = queue.items.filter { $0.stage == .queued }.map(\.id)
+        return queuedIDs.reduce(into: 0) { count, id in
+            if startQueuedTask(id: id) { count += 1 }
+        }
+    }
+
+    @discardableResult
+    func updateQueuedTaskConfiguration(
+        id: UUID,
+        configuration: LibraryProcessingConfiguration
+    ) -> Bool {
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+        let sourcePolicy = queuedSubtitlePolicy(
+            from: configuration.subtitleSource,
+            fallback: item.request.subtitleSourcePolicy
+        )
+        let queuedConfiguration = QueuedProcessingConfiguration(
+            quality: configuration.quality ?? item.request.formatID,
+            outputFormat: OutputFormat(rawValue: configuration.outputFormat ?? "") ?? item.request.outputFormat,
+            subtitleMode: item.chineseMode,
+            subtitleSourcePolicy: sourcePolicy,
+            targetLanguage: configuration.targetLanguage ?? item.settings.translationTargetLanguage,
+            transcriptionModel: configuration.transcriptionModel ?? item.settings.localASRModelID,
+            translationModel: configuration.translationModel
+                ?? (item.settings.translationFollowsDefault ? item.settings.aiModel : item.settings.translationModel),
+            subtitleStyle: SubtitleStyle(rawValue: configuration.subtitleStyle ?? "") ?? item.settings.subtitleStyle
+        )
+        return updateQueuedTaskConfiguration(id: id, configuration: queuedConfiguration)
+    }
+
+    @discardableResult
+    private func updateQueuedTaskConfiguration(
+        id: UUID,
+        configuration: QueuedProcessingConfiguration
+    ) -> Bool {
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+        let subtitleTrack = queuedSubtitleTrack(for: configuration, from: item.request)
+        let subtitleTracks = configuration.subtitleMode == .off
+            ? [] : subtitleTrack.map { [$0] } ?? []
+        let subtitleLangs = subtitleTrack?.sourceKind == .manual ? [subtitleTrack!.languageCode] : []
+        let autoSubtitleLangs = subtitleTrack?.sourceKind == .platformAuto ? [subtitleTrack!.languageCode] : []
+        let request = DownloadRequest(
+            url: item.request.url,
+            videoID: item.request.videoID,
+            formatID: configuration.quality == "best" ? item.request.formatID : configuration.quality,
+            subtitleLangs: subtitleLangs,
+            autoSubtitleLangs: autoSubtitleLangs,
+            subtitleTracks: subtitleTracks,
+            primarySubtitleTrackID: subtitleTrack?.id,
+            preferredSubtitleLanguageCode: subtitleTrack?.languageCode,
+            sourceLanguageIntent: item.request.sourceLanguageIntent,
+            subtitleSourcePolicy: configuration.subtitleSourcePolicy,
+            importedSubtitleFileURL: item.request.importedSubtitleFileURL,
+            destinationDirectory: item.request.destinationDirectory,
+            preferredTitle: item.request.preferredTitle,
+            preferHDR: item.request.preferHDR,
+            outputFormat: configuration.outputFormat
+        )
+        return queue.updateQueuedConfiguration(
+            id: id,
+            request: request,
+            mode: configuration.subtitleMode,
+            settings: configuration.applying(to: item.settings)
+        )
+    }
+
+    private func applyingCurrentCredentials(to taskSettings: AppSettings) -> AppSettings {
+        var snapshot = taskSettings
+        snapshot.translationAuthToken = settings.translationAuthToken
+        snapshot.aiAuthToken = settings.aiAuthToken
+        snapshot.summaryAuthToken = settings.summaryAuthToken
+        snapshot.cloudASRAuthToken = settings.cloudASRAuthToken
+        return snapshot
+    }
+
+    private func queuedSubtitlePolicy(
+        from persistedSource: String?,
+        fallback: SubtitleSourcePolicy
+    ) -> SubtitleSourcePolicy {
+        guard let kind = persistedSource.flatMap(SubtitleSourceKind.init(rawValue:)) else {
+            return fallback
+        }
+        switch kind {
+        case .localASR: return .forceLocalASR
+        case .cloudASR: return .cloudASR
+        case .importedFile: return .importedFile
+        case .manual, .platformAuto, .hlsManifest: return .forcePlatform
+        }
+    }
+
+    private func queuedSubtitleTrack(
+        for configuration: QueuedProcessingConfiguration,
+        from request: DownloadRequest
+    ) -> SubtitleChoice? {
+        let sourceLanguage = request.primarySubtitleTrack?.languageCode
+            ?? request.preferredSubtitleLanguageCode
+            ?? "auto"
+        switch configuration.subtitleSourcePolicy {
+        case .forceLocalASR, .preferLocalASR, .compareLocalASR:
+            return request.subtitleTracks.first(where: { $0.sourceKind == .localASR })
+                ?? SubtitleChoice(
+                    languageCode: sourceLanguage,
+                    label: "本地识别字幕",
+                    sourceKind: .localASR,
+                    provider: "whisper.cpp",
+                    variant: "queued"
+                )
+        case .cloudASR:
+            return SubtitleChoice(
+                languageCode: sourceLanguage,
+                label: "云端识别字幕",
+                sourceKind: .cloudASR,
+                provider: "cloud-asr",
+                variant: "queued"
+            )
+        case .importedFile:
+            return request.subtitleTracks.first(where: { $0.sourceKind == .importedFile })
+        case .forcePlatform, .preferPlatform:
+            return request.subtitleTracks.first(where: {
+                $0.sourceKind == .manual || $0.sourceKind == .platformAuto || $0.sourceKind == .hlsManifest
+            })
+        case .autoBest:
+            return request.primarySubtitleTrack
+        }
+    }
+
     // 每个字符既非空白、也不是下一条链接的开头（负向前瞻保证相接的链接被切开）。
     private static let urlExtractionRegex: NSRegularExpression? = try? NSRegularExpression(
         pattern: #"(?i)https?://(?:(?!https?://)\S)+"#
@@ -448,9 +615,13 @@ final class ViewModel: ObservableObject {
 
     /// 批量模式：逐个解析（多候选页取第一个，即页面主视频），按最高画质自动入队。
     /// 当前已选字幕处理模式会沿用，并自动挑一条字幕作翻译源（真实字幕优先）。
-    private func processBatch(_ urls: [String]) {
-        let mode = chineseMode
-        guard dependenciesReady(for: mode) else { return }
+    private func processBatch(
+        _ urls: [String],
+        queuedConfiguration: QueuedProcessingConfiguration? = nil,
+        startImmediately: Bool = true
+    ) {
+        let mode = queuedConfiguration?.subtitleMode ?? chineseMode
+        guard !startImmediately || dependenciesReady(for: mode) else { return }
         session += 1
         let token = session
         retryAction = nil
@@ -461,7 +632,8 @@ final class ViewModel: ObservableObject {
         chosenCandidate = nil
         queueExpanded = false
         stage = .resolving
-        let currentSettings = settings
+        let currentSettings = queuedConfiguration?.applying(to: settings) ?? settings
+        let sourcePolicy = queuedConfiguration?.subtitleSourcePolicy ?? subtitleSourcePolicy
         parseTask?.cancel()
         parseTask = Task {
             var added = 0
@@ -487,7 +659,13 @@ final class ViewModel: ObservableObject {
                             platformSubtitleHint: info.platformSubtitleHint
                         )
                     }
-                    guard let formatID = info.formats.first?.id else {
+                    let formatID: String
+                    if let quality = queuedConfiguration?.quality,
+                       quality != "best" {
+                        formatID = quality
+                    } else if let preferred = info.formats.first?.id {
+                        formatID = preferred
+                    } else {
                         throw MoongateError.analyzeFailed(CoreL10n.t(L.Main.noAvailableFormat))
                     }
                     if self.queue.hasOpenDuplicate(
@@ -504,12 +682,20 @@ final class ViewModel: ObservableObject {
                     let sourceDecision = self.subtitleSourceDecision(
                         for: info,
                         targetLanguage: currentSettings.translationTargetLanguage,
-                        sourcePolicy: self.subtitleSourcePolicy,
+                        sourcePolicy: sourcePolicy,
                         preferredSourceLanguageCode: currentSettings.preferredSourceLanguage
                     )
+                    let configuredCloudASRTrack: SubtitleChoice? = sourcePolicy == .cloudASR
+                        ? SubtitleChoice(
+                            languageCode: self.effectiveSourceLanguagePreference(for: info),
+                            label: "云端识别字幕",
+                            sourceKind: .cloudASR,
+                            provider: "cloud-asr",
+                            variant: "queued"
+                        )
+                        : nil
                     if mode != .off,
-                       let sub = sourceDecision.selectedTrack,
-                       sub.sourceKind != .localASR || self.localASRReadyForDownload {
+                       let sub = configuredCloudASRTrack ?? sourceDecision.selectedTrack {
                         subtitleTracks = [sub]
                         primarySubtitleTrackID = sub.id
                         if sub.sourceKind == .platformAuto {
@@ -518,7 +704,7 @@ final class ViewModel: ObservableObject {
                             subtitleLangs = [sub.languageCode]
                         }
                     }
-                    if shouldRequireTranslationReadiness(
+                    if startImmediately && shouldRequireTranslationReadiness(
                         for: mode,
                         info: info,
                         subtitleLangs: subtitleLangs,
@@ -548,15 +734,20 @@ final class ViewModel: ObservableObject {
                         primarySubtitleTrackID: primarySubtitleTrackID,
                         preferredSubtitleLanguageCode: primarySubtitleTrackID.map(normalizedLang),
                         sourceLanguageIntent: self.readySourceLanguageIntent,
-                        subtitleSourcePolicy: self.subtitleSourcePolicy,
+                        subtitleSourcePolicy: sourcePolicy,
                         destinationDirectory: Self.destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
                         preferredTitle: (candidate.kind == .pageMain || candidate.kind == .directFile)
-                            ? info.title : nil
+                            ? info.title : nil,
+                        outputFormat: queuedConfiguration?.outputFormat ?? .original
                     )
                     self.queue.enqueue(
-                        info: info, request: request, chineseMode: mode, settings: currentSettings
+                        info: info,
+                        request: request,
+                        chineseMode: mode,
+                        settings: currentSettings,
+                        startImmediately: startImmediately
                     )
                     added += 1
                 } catch is CancellationError {

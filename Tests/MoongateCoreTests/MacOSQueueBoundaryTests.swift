@@ -40,6 +40,18 @@ final class MacOSQueueBoundaryTests: XCTestCase {
                       "重新处理不能在转码完成后删除旧版本的输入产物")
     }
 
+    func testQueueRunContextUsesOneImmutableProcessingSnapshot() throws {
+        let source = try queueManagerSource()
+        let beginRun = try XCTUnwrap(functionBody(named: "beginRun", in: source))
+
+        XCTAssertTrue(source.contains("let snapshot: ProcessingSnapshot"),
+                      "运行上下文必须保存单一不可变处理快照，而不是分别读可变 QueueItem 字段")
+        XCTAssertTrue(beginRun.contains("snapshot: ProcessingSnapshot("),
+                      "只有开始任务时才能冻结请求、模式、设置与既有产物")
+        XCTAssertTrue(source.contains("var request: DownloadRequest { snapshot.request }"))
+        XCTAssertTrue(source.contains("var initialFiles: [URL] { snapshot.initialFiles }"))
+    }
+
     func testQueueHeaderExposesReadableTaskSummaryWithoutChangingActions() throws {
         let source = try queueSectionSource()
         let body = try XCTUnwrap(functionBody(named: "body", in: source))

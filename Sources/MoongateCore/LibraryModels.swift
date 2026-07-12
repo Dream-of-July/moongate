@@ -135,6 +135,7 @@ public struct LibraryArtifact: Codable, Sendable, Equatable, Identifiable {
 
 public enum LibraryItemState: String, Codable, Sendable, Equatable, CaseIterable {
     case queued
+    case cancelling
     case downloading
     case transcribing
     case translating
@@ -147,20 +148,31 @@ public enum LibraryItemState: String, Codable, Sendable, Equatable, CaseIterable
     case failed
     case cancelled
 
-    public var isActive: Bool {
+    /// A queued task has a mutable configuration and has not entered the
+    /// processing pipeline yet. Keep it distinct from a paused/running task.
+    public var isQueued: Bool {
+        self == .queued
+    }
+
+    /// A run has started and its processing configuration is immutable until
+    /// it reaches a terminal state. `cancelling` remains running until all
+    /// child processes and slot pools have actually converged.
+    public var isRunning: Bool {
         switch self {
-        case .queued, .downloading, .transcribing, .translating, .transcoding, .burning:
+        case .cancelling, .downloading, .transcribing, .translating, .transcoding, .burning:
             return true
-        case .completed, .partialSuccess, .needsAttention, .interrupted, .failed, .cancelled:
+        case .queued, .completed, .partialSuccess, .needsAttention, .interrupted, .failed, .cancelled:
             return false
         }
     }
+
+    public var isActive: Bool { isQueued || isRunning }
 
     public var needsAttention: Bool {
         switch self {
         case .partialSuccess, .needsAttention, .interrupted, .failed:
             return true
-        case .queued, .downloading, .transcribing, .translating, .transcoding, .burning, .completed, .cancelled:
+        case .queued, .cancelling, .downloading, .transcribing, .translating, .transcoding, .burning, .completed, .cancelled:
             return false
         }
     }

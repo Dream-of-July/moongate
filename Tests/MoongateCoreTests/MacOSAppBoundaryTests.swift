@@ -37,8 +37,45 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
         XCTAssertTrue(source.contains("Toggle(\"资料库工作台\""),
                       "新布局必须保留菜单级 legacy fallback")
-        XCTAssertTrue(rootHost.contains("model.addTasks(from: urlText)"),
-                      "⌘N 的新建下载 sheet 必须接入真实批量入队流程")
+        XCTAssertTrue(rootHost.contains("model.enqueueDeferredDrafts(from: urlText, configuration: configuration)"),
+                      "⌘N 的新建下载 sheet 必须创建可编辑的待开始任务")
+    }
+
+    func testNewDownloadSheetCreatesEditableDeferredDraftsWithoutReadinessGate() throws {
+        let rootHost = try appRootHostSource()
+        let viewModel = try viewModelSource()
+
+        XCTAssertTrue(rootHost.contains("@State private var configuration: QueuedProcessingConfiguration"))
+        XCTAssertTrue(rootHost.contains("Picker(\"画质\""))
+        XCTAssertTrue(rootHost.contains("Picker(\"字幕来源\""))
+        XCTAssertTrue(rootHost.contains("Picker(\"字幕样式\""))
+        XCTAssertFalse(rootHost.contains("高级设置\") {\n                Text(\"画质、字幕来源和模型可在“设置”中调整"))
+
+        let body = try XCTUnwrap(functionBody(prefix: "func enqueueDeferredDrafts", in: viewModel))
+        XCTAssertTrue(body.contains("startImmediately: false"))
+        let batch = try XCTUnwrap(functionBody(prefix: "private func processBatch", in: viewModel))
+        XCTAssertTrue(batch.contains("queuedConfiguration?.applying(to: settings)"))
+        XCTAssertTrue(batch.contains("queuedConfiguration?.outputFormat"))
+        XCTAssertTrue(batch.contains("queuedConfiguration?.subtitleSourcePolicy"))
+        XCTAssertFalse(body.contains("dependenciesReady("),
+                       "待开始任务必须在真正启动前允许保存，即使运行环境尚未准备好")
+        XCTAssertFalse(body.contains("blockIfTranslationNotReady("),
+                       "翻译可用性不能阻止待开始任务的创建")
+    }
+
+    func testQueuedTaskStartRefreshesCredentialsWithoutReplacingTaskConfiguration() throws {
+        let source = try viewModelSource()
+        let start = try XCTUnwrap(functionBody(prefix: "func startQueuedTask", in: source))
+        let startAll = try XCTUnwrap(functionBody(prefix: "func startAllQueuedTasks", in: source))
+        let update = try XCTUnwrap(functionBody(prefix: "func updateQueuedTaskConfiguration", in: source))
+
+        XCTAssertTrue(start.contains("hydrateCredentials()"))
+        XCTAssertTrue(start.contains("queue.updateQueuedConfiguration("))
+        XCTAssertTrue(start.contains("queue.start(id: id)"))
+        XCTAssertTrue(startAll.contains("startQueuedTask(id:"))
+        XCTAssertTrue(update.contains("item.stage == .queued"))
+        XCTAssertTrue(source.contains("private func updateQueuedTaskConfiguration"))
+        XCTAssertTrue(source.contains("queue.updateQueuedConfiguration("))
     }
 
     func testReprocessChecksASRReadinessBeforeCreatingAnIsolatedTask() throws {

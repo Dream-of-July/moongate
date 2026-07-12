@@ -13,13 +13,21 @@ enum AppWorkspaceCommand {
     static let inspectorToggleRequested = Notification.Name("com.moongate.workspace.inspectorToggleRequested")
 }
 
-/// 根级「新建下载」sheet。它复用既有批量入队引擎，因此不会在新布局下绕开依赖检查、登录或默认设置。
+/// 根级「新建下载」sheet。链接在这里先变成可编辑的待开始任务；默认设置只用于预填，
+/// 绝不把画质、字幕和模型选项赶回设置页。
 struct RootNewDownloadSheet: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
     @Environment(\.dismiss) private var dismiss
     @State private var urlText = ""
+    @State private var configuration: QueuedProcessingConfiguration
+    @State private var processingOptionsExpanded = true
     @FocusState private var urlFieldFocused: Bool
+
+    init(model: ViewModel) {
+        self.model = model
+        self._configuration = State(initialValue: .defaults(from: model.settings))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.lg) {
@@ -40,24 +48,59 @@ struct RootNewDownloadSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("将使用当前默认设置")
-                    .font(.caption.weight(.medium))
-                Text(defaultProcessingSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            DisclosureGroup("处理选项", isExpanded: $processingOptionsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("画质", selection: $configuration.quality) {
+                        Text("最佳可用").tag("best")
+                        Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
+                        Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
+                    }
 
-            DisclosureGroup("高级设置") {
-                Text("画质、字幕来源和模型可在“设置”中调整；这里不会创建无法追踪的草稿。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                    Picker("输出格式", selection: outputFormatBinding) {
+                        Text("保持源格式").tag(OutputFormat.original.rawValue)
+                        Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
+                        Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
+                        Text("MKV").tag(OutputFormat.mkv.rawValue)
+                    }
+
+                    Picker("字幕处理", selection: subtitleModeBinding) {
+                        Text("不处理字幕").tag(ChineseSubtitleMode.off.rawValue)
+                        Text("生成译文 SRT").tag(ChineseSubtitleMode.srtOnly.rawValue)
+                        Text("压制译文字幕").tag(ChineseSubtitleMode.burnIn.rawValue)
+                        Text("压制原字幕").tag(ChineseSubtitleMode.burnOriginal.rawValue)
+                    }
+
+                    Picker("字幕来源", selection: subtitleSourcePolicyBinding) {
+                        Text("自动选择最佳来源").tag(SubtitleSourcePolicy.autoBest.rawValue)
+                        Text("优先平台字幕").tag(SubtitleSourcePolicy.preferPlatform.rawValue)
+                        Text("仅平台字幕").tag(SubtitleSourcePolicy.forcePlatform.rawValue)
+                        Text("本地识别（Whisper）").tag(SubtitleSourcePolicy.forceLocalASR.rawValue)
+                        Text("云端识别").tag(SubtitleSourcePolicy.cloudASR.rawValue)
+                    }
+
+                    if configuration.subtitleMode != .off {
+                        Picker("目标语言", selection: $configuration.targetLanguage) {
+                            Text("简体中文").tag("zh-Hans")
+                            Text("繁體中文").tag("zh-Hant")
+                            Text("English").tag("en")
+                        }
+
+                        Picker("字幕样式", selection: subtitleStyleBinding) {
+                            Text("双语").tag(SubtitleStyle.bilingual.rawValue)
+                            Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
+                        }
+
+                        TextField("转录模型（可选）", text: optionalTextBinding(\.transcriptionModel))
+                        TextField("翻译模型（可选）", text: optionalTextBinding(\.translationModel))
+                    }
+                }
+                .padding(.top, 8)
             }
             .font(.callout)
+
+            Text("确认后会加入待开始队列。你可以在资料库中逐项修改，再开始处理。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: Spacing.md) {
                 Spacer(minLength: 0)
@@ -67,8 +110,8 @@ struct RootNewDownloadSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button(localizer.t(L.SplitLayout.addSheetConfirm)) {
-                    model.addTasks(from: urlText)
+                Button("加入待开始队列") {
+                    model.enqueueDeferredDrafts(from: urlText, configuration: configuration)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -77,17 +120,47 @@ struct RootNewDownloadSheet: View {
             }
         }
         .padding(Spacing.xl)
-        .frame(width: 460)
+        .frame(width: 500)
         .onAppear { urlFieldFocused = true }
     }
 
-    private var defaultProcessingSummary: String {
-        let translationModel = model.settings.translationFollowsDefault
-            ? model.settings.aiModel
-            : model.settings.translationModel
-        let subtitle = model.settings.lastSubtitleMode ?? ChineseSubtitleMode.off.rawValue
-        let format = model.settings.lastOutputFormat?.rawValue ?? OutputFormat.original.rawValue
-        let modelName = translationModel.isEmpty ? "未配置翻译模型" : translationModel
-        return "格式：\(format) · 字幕：\(subtitle) · 模型：\(modelName)"
+    private var outputFormatBinding: Binding<String> {
+        Binding(
+            get: { configuration.outputFormat.rawValue },
+            set: { configuration.outputFormat = OutputFormat(rawValue: $0) ?? .original }
+        )
+    }
+
+    private var subtitleModeBinding: Binding<String> {
+        Binding(
+            get: { configuration.subtitleMode.rawValue },
+            set: { configuration.subtitleMode = ChineseSubtitleMode(rawValue: $0) ?? .off }
+        )
+    }
+
+    private var subtitleSourcePolicyBinding: Binding<String> {
+        Binding(
+            get: { configuration.subtitleSourcePolicy.rawValue },
+            set: { configuration.subtitleSourcePolicy = SubtitleSourcePolicy(rawValue: $0) ?? .autoBest }
+        )
+    }
+
+    private var subtitleStyleBinding: Binding<String> {
+        Binding(
+            get: { configuration.subtitleStyle.rawValue },
+            set: { configuration.subtitleStyle = SubtitleStyle(rawValue: $0) ?? .bilingual }
+        )
+    }
+
+    private func optionalTextBinding(
+        _ keyPath: WritableKeyPath<QueuedProcessingConfiguration, String?>
+    ) -> Binding<String> {
+        Binding(
+            get: { configuration[keyPath: keyPath] ?? "" },
+            set: { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                configuration[keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
+            }
+        )
     }
 }
