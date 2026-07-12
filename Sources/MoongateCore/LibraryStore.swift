@@ -147,11 +147,18 @@ public actor LibraryStore {
 
         for itemIndex in envelope.items.indices {
             guard let versionIndex = latestVersionIndex(in: envelope.items[itemIndex]),
-                  envelope.items[itemIndex].versions[versionIndex].processing.state.isActive else {
+                  envelope.items[itemIndex].versions[versionIndex].processing.state.isRunning else {
                 continue
             }
 
             envelope.items[itemIndex].versions[versionIndex].processing.state = .interrupted
+            envelope.items[itemIndex].versions[versionIndex].processing.stage = .recovery
+            envelope.items[itemIndex].versions[versionIndex].processing.attention = ProcessingAttention(
+                kind: .interrupted,
+                primaryAction: .restart,
+                stage: .recovery,
+                occurredAt: now
+            )
             envelope.items[itemIndex].versions[versionIndex].processing.updatedAt = now
             envelope.items[itemIndex].updatedAt = now
             changedCount += 1
@@ -275,7 +282,34 @@ public actor LibraryStore {
         }
         guard envelope.schemaVersion < LibraryEnvelope.currentSchemaVersion else { return }
 
-        envelope.schemaVersion = LibraryEnvelope.currentSchemaVersion
+        // v1 did not persist raw queue error strings. Preserve its state but
+        // give old attention records a deliberately generic, actionable next
+        // step rather than inventing a failure cause.
+        while envelope.schemaVersion < LibraryEnvelope.currentSchemaVersion {
+            switch envelope.schemaVersion {
+            case 0:
+                envelope.schemaVersion = 1
+            case 1:
+                for itemIndex in envelope.items.indices {
+                    for versionIndex in envelope.items[itemIndex].versions.indices {
+                        let processing = envelope.items[itemIndex].versions[versionIndex].processing
+                        guard processing.state == .needsAttention,
+                              processing.attention == nil else {
+                            continue
+                        }
+                        envelope.items[itemIndex].versions[versionIndex].processing.attention = ProcessingAttention(
+                            kind: .needsReview,
+                            primaryAction: .review,
+                            stage: processing.stage,
+                            occurredAt: processing.updatedAt
+                        )
+                    }
+                }
+                envelope.schemaVersion = 2
+            default:
+                throw LibraryStoreError.unsupportedSchemaVersion(envelope.schemaVersion)
+            }
+        }
         try save(envelope)
     }
 

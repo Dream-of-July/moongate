@@ -772,8 +772,14 @@ final class LibraryWorkspaceModel: ObservableObject {
                         let previous = item.versions[versionIndex]
                         let stateChanged = previous.processing.state != snapshot.processing.state
                             || previous.processing.stage != snapshot.processing.stage
+                        let attentionChanged = previous.processing.attention?.kind != snapshot.processing.attention?.kind
+                            || previous.processing.attention?.title != snapshot.processing.attention?.title
+                            || previous.processing.attention?.summary != snapshot.processing.attention?.summary
+                            || previous.processing.attention?.primaryAction != snapshot.processing.attention?.primaryAction
+                            || previous.processing.attention?.stage != snapshot.processing.attention?.stage
                         let configurationChanged = previous.processing.actualModels != snapshot.processing.actualModels
                             || previous.processing.configuration != snapshot.processing.configuration
+                            || attentionChanged
                         let artifactsChanged = !snapshot.artifacts.isEmpty && previous.artifacts != snapshot.artifacts
 
                         // Queue progress is a high-frequency in-memory overlay.
@@ -888,7 +894,7 @@ private struct QueueLibrarySnapshot: Sendable {
 
     @MainActor
     private static func processingSummary(for item: QueueManager.QueueItem, updatedAt: Date) -> ProcessingSummary {
-        let state: LibraryItemState
+        var state: LibraryItemState
         let stage: LibraryProcessingStage
 
         switch item.stage {
@@ -951,12 +957,25 @@ private struct QueueLibrarySnapshot: Sendable {
             subtitleStyle: item.chineseMode == .off ? nil : item.settings.subtitleStyle.rawValue,
             quality: item.request.formatID
         )
+        let usesLocalRecognition = actualSource == .localASR || item.request.subtitleSourcePolicy == .forceLocalASR
+        let usesCloudRecognition = actualSource == .cloudASR || item.request.subtitleSourcePolicy == .cloudASR
+        let attention = ProcessingAttentionClassifier.classify(
+            state: state,
+            stage: stage,
+            statusText: item.statusText,
+            loginSite: item.needsLogin?.site,
+            isDeferredDraft: item.isDeferredDraft,
+            usesLocalRecognition: usesLocalRecognition,
+            usesCloudRecognition: usesCloudRecognition,
+            occurredAt: updatedAt
+        )
         return ProcessingSummary(
             state: state,
             stage: stage,
             progress: item.overallProgress ?? item.progress ?? 0,
             actualModels: item.executedModels,
             configuration: configuration,
+            attention: attention,
             updatedAt: updatedAt
         )
     }
