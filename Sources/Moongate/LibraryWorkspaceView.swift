@@ -5,8 +5,9 @@ import MoongateCore
 import SwiftUI
 
 /// The default 0.9 macOS workspace: a persistent library in the first two
-/// columns and a focused player/workbench in the detail column. The Inspector
-/// is intentionally inside the detail column rather than a fixed fourth split.
+/// columns and a focused player/workbench in the detail column. Information is
+/// attached with the system Inspector API, so this stays a genuine three-column
+/// NavigationSplitView instead of looking like a hand-built fourth pane.
 struct LibraryWorkspaceView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
@@ -32,6 +33,22 @@ struct LibraryWorkspaceView: View {
                 workbench
             }
             .navigationSplitViewStyle(.balanced)
+            .inspector(isPresented: $workspace.showInspector) {
+                if let item = workspace.selectedItem {
+                    LibraryInspector(
+                        item: item,
+                        processing: workspace.selectedProcessing,
+                        workspace: workspace,
+                        onConfirmTrash: { trashItemID = item.id }
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "没有选中的视频",
+                        systemImage: "info.circle",
+                        description: Text("选择一个视频后可以查看文件和备注。")
+                    )
+                }
+            }
             .onAppear { applyResponsiveLayout(width: proxy.size.width) }
             .onChange(of: proxy.size.width) { _, width in
                 applyResponsiveLayout(width: width)
@@ -54,11 +71,32 @@ struct LibraryWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .moongateLibrarySearchFocus)) { _ in
             searchFocused = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: AppWorkspaceCommand.inspectorToggleRequested)) { _ in
-            workspace.toggleInspector()
+        .onReceive(NotificationCenter.default.publisher(for: AppWorkspaceCommand.startAllRequested)) { _ in
+            _ = workspace.startAllQueuedTasks()
         }
         .sheet(isPresented: $workspace.showRecoverySheet) {
             recoverySheet
+        }
+        .sheet(item: $workspace.processingSheet) { sheet in
+            if let item = workspace.item(for: sheet.itemID) {
+                ProcessingOptionsSheet(
+                    item: item,
+                    mode: sheet,
+                    workspace: workspace
+                )
+            } else {
+                VStack(spacing: 16) {
+                    ContentUnavailableView(
+                        "视频已不在资料库中",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("请关闭此窗口后重新选择视频。")
+                    )
+                    Button("关闭") {
+                        workspace.dismissProcessingSheet()
+                    }
+                }
+                .padding(32)
+            }
         }
         .alert("资料库需要处理", isPresented: Binding(
             get: { workspace.errorMessage != nil },
@@ -152,29 +190,6 @@ struct LibraryWorkspaceView: View {
     private var libraryList: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(listTitle)
-                    .font(.headline)
-                Spacer(minLength: 8)
-                if workspace.hasQueuedTasks {
-                    Button("开始全部") {
-                        workspace.startAllQueuedTasks()
-                    }
-                    .buttonStyle(.borderless)
-                }
-                Button {
-                    NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
-                } label: {
-                    Label("新建下载", systemImage: "plus")
-                }
-                .labelStyle(.iconOnly)
-                .help("新建下载（⌘N）")
-                .accessibilityLabel("新建下载")
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField("搜索视频", text: $workspace.searchText)
@@ -204,13 +219,14 @@ struct LibraryWorkspaceView: View {
                     ForEach(workspace.projectedItems) { projected in
                         LibraryVideoRow(
                             projected: projected,
+                            processing: workspace.processing(for: projected.id),
                             details: workspace.queueDetails(for: projected.id)
                         )
                         .tag(projected.id)
                         .contextMenu {
                             LibraryRowContextMenu(
                                 item: projected.item,
-                                processing: projected.processing,
+                                processing: workspace.processing(for: projected.id),
                                 workspace: workspace,
                                 requestTrash: { trashItemID = projected.id }
                             )
@@ -222,6 +238,22 @@ struct LibraryWorkspaceView: View {
             }
         }
         .navigationTitle(listTitle)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if workspace.hasQueuedTasks {
+                    Button("开始全部") {
+                        workspace.startAllQueuedTasks()
+                    }
+                }
+                Button {
+                    NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
+                } label: {
+                    Label("新建下载", systemImage: "plus")
+                }
+                .help("新建下载（⌘N）")
+                .accessibilityLabel("新建下载")
+            }
+        }
     }
 
     private var listTitle: String {
@@ -269,9 +301,9 @@ struct LibraryWorkspaceView: View {
                     .font(.system(size: 44, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
-                Text("选择一个视频")
+                Text("选择一个视频或新建下载")
                     .font(.title3.weight(.semibold))
-                Text("在列表中选择视频，即可预览、查看产物和调整处理方式。")
+                Text("在列表中选择视频即可预览和查看信息。")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -320,8 +352,6 @@ struct LibraryWorkspaceView: View {
         workspace.updateLayout(for: width)
         if width < 1_100 {
             columnVisibility = .doubleColumn
-        } else if columnVisibility != .all {
-            columnVisibility = .all
         }
     }
 }
@@ -379,6 +409,7 @@ private struct LibraryEnqueueNoticeBar: View {
 
 private struct LibraryVideoRow: View {
     let projected: LibraryProjectedItem
+    let processing: ProcessingSummary?
     let details: LibraryWorkspaceModel.LiveQueueDetails?
 
     var body: some View {
@@ -403,21 +434,15 @@ private struct LibraryVideoRow: View {
                     }
                 }
 
-                HStack(spacing: 4) {
-                    Text(LibraryDisplay.recoveryLabel(projected.processing, details: details))
-                    if let model = LibraryDisplay.modelLabel(projected.processing) {
-                        Text("·")
-                        Text(model)
-                    }
-                }
+                Text(LibraryDisplay.recoveryLabel(processing, details: details))
                 .font(.caption)
-                .foregroundStyle(LibraryDisplay.statusColor(projected.processing, details: details))
+                .foregroundStyle(LibraryDisplay.statusColor(processing, details: details))
                 .lineLimit(1)
 
                 statusSlot
             }
             Spacer(minLength: 0)
-            LibraryStatusGlyph(processing: projected.processing)
+            LibraryStatusGlyph(processing: processing)
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
@@ -428,7 +453,7 @@ private struct LibraryVideoRow: View {
     @ViewBuilder
     private var statusSlot: some View {
         Group {
-            if let processing = projected.processing, processing.state.isRunning {
+            if let processing, processing.state.isRunning {
                 HStack(spacing: 6) {
                     ProgressRingView(progress: processing.progress, finished: false)
                     Text("\(Int((processing.progress * 100).rounded()))%")
@@ -438,12 +463,12 @@ private struct LibraryVideoRow: View {
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            } else if projected.processing?.state == .completed {
+            } else if processing?.state == .completed {
                 Text(LibraryDisplay.completedDetail(projected.item))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            } else if projected.processing?.state == .queued {
+            } else if processing?.state == .queued {
                 if let readiness = LibraryDisplay.queuedReadinessDetail(details) {
                     Label(readiness, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
@@ -456,13 +481,13 @@ private struct LibraryVideoRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-            } else if projected.processing?.state == .cancelled {
+            } else if processing?.state == .cancelled {
                 Text("可重新处理或移出资料库")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
-                Text(LibraryDisplay.recoveryLabel(projected.processing, details: details))
+                Text(LibraryDisplay.recoveryLabel(processing, details: details))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -472,15 +497,15 @@ private struct LibraryVideoRow: View {
     }
 
     private var activeAccessibilityValue: String {
-        guard let processing = projected.processing, processing.state.isRunning else {
-            if projected.processing?.state == .queued,
+        guard let processing, processing.state.isRunning else {
+            if processing?.state == .queued,
                let readiness = LibraryDisplay.queuedReadinessDetail(details) {
                 return "需要处理，\(readiness)"
             }
-            return LibraryDisplay.recoveryLabel(projected.processing, details: details)
+            return LibraryDisplay.recoveryLabel(processing, details: details)
         }
         let percent = Int((processing.progress * 100).rounded())
-        return "\(LibraryDisplay.stageLabel(projected.processing))，\(percent)%，\(LibraryDisplay.liveDetail(details))"
+        return "\(LibraryDisplay.stageLabel(processing))，\(percent)%，\(LibraryDisplay.liveDetail(details))"
     }
 }
 
@@ -532,13 +557,20 @@ private struct LibraryRowContextMenu: View {
             }
         }
 
+        if workspace.queueItem(for: item.id) == nil,
+           let attentionAction = workspace.attentionActionTitle(for: item.id) {
+            Button(attentionAction) {
+                workspace.performAttentionAction(for: item.id)
+            }
+        }
+
         if processing?.state.isQueued == true {
-            Button("调整配置") {
-                workspace.showInspector(.processing, for: item.id)
+            Button("更改选项…") {
+                workspace.showQueuedOptions(for: item.id)
             }
         } else if processing?.state.isRunning != true {
-            Button("重新处理") {
-                workspace.showInspector(.processing, for: item.id)
+            Button("重新处理…") {
+                workspace.showReprocessOptions(for: item.id)
             }
         }
 
@@ -558,10 +590,12 @@ private struct LibraryRowContextMenu: View {
             workspace.removeFromLibrary(itemID: item.id)
         }
 
-        Divider()
+        if processing?.state.isActive != true {
+            Divider()
 
-        Button("移到废纸篓…", role: .destructive) {
-            requestTrash()
+            Button("移到废纸篓…", role: .destructive) {
+                requestTrash()
+            }
         }
     }
 
@@ -595,83 +629,51 @@ private struct LibraryWorkbenchDetail: View {
     @ObservedObject var appModel: ViewModel
     @ObservedObject var workspace: LibraryWorkspaceModel
     let onRequestTrash: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    PlayerStageView(item: item, workspace: workspace)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                PlayerStageView(item: item, workspace: workspace)
 
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(item.title)
-                                .font(.title2.weight(.semibold))
-                                .textSelection(.enabled)
-                            if item.isPinned {
-                                Image(systemName: "pin.fill")
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityLabel("已置顶")
-                            }
-                        }
-                        Text(LibraryDisplay.recoveryLabel(processing, details: queueDetails))
-                            .font(.callout)
-                            .foregroundStyle(LibraryDisplay.statusColor(processing, details: queueDetails))
-
-                        if let processing, processing.state.isRunning {
-                            ProgressView(value: processing.progress)
-                            Text(LibraryDisplay.liveDetail(queueDetails))
-                                .font(.caption)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(item.title)
+                            .font(.title2.weight(.semibold))
+                            .textSelection(.enabled)
+                        if item.isPinned {
+                            Image(systemName: "pin.fill")
                                 .foregroundStyle(.secondary)
+                                .accessibilityLabel("已置顶")
                         }
                     }
+                    Text(LibraryDisplay.recoveryLabel(processing, details: queueDetails))
+                        .font(.callout)
+                        .foregroundStyle(LibraryDisplay.statusColor(processing, details: queueDetails))
 
-                    if let queueDetails,
-                       let queueItem = appModel.queue.items.first(where: { $0.id == queueDetails.queueID }) {
-                        QueueWorkbenchActions(item: queueItem, queue: appModel.queue, workspace: workspace)
+                    if let attention = processing?.attention {
+                        Text(attention.summary)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else if let processing, processing.state.isRunning {
+                        ProgressView(value: processing.progress)
+                        Text(LibraryDisplay.liveDetail(queueDetails))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-
-                    if processing?.state == .interrupted {
-                        Button {
-                            workspace.restartInterruptedTask()
-                        } label: {
-                            Label("重新开始", systemImage: "arrow.clockwise")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    if !workspace.showInspector {
-                        CollapsedInspectorActionStrip(
-                            item: item,
-                            processing: processing,
-                            queueItem: workspace.selectedQueueItem,
-                            appModel: appModel,
-                            workspace: workspace
-                        )
-                    }
-
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            if workspace.showInspector {
-                Divider()
-                LibraryInspector(
+                WorkbenchActionStrip(
                     item: item,
                     processing: processing,
+                    queueItem: workspace.queueItem(for: item.id),
+                    appModel: appModel,
                     workspace: workspace,
-                    onConfirmTrash: onRequestTrash
+                    onRequestTrash: onRequestTrash
                 )
-                .frame(width: 320)
-                .background(.bar)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.2),
-            value: workspace.inspectorInteractionGeneration
-        )
         .navigationTitle(item.title)
     }
 }
@@ -860,138 +862,81 @@ private struct NativeVideoPlayer: NSViewRepresentable {
     }
 }
 
-private struct QueueWorkbenchActions: View {
-    let item: QueueManager.QueueItem
-    @ObservedObject var queue: QueueManager
-    @ObservedObject var workspace: LibraryWorkspaceModel
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if item.isDeferredDraft {
-                if let recovery = workspace.queuedReadinessRecovery(for: item.libraryItemID) {
-                    Button(recovery.actionTitle) {
-                        workspace.openQueuedReadinessRecovery(for: item.libraryItemID)
-                    }
-                    Button {
-                        workspace.showInspector(.processing)
-                    } label: {
-                        Label("调整配置", systemImage: "slider.horizontal.3")
-                    }
-                } else {
-                    Button {
-                        workspace.startSelectedQueuedTask()
-                    } label: {
-                        Label("开始", systemImage: "play.fill")
-                    }
-                }
-                Button(role: .destructive) {
-                    queue.cancel(item.id)
-                } label: {
-                    Label("取消任务", systemImage: "xmark")
-                }
-            } else if item.stage == .cancelling {
-                Label("正在取消…", systemImage: "hourglass")
-                    .foregroundStyle(.secondary)
-            } else if case .failed = item.stage {
-                Button {
-                    workspace.recoverQueueTask(for: item.libraryItemID)
-                } label: {
-                    Label(item.needsLogin == nil ? "恢复" : "登录", systemImage: "arrow.clockwise")
-                }
-            } else if item.isPaused {
-                Button {
-                    queue.resume(item.id)
-                } label: {
-                    Label("继续", systemImage: "play.fill")
-                }
-            } else if !isTerminal {
-                Button {
-                    queue.pause(item.id)
-                } label: {
-                    Label("暂停", systemImage: "pause.fill")
-                }
-            }
-
-            if !item.isDeferredDraft,
-               item.stage != .cancelling,
-               !isTerminal {
-                Button(role: .destructive) {
-                    queue.cancel(item.id)
-                } label: {
-                    Label("取消任务", systemImage: "xmark")
-                }
-            }
-
-            if !item.resultFiles.isEmpty {
-                Button {
-                    queue.revealInFinder(item.id)
-                } label: {
-                    Label("在访达中显示", systemImage: "folder")
-                }
-            }
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private var isTerminal: Bool {
-        switch item.stage {
-        case .done, .failed, .cancelled:
-            true
-        case .queued, .cancelling, .downloading, .translating, .burning:
-            false
-        }
-    }
-}
-
-private struct CollapsedInspectorActionStrip: View {
+private struct WorkbenchActionStrip: View {
     let item: MoongateCore.LibraryItem
     let processing: ProcessingSummary?
     let queueItem: QueueManager.QueueItem?
     @ObservedObject var appModel: ViewModel
     @ObservedObject var workspace: LibraryWorkspaceModel
+    let onRequestTrash: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             if let queueItem {
                 queueActions(queueItem)
-            } else if processing?.state == .interrupted {
-                Button {
-                    workspace.restartInterruptedTask()
-                } label: {
-                    Label("重新开始", systemImage: "arrow.clockwise")
+            } else if let attentionAction = workspace.attentionActionTitle(for: item.id) {
+                Button(attentionAction) {
+                    workspace.performAttentionAction(for: item.id)
                 }
-            } else {
                 if workspace.canRevealInFinder(itemID: item.id) {
-                    Button {
-                        workspace.revealSelectedInFinder()
-                    } label: {
-                        Label("在访达中显示", systemImage: "folder")
+                    Button("在访达中显示") {
+                        workspace.revealInFinder(itemID: item.id)
                     }
                 }
-                Button {
-                    workspace.showInspector(.processing)
-                } label: {
-                    Label("重新处理", systemImage: "arrow.clockwise")
-                }
+            } else {
+                completedActions
             }
 
             Menu {
-                Button("查看信息") { workspace.showInspector(.information) }
-                Button("调整处理") { workspace.showInspector(.processing) }
+                Button("查看信息") {
+                    workspace.showInformation(for: item.id)
+                }
+                if item.source?.urlString != nil {
+                    Button("复制来源链接") {
+                        workspace.copySourceLink(itemID: item.id)
+                    }
+                }
                 if item.isPinned {
-                    Button("取消置顶") { workspace.setPinned(false) }
+                    Button("取消置顶") { workspace.setPinned(false, itemID: item.id) }
                 } else {
-                    Button("置顶") { workspace.setPinned(true) }
+                    Button("置顶") { workspace.setPinned(true, itemID: item.id) }
+                }
+                Divider()
+                Button("移出资料库") {
+                    workspace.removeFromLibrary(itemID: item.id)
+                }
+                if processing?.state.isActive != true {
+                    Divider()
+                    Button("移到废纸篓…", role: .destructive) {
+                        onRequestTrash()
+                    }
                 }
             } label: {
                 Label("更多", systemImage: "ellipsis.circle")
             }
         }
         .buttonStyle(.bordered)
-        .padding(10)
-        .background(.bar, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("视频快捷操作")
+    }
+
+    @ViewBuilder
+    private var completedActions: some View {
+        if workspace.canPlayEmbeddedVideo(itemID: item.id) {
+            Button("播放") {
+                workspace.playEmbeddedVideo(itemID: item.id)
+            }
+        }
+        if workspace.canRevealInFinder(itemID: item.id) {
+            Button("在访达中显示") {
+                workspace.revealInFinder(itemID: item.id)
+            }
+        }
+        if processing?.state.isRunning != true {
+            Button("重新处理…") {
+                workspace.showReprocessOptions(for: item.id)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1002,79 +947,41 @@ private struct CollapsedInspectorActionStrip: View {
                 Button(recovery.actionTitle) {
                     workspace.openQueuedReadinessRecovery(for: item.id)
                 }
-                Button {
-                    workspace.showInspector(.processing)
-                } label: {
-                    Label("调整配置", systemImage: "slider.horizontal.3")
-                }
             } else {
-                Button {
+                Button("开始") {
                     workspace.startSelectedQueuedTask()
-                } label: {
-                    Label("开始", systemImage: "play.fill")
                 }
             }
-            Button(role: .destructive) {
-                appModel.queue.cancel(queueItem.id)
-            } label: {
-                Label("取消", systemImage: "xmark")
+            Button("更改选项…") {
+                workspace.showQueuedOptions(for: item.id)
             }
         case .cancelling:
             Label("正在取消…", systemImage: "hourglass")
                 .foregroundStyle(.secondary)
         case .queued, .downloading, .translating, .burning:
             if queueItem.isPaused {
-                Button {
+                Button("继续") {
                     appModel.queue.resume(queueItem.id)
-                } label: {
-                    Label("继续", systemImage: "play.fill")
                 }
             } else {
-                Button {
+                Button("暂停") {
                     appModel.queue.pause(queueItem.id)
-                } label: {
-                    Label("暂停", systemImage: "pause.fill")
                 }
             }
-            Button(role: .destructive) {
+            Button("取消", role: .destructive) {
                 appModel.queue.cancel(queueItem.id)
-            } label: {
-                Label("取消", systemImage: "xmark")
             }
         case .failed:
-            if let prompt = queueItem.needsLogin {
-                Button {
-                    appModel.openLoginForQueueItem(site: prompt.site, loginURL: prompt.loginURL)
-                } label: {
-                    Label("登录", systemImage: "person.crop.circle.badge.checkmark")
-                }
-            } else {
-                Button {
-                    appModel.queue.retry(queueItem.id)
-                } label: {
-                    Label("恢复", systemImage: "arrow.clockwise")
-                }
+            Button(queueItem.needsLogin == nil ? "恢复" : "登录") {
+                workspace.recoverQueueTask(for: item.id)
             }
-            if !queueItem.resultFiles.isEmpty {
-                Button {
-                    workspace.revealInFinder(itemID: queueItem.libraryItemID)
-                } label: {
-                    Label("在访达中显示", systemImage: "folder")
+            if workspace.canRevealInFinder(itemID: item.id) {
+                Button("在访达中显示") {
+                    workspace.revealInFinder(itemID: item.id)
                 }
             }
         case .done, .cancelled:
-            if workspace.canRevealInFinder(itemID: item.id) {
-                Button {
-                    workspace.revealSelectedInFinder()
-                } label: {
-                    Label("在访达中显示", systemImage: "folder")
-                }
-            }
-            Button {
-                workspace.showInspector(.processing)
-            } label: {
-                Label("重新处理", systemImage: "arrow.clockwise")
-            }
+            completedActions
         }
     }
 }
@@ -1088,28 +995,11 @@ private struct LibraryInspector: View {
     @State private var tagInput = ""
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("检查器", selection: $workspace.inspectorMode) {
-                Text("信息").tag(LibraryWorkspaceModel.InspectorMode.information)
-                Text("处理").tag(LibraryWorkspaceModel.InspectorMode.processing)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                information
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(12)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    switch workspace.inspectorMode {
-                    case .information:
-                        information
-                    case .processing:
-                        processingEditor
-                    }
-                }
-                .padding(14)
-            }
+            .padding(14)
         }
         .onAppear { note = item.note ?? "" }
         .onChange(of: item.id) { _, _ in
@@ -1129,6 +1019,11 @@ private struct LibraryInspector: View {
                     InspectorKeyValueRow("来源", value: source, lineLimit: 2)
                 } else {
                     InspectorKeyValueRow("来源", value: "未知")
+                }
+                if workspace.canRevealInFinder(itemID: item.id) {
+                    Button("在访达中显示") {
+                        workspace.revealInFinder(itemID: item.id)
+                    }
                 }
             }
 
@@ -1182,6 +1077,7 @@ private struct LibraryInspector: View {
                 TextEditor(text: $note)
                     .font(.callout)
                     .frame(minHeight: 72)
+                    .accessibilityLabel("备注")
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .strokeBorder(.quaternary, lineWidth: 1)
@@ -1202,204 +1098,16 @@ private struct LibraryInspector: View {
                 }
                 .accessibilityHint("仅移除资料库索引，不会删除本地文件。")
 
-                Button("将文件移到废纸篓", role: .destructive) {
-                    onConfirmTrash()
-                }
-                .accessibilityHint("需要再次确认；会将所有版本的文件移到废纸篓。")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var processingEditor: some View {
-        if processing?.state.isQueued == true {
-            queuedProcessingEditor
-        } else if let processing, processing.state.isRunning {
-            inspectorSection("运行中的配置") {
-                Label("任务正在运行，配置快照为只读。", systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                processingSummaryRows(processing.configuration)
-            }
-        } else {
-            inspectorSection("处理配置") {
-                Text("调整完成项后会创建新版本，不覆盖当前产物。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("字幕处理", selection: workspace.configurationBinding(\.subtitleMode)) {
-                    Text("不处理字幕").tag(ChineseSubtitleMode.off.rawValue)
-                    Text("生成译文 SRT").tag(ChineseSubtitleMode.srtOnly.rawValue)
-                    Text("压制译文字幕").tag(ChineseSubtitleMode.burnIn.rawValue)
-                    Text("压制原字幕").tag(ChineseSubtitleMode.burnOriginal.rawValue)
-                }
-                .pickerStyle(.menu)
-                Picker("输出格式", selection: workspace.configurationBinding(\.outputFormat)) {
-                    Text("使用默认").tag("")
-                    Text("保持源格式").tag(OutputFormat.original.rawValue)
-                    Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
-                    Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
-                    Text("MKV").tag(OutputFormat.mkv.rawValue)
-                }
-                .pickerStyle(.menu)
-
-                Picker("源画质", selection: workspace.configurationBinding(\.quality)) {
-                    Text("使用默认").tag("")
-                    Text("最佳可用").tag("best")
-                    Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
-                    Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
-                }
-                .pickerStyle(.menu)
-
-                if workspace.draftSubtitleMode != .off {
-                    Picker("字幕来源", selection: workspace.configurationBinding(\.subtitleSource)) {
-                        Text("使用默认").tag("")
-                        Text("沿用当前本地字幕").tag(SubtitleSourceKind.importedFile.rawValue)
-                        Text("沿用当前手动字幕").tag(SubtitleSourceKind.manual.rawValue)
-                        Text("沿用当前平台字幕").tag(SubtitleSourceKind.platformAuto.rawValue)
-                        Text("沿用当前 HLS 字幕").tag(SubtitleSourceKind.hlsManifest.rawValue)
-                        Text("本地识别（Whisper）").tag(SubtitleSourceKind.localASR.rawValue)
-                        Text("云端识别").tag(SubtitleSourceKind.cloudASR.rawValue)
+                if processing?.state.isActive != true {
+                    Button("将文件移到废纸篓", role: .destructive) {
+                        onConfirmTrash()
                     }
-                    .pickerStyle(.menu)
-
-                    TranscriptionModelPicker(selection: workspace.configurationBinding(\.transcriptionModel))
-
-                    if workspace.draftSubtitleMode.requiresTranslation {
-                        processingField("翻译模型", binding: workspace.configurationBinding(\.translationModel), placeholder: "例如 GPT-4.1 mini")
-                        Picker("目标语言", selection: workspace.configurationBinding(\.targetLanguage)) {
-                            Text("使用默认").tag("")
-                            Text("简体中文").tag("zh-Hans")
-                            Text("繁体中文").tag("zh-Hant")
-                            Text("English").tag("en")
-                        }
-                        .pickerStyle(.menu)
-                    }
-
-                    if workspace.draftSubtitleMode.requiresBurner {
-                        Picker("字幕样式", selection: workspace.configurationBinding(\.subtitleStyle)) {
-                            Text("使用默认").tag("")
-                            Text("双语").tag(SubtitleStyle.bilingual.rawValue)
-                            Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
-                        }
-                        .pickerStyle(.menu)
-                    }
-                }
-            }
-
-            if let plan = workspace.reprocessPlan {
-                inspectorSection("重新处理摘要") {
-                    Text("将创建 v\((item.latestVersion?.number ?? 0) + 1)")
-                        .font(.callout.weight(.medium))
-                    Text(LibraryDisplay.reprocessDescription(plan))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if workspace.canCreateReprocess {
-                        Button("创建重新处理任务") {
-                            workspace.createReprocessTask()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    } else {
-                        Text(workspace.reprocessBlockerReason ?? "当前配置无法创建重新处理任务。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    .accessibilityHint("需要再次确认；会将所有版本的文件移到废纸篓。")
                 }
             }
         }
     }
 
-    private var queuedProcessingEditor: some View {
-        inspectorSection("待开始配置") {
-            Text("这些选项会自动保存到此任务；开始后将冻结为只读快照。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            processingConfigurationFields
-        }
-    }
-
-    @ViewBuilder
-    private var processingConfigurationFields: some View {
-        Picker("字幕处理", selection: workspace.configurationBinding(\.subtitleMode)) {
-            Text("不处理字幕").tag(ChineseSubtitleMode.off.rawValue)
-            Text("生成译文 SRT").tag(ChineseSubtitleMode.srtOnly.rawValue)
-            Text("压制译文字幕").tag(ChineseSubtitleMode.burnIn.rawValue)
-            Text("压制原字幕").tag(ChineseSubtitleMode.burnOriginal.rawValue)
-        }
-        .pickerStyle(.menu)
-
-        Picker("输出格式", selection: workspace.configurationBinding(\.outputFormat)) {
-            Text("使用默认").tag("")
-            Text("保持源格式").tag(OutputFormat.original.rawValue)
-            Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
-            Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
-            Text("MKV").tag(OutputFormat.mkv.rawValue)
-        }
-        .pickerStyle(.menu)
-
-        Picker("源画质", selection: workspace.configurationBinding(\.quality)) {
-            Text("使用默认").tag("")
-            Text("最佳可用").tag("best")
-            Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
-            Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
-        }
-        .pickerStyle(.menu)
-
-        if workspace.draftSubtitleMode != .off {
-            Picker("字幕来源", selection: workspace.configurationBinding(\.subtitleSource)) {
-                Text("使用默认").tag("")
-                Text("沿用当前本地字幕").tag(SubtitleSourceKind.importedFile.rawValue)
-                Text("沿用当前手动字幕").tag(SubtitleSourceKind.manual.rawValue)
-                Text("沿用当前平台字幕").tag(SubtitleSourceKind.platformAuto.rawValue)
-                Text("沿用当前 HLS 字幕").tag(SubtitleSourceKind.hlsManifest.rawValue)
-                Text("本地识别（Whisper）").tag(SubtitleSourceKind.localASR.rawValue)
-                Text("云端识别").tag(SubtitleSourceKind.cloudASR.rawValue)
-            }
-            .pickerStyle(.menu)
-
-            TranscriptionModelPicker(selection: workspace.configurationBinding(\.transcriptionModel))
-
-            if workspace.draftSubtitleMode.requiresTranslation {
-                processingField("翻译模型", binding: workspace.configurationBinding(\.translationModel), placeholder: "例如 GPT-4.1 mini")
-                Picker("目标语言", selection: workspace.configurationBinding(\.targetLanguage)) {
-                    Text("使用默认").tag("")
-                    Text("简体中文").tag("zh-Hans")
-                    Text("繁体中文").tag("zh-Hant")
-                    Text("English").tag("en")
-                }
-                .pickerStyle(.menu)
-            }
-
-            if workspace.draftSubtitleMode.requiresBurner {
-                Picker("字幕样式", selection: workspace.configurationBinding(\.subtitleStyle)) {
-                    Text("使用默认").tag("")
-                    Text("双语").tag(SubtitleStyle.bilingual.rawValue)
-                    Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
-                }
-                .pickerStyle(.menu)
-            }
-        }
-    }
-
-    private func processingSummaryRows(_ configuration: LibraryProcessingConfiguration) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            InspectorKeyValueRow("画质 / 格式", value: configuration.outputFormat ?? "未记录")
-            InspectorKeyValueRow("字幕处理", value: configuration.subtitleMode ?? "未记录")
-            InspectorKeyValueRow("字幕来源", value: configuration.subtitleSource ?? "未记录")
-            InspectorKeyValueRow("转录模型", value: configuration.transcriptionModel ?? "未记录")
-            InspectorKeyValueRow("翻译模型", value: configuration.translationModel ?? "未记录")
-            InspectorKeyValueRow("目标语言", value: configuration.targetLanguage ?? "未记录")
-            InspectorKeyValueRow("字幕样式", value: configuration.subtitleStyle ?? "未记录")
-        }
-    }
-
-    private func processingField(_ label: String, binding: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(.caption.weight(.medium))
-            TextField(placeholder, text: binding)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
 
     private func inspectorSection<Content: View>(
         _ title: String,
@@ -1408,6 +1116,7 @@ private struct LibraryInspector: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.headline)
+                .accessibilityAddTraits(.isHeader)
             content()
         }
     }
@@ -1439,6 +1148,154 @@ private struct InspectorKeyValueRow: View {
                 .textSelection(.enabled)
                 .lineLimit(lineLimit)
         }
+    }
+}
+
+/// Configuration is intentionally a task sheet instead of a permanent
+/// inspector mode. The first section describes results people recognize; raw
+/// source/model choices remain behind an explicit advanced disclosure.
+private struct ProcessingOptionsSheet: View {
+    let item: MoongateCore.LibraryItem
+    let mode: LibraryWorkspaceModel.ProcessingSheet
+    @ObservedObject var workspace: LibraryWorkspaceModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var isCreating = false
+    @State private var creationError: String?
+
+    private var isQueued: Bool {
+        if case .queued = mode { return true }
+        return false
+    }
+
+    private var subtitleMode: Binding<ChineseSubtitleMode> {
+        Binding(
+            get: { workspace.draftSubtitleMode },
+            set: { workspace.setDraftSubtitleMode($0) }
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(isQueued
+                         ? "更改后会保存在待开始任务中；开始后不会再改动本次处理。"
+                         : "将创建新版本，不会覆盖当前视频。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    Picker("字幕结果", selection: subtitleMode) {
+                        Text("不处理").tag(ChineseSubtitleMode.off)
+                        Text("保留原字幕").tag(ChineseSubtitleMode.burnOriginal)
+                        Text("翻译字幕").tag(ChineseSubtitleMode.srtOnly)
+                        Text("嵌入字幕").tag(ChineseSubtitleMode.burnIn)
+                    }
+                    Picker("输出格式", selection: workspace.configurationBinding(\.outputFormat)) {
+                        Text("保持源格式").tag(OutputFormat.original.rawValue)
+                        Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
+                        Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
+                        Text("MKV").tag(OutputFormat.mkv.rawValue)
+                    }
+                    Picker("画质", selection: workspace.configurationBinding(\.quality)) {
+                        Text("最佳可用").tag("best")
+                        Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
+                        Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
+                    }
+                }
+
+                if workspace.draftSubtitleMode.requiresTranslation {
+                    Section("翻译字幕") {
+                        Picker("目标语言", selection: workspace.configurationBinding(\.targetLanguage)) {
+                            Text("简体中文").tag("zh-Hans")
+                            Text("繁体中文").tag("zh-Hant")
+                            Text("English").tag("en")
+                        }
+                        if workspace.draftSubtitleMode.requiresBurner {
+                            Picker("字幕样式", selection: workspace.configurationBinding(\.subtitleStyle)) {
+                                Text("双语").tag(SubtitleStyle.bilingual.rawValue)
+                                Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
+                            }
+                        }
+                    }
+                }
+
+                DisclosureGroup("高级选项") {
+                    Picker("字幕来源", selection: workspace.configurationBinding(\.subtitleSource)) {
+                        Text("自动选择").tag("")
+                        Text("使用已有字幕").tag(SubtitleSourceKind.importedFile.rawValue)
+                        Text("沿用当前手动字幕").tag(SubtitleSourceKind.manual.rawValue)
+                        Text("使用平台字幕").tag(SubtitleSourceKind.platformAuto.rawValue)
+                        Text("沿用当前 HLS 字幕").tag(SubtitleSourceKind.hlsManifest.rawValue)
+                        Text("本地识别").tag(SubtitleSourceKind.localASR.rawValue)
+                        Text("云端识别").tag(SubtitleSourceKind.cloudASR.rawValue)
+                    }
+                    if workspace.draftSubtitleMode != .off {
+                        TranscriptionModelPicker(selection: workspace.configurationBinding(\.transcriptionModel))
+                    }
+                    if workspace.draftSubtitleMode.requiresTranslation {
+                        TextField("翻译服务（可选）", text: workspace.configurationBinding(\.translationModel))
+                    }
+                }
+
+                if !isQueued {
+                    Section("重新处理影响") {
+                        Text("将创建 v\((item.latestVersion?.number ?? 0) + 1)")
+                        if let plan = workspace.reprocessPlan {
+                            Text(LibraryDisplay.reprocessDescription(plan))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("修改选项后会在这里显示需要执行的步骤。")
+                                .foregroundStyle(.secondary)
+                        }
+                        if let reason = workspace.reprocessBlockerReason {
+                            Text(reason)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if let creationError {
+                    Section {
+                        Label(creationError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(isQueued ? "更改选项" : "重新处理")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(isQueued ? "完成" : "取消") {
+                        if !isQueued {
+                            workspace.discardProcessingDraft()
+                        }
+                        workspace.dismissProcessingSheet()
+                        dismiss()
+                    }
+                }
+                if !isQueued {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(isCreating ? "正在创建…" : "创建任务") {
+                            guard !isCreating else { return }
+                            isCreating = true
+                            creationError = nil
+                            Task { @MainActor in
+                                switch await workspace.createReprocessTask() {
+                                case .success:
+                                    workspace.dismissProcessingSheet()
+                                    dismiss()
+                                case .failure(let message):
+                                    creationError = message
+                                }
+                                isCreating = false
+                            }
+                        }
+                        .disabled(!workspace.canCreateReprocess || isCreating)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 480, minHeight: 520)
     }
 }
 
@@ -1508,14 +1365,13 @@ private enum LibraryDisplay {
         _ processing: ProcessingSummary?,
         details: LibraryWorkspaceModel.LiveQueueDetails?
     ) -> String {
+        if let attention = processing?.attention {
+            return attention.title
+        }
         switch processing?.state {
         case .queued where queuedReadinessDetail(details) != nil:
-            return "需要处理"
+            return queuedReadinessDetail(details) ?? "待开始"
         case .partialSuccess, .needsAttention, .interrupted, .failed:
-            if let status = details?.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !status.isEmpty {
-                return status
-            }
             return stageLabel(processing)
         default:
             return stageLabel(processing)
@@ -1538,10 +1394,6 @@ private enum LibraryDisplay {
         }
     }
 
-    static func modelLabel(_ processing: ProcessingSummary?) -> String? {
-        processing?.actualModels.transcription ?? processing?.actualModels.translation
-    }
-
     static func queuedReadinessDetail(
         _ details: LibraryWorkspaceModel.LiveQueueDetails?
     ) -> String? {
@@ -1549,7 +1401,17 @@ private enum LibraryDisplay {
               !detail.isEmpty else {
             return nil
         }
-        return detail
+        let normalized = detail.lowercased()
+        if normalized.contains("cloud") || detail.contains("云端") {
+            return "云端字幕识别尚未准备好"
+        }
+        if normalized.contains("local") || normalized.contains("whisper") || detail.contains("本地") {
+            return "本地字幕识别尚未准备好"
+        }
+        if normalized.contains("login") || detail.contains("登录") {
+            return "需要登录后开始"
+        }
+        return "开始前需要处理一项设置"
     }
 
     static func completedDetail(_ item: MoongateCore.LibraryItem) -> String {

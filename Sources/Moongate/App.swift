@@ -49,6 +49,13 @@ struct MoongateApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
+                if useLibraryWorkspace {
+                    Button("开始全部") {
+                        NotificationCenter.default.post(name: AppWorkspaceCommand.startAllRequested, object: nil)
+                    }
+                    .disabled(!model.queue.items.contains(where: { $0.isDeferredDraft }))
+                }
+
                 // Cmd+L focuses the legacy URL field, or opens the equivalent
                 // new-download sheet while the library workspace is active.
                 Button(localizer.t(L.Main.urlInputAccessibility)) {
@@ -78,12 +85,9 @@ struct MoongateApp: App {
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
             }
-            CommandGroup(after: .toolbar) {
-                Button("显示或隐藏信息栏") {
-                    NotificationCenter.default.post(name: AppWorkspaceCommand.inspectorToggleRequested, object: nil)
-                }
-                .keyboardShortcut("i", modifiers: [.command, .control])
+            InspectorCommands()
 
+            CommandGroup(after: .toolbar) {
                 Toggle("资料库工作台", isOn: $useLibraryWorkspace)
             }
         }

@@ -9,8 +9,8 @@ import MoongateCore
 /// 命令不依赖某个具体列或视图实例；新工作台、紧凑窗口和 legacy fallback 都可以按需监听。
 enum AppWorkspaceCommand {
     static let newDownloadRequested = Notification.Name("com.moongate.workspace.newDownloadRequested")
+    static let startAllRequested = Notification.Name("com.moongate.workspace.startAllRequested")
     static let searchRequested = Notification.Name("com.moongate.workspace.searchRequested")
-    static let inspectorToggleRequested = Notification.Name("com.moongate.workspace.inspectorToggleRequested")
 }
 
 /// 根级「新建下载」sheet。链接在这里先变成可编辑的待开始任务；默认设置只用于预填，

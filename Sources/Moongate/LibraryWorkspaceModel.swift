@@ -9,6 +9,11 @@ import SwiftUI
 /// snapshots, which can contain credentials and runtime-only controls.
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
+    enum ReprocessCreationResult: Equatable {
+        case success
+        case failure(String)
+    }
+
     enum SidebarDestination: Hashable {
         case all
         case active
@@ -29,11 +34,26 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    enum InspectorMode: String, CaseIterable, Identifiable {
-        case information
-        case processing
+    /// Processing belongs in a short-lived task sheet, never in the persistent
+    /// information inspector. Keeping the selected ID with the presentation
+    /// makes row/context-menu actions deterministic even when selection changes
+    /// while the sheet is animating in.
+    enum ProcessingSheet: Identifiable {
+        case queued(UUID)
+        case reprocess(UUID)
 
-        var id: String { rawValue }
+        var itemID: UUID {
+            switch self {
+            case .queued(let id), .reprocess(let id): id
+            }
+        }
+
+        var id: String {
+            switch self {
+            case .queued(let id): "queued-\(id.uuidString)"
+            case .reprocess(let id): "reprocess-\(id.uuidString)"
+            }
+        }
     }
 
     /// A deferred task can remain editable when its selected local or cloud
@@ -77,30 +97,48 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    /// File metadata is stable while a task merely reports new progress. Cache
+    /// it by the structural parts of a queue item so the UI never stats every
+    /// result file on each downloader tick.
+    private struct QueueArtifactFingerprint: Equatable {
+        let paths: [String]
+        let subtitleMode: ChineseSubtitleMode
+        let stage: QueueManager.ItemStage
+    }
+
+    private struct CachedQueueArtifacts {
+        let fingerprint: QueueArtifactFingerprint
+        let artifacts: [LibraryArtifact]
+    }
+
     @Published private(set) var envelope = LibraryEnvelope() {
         didSet {
             rebuildProjectionCache()
-            selectFirstItemIfNeeded()
+            clearSelectionIfRemoved()
         }
     }
     @Published var sidebarDestination: SidebarDestination = .all {
         didSet {
             rebuildProjectionCache()
-            selectFirstItemIfNeeded()
+            clearSelectionIfHiddenByProjection()
         }
     }
     @Published var selectedItemID: UUID? {
-        didSet { loadDraftForSelection() }
+        didSet {
+            loadDraftForSelection()
+            persistExplicitSelection()
+        }
     }
     @Published var searchText = "" {
         didSet {
             rebuildProjectionCache()
-            selectFirstItemIfNeeded()
+            clearSelectionIfHiddenByProjection()
         }
     }
-    @Published var showInspector = true
-    @Published private(set) var inspectorInteractionGeneration = 0
-    @Published var inspectorMode: InspectorMode = .information
+    /// A macOS inspector is opt-in. The system command and toolbar button share
+    /// this single binding through SwiftUI's `.inspector(isPresented:)`.
+    @Published var showInspector = false
+    @Published var processingSheet: ProcessingSheet?
     /// A one-way request from a list context-menu action to the AVKit stage.
     /// Its nonce makes repeated explicit plays of the same item distinguishable.
     @Published private(set) var playbackRequest: PlaybackRequest?
@@ -118,24 +156,26 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var queueSubscription: AnyCancellable?
     private var notificationSubscriptions = Set<AnyCancellable>()
     private var queueSyncTask: Task<Void, Never>?
+    private var queueSyncGeneration = 0
+    private var artifactSnapshotCache: [UUID: CachedQueueArtifacts] = [:]
     private var removedItemForUndo: MoongateCore.LibraryItem?
     /// An index-only removal must not be resurrected by a still-resident
     /// QueueItem on its next progress update. This is session-scoped because
     /// QueueItem itself is intentionally not restored across app launches.
     private var suppressedQueueLibraryItemIDs = Set<UUID>()
-    private var liveProcessing: [UUID: ProcessingSummary] = [:] {
-        didSet {
-            rebuildProjectionCache()
-            selectFirstItemIfNeeded()
-        }
-    }
+    /// High-frequency progress is intentionally independent from the durable
+    /// list projection. Rows consult this overlay by ID, so a 30 Hz queue
+    /// update never filters or sorts the entire library.
+    @Published private(set) var liveProcessing: [UUID: ProcessingSummary] = [:]
+    private var pendingLiveProcessing: [UUID: ProcessingSummary] = [:]
+    private var pendingLiveQueueDetails: [UUID: LiveQueueDetails] = [:]
+    private var liveOverlayRefreshTask: Task<Void, Never>?
+    private var lastLiveOverlayRefresh = Date.distantPast
     /// The queue publisher emits immediately during init. Do not let that
     /// first value race the on-disk library load; bootstrap replays the latest
     /// queue state once the durable envelope is ready.
     private var bootstrapFinished = false
-    /// Until the user explicitly changes it, the Inspector follows the window
-    /// breakpoint defaults. Once toggled, their choice wins for this session.
-    private var inspectorPreferenceIsExplicit = false
+    private var restoredExplicitSelection = false
 
     init(model: ViewModel, store: LibraryStore = LibraryStore()) {
         self.appModel = model
@@ -156,6 +196,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     deinit {
         queueSyncTask?.cancel()
+        liveOverlayRefreshTask?.cancel()
     }
 
     func sidebarCount(for filter: LibraryFilter) -> Int {
@@ -169,7 +210,15 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var selectedProcessing: ProcessingSummary? {
         guard let selectedItem else { return nil }
-        return liveProcessing[selectedItem.id] ?? selectedItem.latestVersion?.processing
+        return processing(for: selectedItem.id)
+    }
+
+    func processing(for itemID: UUID) -> ProcessingSummary? {
+        liveProcessing[itemID] ?? libraryItem(id: itemID)?.latestVersion?.processing
+    }
+
+    func item(for itemID: UUID) -> MoongateCore.LibraryItem? {
+        libraryItem(id: itemID)
     }
 
     var selectedItemBinding: Binding<UUID?> {
@@ -231,6 +280,52 @@ final class LibraryWorkspaceModel: ObservableObject {
         appModel.openSettings(paneID: recovery.settingsPaneID)
     }
 
+    /// A durable `ProcessingAttention` is intentionally rendered through one
+    /// typed action instead of reparsing a status sentence in every view.
+    func attentionActionTitle(for itemID: UUID) -> String? {
+        guard let action = processing(for: itemID)?.attention?.primaryAction else { return nil }
+        return switch action {
+        case .login: "登录"
+        case .locateFile: "定位文件"
+        case .prepareLocalRecognition: "启用本地字幕识别"
+        case .configureCloudRecognition: "设置云端识别"
+        case .restart: "重新开始"
+        case .retry: "重新下载"
+        case .review: "查看详情"
+        }
+    }
+
+    func performAttentionAction(for itemID: UUID) {
+        guard let action = processing(for: itemID)?.attention?.primaryAction else { return }
+        switch action {
+        case .login:
+            if let queueItem = queueItem(for: itemID), queueItem.needsLogin != nil {
+                recoverQueueTask(for: itemID)
+            } else {
+                appModel.openSettings(paneID: "servicesAccounts")
+            }
+        case .locateFile:
+            // The file is known to be missing, so revealing it would fail.
+            // Open the managed output directory where a replacement can be
+            // selected or copied back without exposing an absolute path in UI.
+            NSWorkspace.shared.open(ViewModel.appDownloadsDirectory)
+        case .prepareLocalRecognition:
+            appModel.openSettings(paneID: "subtitlesLanguage")
+        case .configureCloudRecognition:
+            appModel.openSettings(paneID: "servicesAccounts")
+        case .restart:
+            restartInterruptedTask(for: itemID)
+        case .retry:
+            if queueItem(for: itemID) != nil {
+                recoverQueueTask(for: itemID)
+            } else {
+                NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
+            }
+        case .review:
+            showInformation(for: itemID)
+        }
+    }
+
     var hasQueuedTasks: Bool {
         appModel.queue.items.contains { $0.isDeferredDraft }
     }
@@ -263,35 +358,36 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    /// Defaults follow the agreed three breakpoints: show at 1380 pt and
-    /// above; hide in the compact and medium ranges. The toolbar can still
-    /// explicitly show/hide the Inspector at any usable window width.
-    func updateLayout(for width: CGFloat) {
-        guard width > 0, !inspectorPreferenceIsExplicit else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            showInspector = width >= 1_380
-        }
-    }
+    /// Window width controls only NavigationSplitView columns. An inspector is
+    /// an explicit user choice and must not appear merely because a window is
+    /// resized.
+    func updateLayout(for _: CGFloat) {}
 
     func toggleInspector() {
-        inspectorPreferenceIsExplicit = true
-        inspectorInteractionGeneration &+= 1
         showInspector.toggle()
     }
 
-    func showInspector(_ mode: InspectorMode) {
-        inspectorPreferenceIsExplicit = true
-        inspectorMode = mode
-        guard !showInspector else { return }
-        inspectorInteractionGeneration &+= 1
+    func showInformation(for itemID: UUID? = nil) {
+        if let itemID {
+            selectedItemID = itemID
+        }
         showInspector = true
     }
 
-    func showInspector(_ mode: InspectorMode, for itemID: UUID) {
+    func showQueuedOptions(for itemID: UUID) {
         selectedItemID = itemID
-        showInspector(mode)
+        guard processing(for: itemID)?.state.isQueued == true else { return }
+        processingSheet = .queued(itemID)
+    }
+
+    func showReprocessOptions(for itemID: UUID) {
+        selectedItemID = itemID
+        guard processing(for: itemID)?.state.isRunning != true else { return }
+        processingSheet = .reprocess(itemID)
+    }
+
+    func dismissProcessingSheet() {
+        processingSheet = nil
     }
 
     func revealSelectedInFinder() {
@@ -377,6 +473,11 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var draftSubtitleMode: ChineseSubtitleMode {
         ChineseSubtitleMode(rawValue: processingDraft.subtitleMode ?? "") ?? .off
+    }
+
+    func setDraftSubtitleMode(_ mode: ChineseSubtitleMode) {
+        processingDraft.subtitleMode = mode.rawValue
+        persistSelectedQueuedConfiguration()
     }
 
     var changedFields: Set<ReprocessChangedField> {
@@ -481,7 +582,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 envelope = try await store.load()
                 if selectedItemID == targetItemID {
-                    self.selectedItemID = envelope.items.first?.id
+                    self.selectedItemID = nil
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -516,7 +617,6 @@ final class LibraryWorkspaceModel: ObservableObject {
                 recoveryCandidates = []
                 showRecoverySheet = false
                 UserDefaults.standard.set(true, forKey: Self.recoveryScanDefaultsKey)
-                selectFirstItemIfNeeded()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -541,6 +641,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// and is called only after the Inspector's explicit confirmation dialog.
     func moveArtifactsToTrash(itemID: UUID? = nil) {
         guard let item = libraryItem(id: itemID ?? selectedItemID) else { return }
+        guard processing(for: item.id)?.state.isActive != true else {
+            errorMessage = "请先等待任务完成或取消，再将文件移到废纸篓。"
+            return
+        }
         let urls = Array(Set(
             item.versions
                 .flatMap(\.artifacts)
@@ -574,7 +678,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     _ = try await store.remove(itemID: item.id)
                     envelope = try await store.load()
                     if selectedItemID == item.id {
-                        selectedItemID = envelope.items.first?.id
+                        selectedItemID = nil
                     }
                 } catch {
                     errorMessage = "文件已移到废纸篓，但未能从资料库移除：\(error.localizedDescription)"
@@ -587,31 +691,35 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     /// The QueueManager receives a new task/version identity, so this action
     /// cannot overwrite the completed record currently shown in the Inspector.
-    func createReprocessTask() {
+    /// The caller keeps its Sheet open until the real asynchronous enqueue has
+    /// either succeeded or returned an actionable reason.
+    func createReprocessTask() async -> ReprocessCreationResult {
         guard let item = selectedItem,
               let plan = reprocessPlan,
               reprocessBlockerReason(for: plan) == nil else {
-            return
+            return .failure(reprocessBlockerReason ?? "当前配置无法创建重新处理任务。")
         }
         let configuration = processingDraft
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                _ = try await appModel.enqueueLibraryReprocess(
-                    item: item,
-                    configuration: configuration,
-                    plan: plan
-                )
-                processingDraft = item.latestVersion?.processing.configuration ?? .init()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+        do {
+            _ = try await appModel.enqueueLibraryReprocess(
+                item: item,
+                configuration: configuration,
+                plan: plan
+            )
+            processingDraft = item.latestVersion?.processing.configuration ?? .init()
+            return .success
+        } catch {
+            return .failure(error.localizedDescription)
         }
     }
 
-    func restartInterruptedTask() {
-        guard let item = selectedItem,
-              selectedProcessing?.state == .interrupted else {
+    func discardProcessingDraft() {
+        processingDraft = selectedItem?.latestVersion?.processing.configuration ?? .init()
+    }
+
+    func restartInterruptedTask(for itemID: UUID? = nil) {
+        guard let item = libraryItem(id: itemID ?? selectedItemID),
+              processing(for: item.id)?.state == .interrupted else {
             return
         }
         appModel.restartInterruptedLibraryItem(item)
@@ -621,7 +729,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         do {
             _ = try await store.markActiveItemsInterrupted()
             envelope = try await store.load()
-            selectFirstItemIfNeeded()
+            restoreExplicitSelectionIfAvailable()
             await discoverRecoveryIfNeeded()
             bootstrapFinished = true
             receiveQueue(appModel.queue.items)
@@ -666,20 +774,31 @@ final class LibraryWorkspaceModel: ObservableObject {
             in: envelope,
             filter: sidebarDestination.libraryFilter,
             searchQuery: searchText,
-            liveProcessing: liveProcessing
+            liveProcessing: [:]
         )
         sidebarCounts = LibraryProjection.sidebarCounts(
             in: envelope,
-            liveProcessing: liveProcessing
+            liveProcessing: [:]
         )
     }
 
-    private func selectFirstItemIfNeeded() {
-        let projectedIDs = Set(projectedItems.map(\.id))
-        if let selectedItemID, projectedIDs.contains(selectedItemID) {
+    private func clearSelectionIfRemoved() {
+        guard let selectedItemID,
+              !envelope.items.contains(where: { $0.id == selectedItemID }) else {
             return
         }
-        selectedItemID = projectedItems.first?.id
+        self.selectedItemID = nil
+    }
+
+    /// The workbench must not continue to show an item that the current list
+    /// filter/search no longer contains. Clear it rather than auto-selecting a
+    /// different row so the person's next action remains explicit.
+    private func clearSelectionIfHiddenByProjection() {
+        guard let selectedItemID,
+              !projectedItems.contains(where: { $0.id == selectedItemID }) else {
+            return
+        }
+        self.selectedItemID = nil
     }
 
     private func libraryItem(id: UUID?) -> MoongateCore.LibraryItem? {
@@ -689,7 +808,25 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func loadDraftForSelection() {
         processingDraft = selectedItem?.latestVersion?.processing.configuration ?? .init()
-        inspectorMode = .information
+    }
+
+    private func restoreExplicitSelectionIfAvailable() {
+        guard !restoredExplicitSelection else { return }
+        restoredExplicitSelection = true
+        guard let rawID = UserDefaults.standard.string(forKey: Self.selectedItemDefaultsKey),
+              let savedID = UUID(uuidString: rawID),
+              envelope.items.contains(where: { $0.id == savedID }) else {
+            return
+        }
+        selectedItemID = savedID
+    }
+
+    private func persistExplicitSelection() {
+        if let selectedItemID {
+            UserDefaults.standard.set(selectedItemID.uuidString, forKey: Self.selectedItemDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.selectedItemDefaultsKey)
+        }
     }
 
     private func persistSelectedQueuedConfiguration() {
@@ -704,9 +841,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private static let recoveryScanDefaultsKey = "v0.9.libraryRecoveryScanV1"
+    private static let selectedItemDefaultsKey = "v0.9.libraryWorkspace.selectedItemID"
 
     private func receiveQueue(_ items: [QueueManager.QueueItem]) {
-        let snapshots = items.map(QueueLibrarySnapshot.init)
+        let activeQueueIDs = Set(items.map(\.id))
+        artifactSnapshotCache = artifactSnapshotCache.filter { activeQueueIDs.contains($0.key) }
+        let snapshots = items.map { QueueLibrarySnapshot($0, artifacts: artifactsForQueueItem($0)) }
         // A completed v1 and an active v2 can coexist in QueueManager. Prefer
         // the active/newest snapshot without `Dictionary(uniqueKeys...)`, which
         // would otherwise trap on the intentional shared library item id.
@@ -728,14 +868,57 @@ final class LibraryWorkspaceModel: ObservableObject {
                 )
             }
         }
-        liveProcessing = latestProcessing
-        liveQueueDetails = latestDetails
+        scheduleLiveOverlayRefresh(processing: latestProcessing, details: latestDetails)
         guard bootstrapFinished else { return }
         scheduleQueueSynchronization(snapshots)
     }
 
+    private func artifactsForQueueItem(_ item: QueueManager.QueueItem) -> [LibraryArtifact] {
+        let fingerprint = QueueArtifactFingerprint(
+            paths: item.resultFiles.map { $0.standardizedFileURL.path }.sorted(),
+            subtitleMode: item.chineseMode,
+            stage: item.stage
+        )
+        if let cached = artifactSnapshotCache[item.id], cached.fingerprint == fingerprint {
+            return cached.artifacts
+        }
+        let artifacts = QueueLibrarySnapshot.libraryArtifacts(from: item)
+        artifactSnapshotCache[item.id] = CachedQueueArtifacts(
+            fingerprint: fingerprint,
+            artifacts: artifacts
+        )
+        return artifacts
+    }
+
+    /// Publishes the active overlay at most eight times per second. This keeps
+    /// progress and ETA legible without asking SwiftUI to rebuild a thousand-row
+    /// library on every subprocess update.
+    private func scheduleLiveOverlayRefresh(
+        processing: [UUID: ProcessingSummary],
+        details: [UUID: LiveQueueDetails]
+    ) {
+        pendingLiveProcessing = processing
+        pendingLiveQueueDetails = details
+        guard liveOverlayRefreshTask == nil else { return }
+
+        let elapsed = Date().timeIntervalSince(lastLiveOverlayRefresh)
+        let wait = max(0, (1.0 / 8.0) - elapsed)
+        liveOverlayRefreshTask = Task { [weak self] in
+            if wait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.liveProcessing = self.pendingLiveProcessing
+            self.liveQueueDetails = self.pendingLiveQueueDetails
+            self.lastLiveOverlayRefresh = Date()
+            self.liveOverlayRefreshTask = nil
+        }
+    }
+
     private func scheduleQueueSynchronization(_ snapshots: [QueueLibrarySnapshot]) {
         queueSyncTask?.cancel()
+        queueSyncGeneration &+= 1
+        let generation = queueSyncGeneration
         // A newly enqueued item is the durable identity boundary. Persist it
         // without the normal UI-progress debounce so switching to legacy or
         // closing immediately after enqueue cannot leave an orphaned queue
@@ -747,18 +930,27 @@ final class LibraryWorkspaceModel: ObservableObject {
             if !hasUnpersistedItem {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
-            guard !Task.isCancelled, let self else { return }
-            await self.synchronizeQueue(snapshots)
+            guard !Task.isCancelled, let self,
+                  self.isCurrentQueueSync(generation) else {
+                return
+            }
+            await self.synchronizeQueue(snapshots, generation: generation)
         }
     }
 
-    private func synchronizeQueue(_ snapshots: [QueueLibrarySnapshot]) async {
+    private func isCurrentQueueSync(_ generation: Int) -> Bool {
+        !Task.isCancelled && generation == queueSyncGeneration
+    }
+
+    private func synchronizeQueue(_ snapshots: [QueueLibrarySnapshot], generation: Int) async {
+        guard isCurrentQueueSync(generation) else { return }
         let visibleSnapshots = snapshots.filter {
             !suppressedQueueLibraryItemIDs.contains($0.libraryItemID)
         }
         guard !visibleSnapshots.isEmpty else { return }
         do {
             var stored = try await store.load()
+            guard isCurrentQueueSync(generation) else { return }
             let original = stored
 
             for snapshot in visibleSnapshots {
@@ -835,12 +1027,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
 
             if stored != original {
+                guard isCurrentQueueSync(generation) else { return }
                 try await store.save(stored)
+                guard isCurrentQueueSync(generation) else { return }
+                envelope = stored
             }
-            envelope = stored
-            selectFirstItemIfNeeded()
         } catch {
-            errorMessage = error.localizedDescription
+            if isCurrentQueueSync(generation) {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }
@@ -867,7 +1062,7 @@ private struct QueueLibrarySnapshot: Sendable {
     let updatedAt: Date
 
     @MainActor
-    init(_ item: QueueManager.QueueItem) {
+    init(_ item: QueueManager.QueueItem, artifacts: [LibraryArtifact]? = nil) {
         let now = Date()
         queueID = item.id
         libraryItemID = item.libraryItemID
@@ -876,7 +1071,7 @@ private struct QueueLibrarySnapshot: Sendable {
         source = LibrarySourceDescriptor(urlString: item.request.url)
         thumbnail = item.thumbnailURL.flatMap { LibrarySourceDescriptor(urlString: $0.absoluteString) }
         processing = Self.processingSummary(for: item, updatedAt: now)
-        artifacts = Self.libraryArtifacts(from: item)
+        self.artifacts = artifacts ?? Self.libraryArtifacts(from: item)
         speedText = item.speedText
         remainingSeconds = item.remainingSeconds
         remainingIsApproximate = item.remainingIsApproximate
@@ -980,7 +1175,7 @@ private struct QueueLibrarySnapshot: Sendable {
     }
 
     @MainActor
-    private static func libraryArtifacts(from item: QueueManager.QueueItem) -> [LibraryArtifact] {
+    static func libraryArtifacts(from item: QueueManager.QueueItem) -> [LibraryArtifact] {
         let files = item.resultFiles
         let videoFiles = files.filter {
             QueueManager.videoExtensions.contains($0.pathExtension.lowercased())

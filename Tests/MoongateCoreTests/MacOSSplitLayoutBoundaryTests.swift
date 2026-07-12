@@ -55,14 +55,179 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "新任务不应等待 300ms 进度防抖才建立稳定资料记录")
     }
 
-    func testWorkspaceInspectorDefaultsCollapseBelowWideBreakpoint() throws {
+    func testWorkspaceInspectorNeverAutoOpensForAWindowBreakpoint() throws {
         let source = try libraryWorkspaceModelSource()
         let layout = try XCTUnwrap(functionBody(named: "updateLayout", in: source))
 
-        XCTAssertTrue(layout.contains("!inspectorPreferenceIsExplicit"))
-        XCTAssertTrue(layout.contains("transaction.disablesAnimations = true"))
-        XCTAssertTrue(layout.contains("showInspector = width >= 1_380"),
-                      "1100–1379 pt 和 900–1099 pt 初始都应收起 Inspector")
+        XCTAssertTrue(source.contains("@Published var showInspector = false"))
+        XCTAssertFalse(layout.contains("showInspector ="),
+                       "资料库首次打开时，Inspector 只能由用户主动打开")
+    }
+
+    func testWideResizeDoesNotUndoAnExplicitSidebarChoice() throws {
+        let source = try libraryWorkspaceViewSource()
+        let layout = try XCTUnwrap(functionBody(named: "applyResponsiveLayout", in: source))
+
+        XCTAssertTrue(layout.contains("if width < 1_100"))
+        XCTAssertFalse(layout.contains("columnVisibility = .all"),
+                       "窗口重新变宽不能强制恢复人们刚刚隐藏的侧栏。")
+    }
+
+    /// 0.9.2 removes the hand-built fourth column. The inspector belongs to
+    /// the split view itself and is initially closed until a person asks for
+    /// it; window resizing must not unexpectedly reveal it.
+    func testDownloadFirstWorkspaceUsesSystemInspectorWithoutAutoOpeningIt() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+        let detail = try XCTUnwrap(slice(
+            view,
+            from: "private struct LibraryWorkbenchDetail",
+            to: "private struct PlayerStageView"
+        ))
+        let layout = try XCTUnwrap(functionBody(named: "updateLayout", in: model))
+
+        XCTAssertTrue(view.contains(".inspector(isPresented: $workspace.showInspector)"),
+                      "信息栏必须由 SwiftUI 系统 Inspector 承载，不能再作为 detail 内的伪第四列")
+        XCTAssertTrue(model.contains("@Published var showInspector = false"),
+                      "资料库首次打开应先让用户选择内容，不应自动弹出信息栏")
+        XCTAssertFalse(detail.contains("LibraryInspector("),
+                       "工作台 detail 不得手写嵌入 Inspector")
+        XCTAssertFalse(layout.contains("showInspector ="),
+                       "窗口宽度变化不能自动改变用户明确的 Inspector 状态")
+    }
+
+    func testLibraryListUsesOneNativeTitleAndOwnsMiddleColumnToolbarActions() throws {
+        let source = try libraryWorkspaceViewSource()
+        let list = try XCTUnwrap(functionBody(named: "libraryList", in: source))
+
+        XCTAssertTrue(list.contains(".navigationTitle(listTitle)"))
+        XCTAssertFalse(list.contains("Text(listTitle)"),
+                       "中栏标题只能由原生 navigation title 呈现，不能重复手写一个“全部视频”")
+        XCTAssertTrue(list.contains("ToolbarItemGroup(placement: .primaryAction)"),
+                      "新建下载和开始全部应归属中栏原生 toolbar")
+        XCTAssertTrue(list.contains("Label(\"新建下载\", systemImage: \"plus\")"))
+        XCTAssertTrue(list.contains("if workspace.hasQueuedTasks"),
+                      "开始全部只在确有待开始任务时出现")
+    }
+
+    func testInspectorMenuUsesSystemCommandsRatherThanASecondNotificationBridge() throws {
+        let app = try appSource()
+        let workspace = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(app.contains("InspectorCommands()"),
+                      "系统 InspectorCommands 必须提供 Control-Command-I 菜单栏等价入口")
+        XCTAssertFalse(app.contains("AppWorkspaceCommand.inspectorToggleRequested"),
+                       "不能再维护一条与系统 Inspector 重复的自定义菜单命令")
+        XCTAssertFalse(workspace.contains("AppWorkspaceCommand.inspectorToggleRequested"),
+                       "工作台应由系统 Inspector 状态控制，而不是 Notification 桥")
+    }
+
+    func testQueuedAndCompletedProcessingOpenContextualSheetsInsteadOfInspectorTabs() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+        let inspector = try XCTUnwrap(slice(
+            view,
+            from: "private struct LibraryInspector",
+            to: "private struct InspectorKeyValueRow"
+        ))
+
+        XCTAssertTrue(model.contains("enum ProcessingSheet"))
+        XCTAssertTrue(view.contains("ProcessingOptionsSheet"))
+        XCTAssertTrue(view.contains("更改选项…"))
+        XCTAssertTrue(view.contains("重新处理…"))
+        XCTAssertFalse(inspector.contains("Picker(\"检查器\""),
+                       "信息栏不得再混入“信息 / 处理”分段和完整配置表单")
+        XCTAssertFalse(inspector.contains("TranscriptionModelPicker"),
+                       "模型选择只应在按需打开的高级 Sheet 中出现")
+    }
+
+    func testProgressOverlaysDoNotResortTheLibraryOnEveryQueueTick() throws {
+        let model = try libraryWorkspaceModelSource()
+        let receive = try XCTUnwrap(functionBody(named: "receiveQueue", in: model))
+        let rebuild = try XCTUnwrap(functionBody(named: "rebuildProjectionCache", in: model))
+        let synchronize = try XCTUnwrap(functionBody(named: "synchronizeQueue", in: model))
+
+        XCTAssertTrue(receive.contains("scheduleLiveOverlayRefresh"),
+                      "高频队列状态必须先进入节流后的活动覆盖层")
+        XCTAssertFalse(receive.contains("rebuildProjectionCache()"),
+                       "进度 tick 不能直接触发整库筛选排序")
+        XCTAssertTrue(rebuild.contains("liveProcessing: [:]"),
+                      "稳定列表投影不应因实时覆盖层变化而重排")
+        XCTAssertTrue(synchronize.contains("if stored != original"),
+                      "无结构变化的进度同步不能重新赋值资料库并触发列表重建")
+    }
+
+    func testProgressTicksReuseArtifactMetadataUntilTheQueueStructureChanges() throws {
+        let model = try libraryWorkspaceModelSource()
+        let snapshot = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources/Moongate/LibraryWorkspaceModel.swift"))
+
+        XCTAssertTrue(model.contains("artifactSnapshotCache"))
+        XCTAssertTrue(model.contains("artifactsForQueueItem"))
+        XCTAssertTrue(model.contains("QueueLibrarySnapshot($0, artifacts: artifactsForQueueItem($0))"),
+                      "进度 tick 应复用产物 metadata，而不是重复读取每个文件的大小和修改时间。")
+        XCTAssertTrue(snapshot.contains("init(_ item: QueueManager.QueueItem, artifacts:"))
+    }
+
+    func testCancelledQueueSyncCannotWriteAnOlderSnapshotAfterNewerProgressArrives() throws {
+        let model = try libraryWorkspaceModelSource()
+        let schedule = try XCTUnwrap(functionBody(named: "scheduleQueueSynchronization", in: model))
+        let synchronize = try XCTUnwrap(functionBody(named: "synchronizeQueue", in: model))
+
+        XCTAssertTrue(model.contains("private var queueSyncGeneration = 0"))
+        XCTAssertTrue(schedule.contains("queueSyncGeneration &+= 1"))
+        XCTAssertTrue(model.contains("generation == queueSyncGeneration"),
+                      "被更新快照取代的同步不能在异步存储后回写旧状态。")
+        XCTAssertTrue(synchronize.contains("isCurrentQueueSync(generation)"))
+    }
+
+    func testWorkspaceDoesNotAutoSelectTheFirstLibraryItem() throws {
+        let model = try libraryWorkspaceModelSource()
+        let bootstrap = try XCTUnwrap(functionBody(named: "bootstrap", in: model))
+        let remove = try XCTUnwrap(functionBody(named: "removeFromLibrary", in: model))
+
+        XCTAssertTrue(model.contains("restoreExplicitSelectionIfAvailable"),
+                      "只应恢复用户曾明确选择的项目")
+        XCTAssertFalse(model.contains("projectedItems.first?.id"),
+                       "首次进入、筛选或删除后不得擅自选中第一条视频")
+        XCTAssertFalse(bootstrap.contains("selectedItemID ="),
+                       "初次资料库加载必须保持空选择状态")
+        XCTAssertTrue(remove.contains("self.selectedItemID = nil"),
+                      "移除当前选中项后应回到明确空态，而不是跳到另一条视频")
+    }
+
+    func testChangingFilterOrSearchClearsASelectionThatIsNoLongerVisible() throws {
+        let model = try libraryWorkspaceModelSource()
+        let sidebar = try XCTUnwrap(slice(
+            model,
+            from: "@Published var sidebarDestination",
+            to: "@Published var selectedItemID"
+        ))
+        let search = try XCTUnwrap(slice(
+            model,
+            from: "@Published var searchText",
+            to: "@Published var showInspector"
+        ))
+
+        XCTAssertTrue(sidebar.contains("clearSelectionIfHiddenByProjection()"))
+        XCTAssertTrue(search.contains("clearSelectionIfHiddenByProjection()"))
+        XCTAssertTrue(model.contains("private func clearSelectionIfHiddenByProjection()"))
+        XCTAssertFalse(model.contains("selectedItemID = projectedItems.first?.id"),
+                       "筛选变化后应清空不可见选择，不能又自动选中第一条。")
+    }
+
+    func testQueuedReadinessCopyNeverEchoesRawQueueDiagnostics() throws {
+        let source = try libraryWorkspaceViewSource()
+        let display = try XCTUnwrap(slice(
+            source,
+            from: "private enum LibraryDisplay",
+            to: "static func completedDetail"
+        ))
+
+        XCTAssertTrue(display.contains("本地字幕识别尚未准备好"))
+        XCTAssertTrue(display.contains("开始前需要处理一项设置"))
+        XCTAssertFalse(display.contains("return detail"),
+                       "普通资料库路径不得直接展示 QueueManager 的技术诊断原文")
     }
 
     func testWorkspaceToolbarKeepsOnlyInspectorAndListOwnsNewDownload() throws {
@@ -82,14 +247,26 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "列表标题区的新增动作必须接入同一真实 Sheet 命令")
     }
 
-    func testWorkspaceToolbarProvidesInspectorMenuEquivalent() throws {
+    func testStartAllToolbarActionHasAMenuBarEquivalent() throws {
+        let app = try appSource()
+        let workspace = try libraryWorkspaceViewSource()
+        let commands = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources/Moongate/AppRootHost.swift"))
+
+        XCTAssertTrue(commands.contains("startAllRequested"))
+        XCTAssertTrue(app.contains("AppWorkspaceCommand.startAllRequested"))
+        XCTAssertTrue(app.contains("Button(\"开始全部\")"))
+        XCTAssertTrue(workspace.contains("AppWorkspaceCommand.startAllRequested"))
+        XCTAssertTrue(workspace.contains("workspace.startAllQueuedTasks()"))
+    }
+
+    func testWorkspaceToolbarUsesSystemInspectorMenuEquivalent() throws {
         let app = try appSource()
         let workspace = try libraryWorkspaceViewSource()
 
-        XCTAssertTrue(app.contains("AppWorkspaceCommand.inspectorToggleRequested"),
-                      "Inspector toolbar action 必须有菜单栏等价入口")
-        XCTAssertTrue(workspace.contains("AppWorkspaceCommand.inspectorToggleRequested"),
-                      "工作台应消费菜单栏 Inspector 切换命令")
+        XCTAssertTrue(app.contains("InspectorCommands()"),
+                      "Inspector toolbar action 必须由系统菜单提供等价入口")
+        XCTAssertTrue(workspace.contains(".inspector(isPresented: $workspace.showInspector)"))
     }
 
     func testMovingFilesToTrashDoesNotOfferIndexOnlyUndo() throws {
@@ -118,20 +295,18 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(synchronize.contains("!suppressedQueueLibraryItemIDs.contains($0.libraryItemID)"))
     }
 
-    func testProcessingInspectorRepresentsPersistedSubtitleSourceKinds() throws {
+    func testProcessingSheetProgressivelyDisclosesAdvancedSubtitleSourceChoices() throws {
         let source = try libraryWorkspaceViewSource()
-        let editor = try XCTUnwrap(functionBody(named: "processingEditor", in: source))
+        let sheet = try XCTUnwrap(slice(
+            source,
+            from: "private struct ProcessingOptionsSheet",
+            to: "private struct FlowLayout"
+        ))
 
-        for kind in [
-            "importedFile",
-            "manual",
-            "platformAuto",
-            "hlsManifest",
-            "localASR",
-            "cloudASR"
-        ] {
-            XCTAssertTrue(editor.contains("SubtitleSourceKind.\(kind).rawValue"),
-                          "Inspector 必须能显示已经持久化的 \(kind) 字幕来源")
+        XCTAssertTrue(sheet.contains("DisclosureGroup(\"高级选项\")"),
+                      "底层字幕来源只能在用户主动展开高级选项后出现")
+        for kind in ["importedFile", "manual", "platformAuto", "hlsManifest", "localASR", "cloudASR"] {
+            XCTAssertTrue(sheet.contains("SubtitleSourceKind.\(kind).rawValue"))
         }
     }
 
@@ -165,7 +340,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let controls = try XCTUnwrap(functionBody(named: "buttons", in: legacy))
         XCTAssertTrue(controls.contains("case .cancelling:"),
                       "取消收敛中不能复用暂停/重试控制，避免相互竞争")
-        XCTAssertTrue(workspace.contains("CollapsedInspectorActionStrip"),
+        XCTAssertTrue(workspace.contains("WorkbenchActionStrip"),
                       "收起 Inspector 后必须仍有状态化快捷操作")
         XCTAssertTrue(workspace.contains("workspace.startSelectedQueuedTask()"),
                       "待开始任务必须提供真实开始入口")
@@ -228,18 +403,38 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "Inspector 必须继续以运行态锁定暂停任务的处理快照")
     }
 
-    func testQueuedInspectorEditsItsOwnConfigurationWithoutCreatingAVersion() throws {
+    func testQueuedProcessingSheetEditsItsOwnConfigurationWithoutCreatingAVersion() throws {
         let source = try libraryWorkspaceViewSource()
-        XCTAssertTrue(source.contains("queuedProcessingEditor"))
+        XCTAssertTrue(source.contains("ProcessingOptionsSheet"))
+        XCTAssertTrue(source.contains("workspace.showQueuedOptions"))
     }
 
-    func testInspectorCarriesSubtitleModeThroughQueuedAndReprocessFlows() throws {
+    func testProcessingSheetCarriesSubtitleOutcomeThroughQueuedAndReprocessFlows() throws {
         let view = try libraryWorkspaceViewSource()
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(view.contains("Picker(\"字幕处理\""))
+        XCTAssertTrue(view.contains("Picker(\"字幕结果\""))
         XCTAssertTrue(model.contains("changes.insert(.subtitleMode)"))
         XCTAssertTrue(model.contains("previousConfiguration: version.processing.configuration"))
+    }
+
+    func testReprocessSheetKeepsContextUntilAsyncCreationSucceeds() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+        let sheet = try XCTUnwrap(slice(
+            view,
+            from: "private struct ProcessingOptionsSheet",
+            to: "private struct FlowLayout"
+        ))
+
+        XCTAssertTrue(model.contains("func createReprocessTask() async -> ReprocessCreationResult"))
+        XCTAssertTrue(sheet.contains("await workspace.createReprocessTask()"),
+                      "重新处理必须等待真实入队结果，而不是立即关闭 Sheet。")
+        XCTAssertTrue(sheet.contains("case .success"))
+        XCTAssertTrue(sheet.contains("case .failure(let message)"))
+        XCTAssertTrue(sheet.contains("Button(isQueued ? \"完成\" : \"取消\")"))
+        XCTAssertTrue(sheet.contains("workspace.discardProcessingDraft()"),
+                      "取消重处理应放弃未应用的草稿，而不是把隐形修改留给下次打开。")
     }
 
     func testLocalReprocessDoesNotRequireASourceButRefreshDoes() throws {
@@ -253,12 +448,12 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertFalse(view.contains("if item.source != nil {\n                        Button(\"创建重新处理任务\")"))
     }
 
-    func testExpandedFailedTaskKeepsRecoveryActionsVisible() throws {
+    func testFailedTaskKeepsRecoveryActionsVisibleWithOrWithoutInspector() throws {
         let source = try libraryWorkspaceViewSource()
 
-        XCTAssertTrue(source.contains("else if case .failed = item.stage"),
-                      "Inspector 展开时失败任务不能只靠收起后的快捷条恢复")
-        XCTAssertTrue(source.contains("workspace.recoverQueueTask(for: item.libraryItemID)"),
+        XCTAssertTrue(source.contains("case .failed:"),
+                      "失败任务应在统一动作条中保持恢复入口")
+        XCTAssertTrue(source.contains("workspace.recoverQueueTask(for: item.id)"),
                       "失败任务必须复用同一条登录或重试恢复动作")
     }
 
@@ -282,25 +477,22 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
     func testQueuedContextMenuUsesConfigurationLanguageAndFinderNeedsAnArtifact() throws {
         let source = try libraryWorkspaceViewSource()
-        let quickActions = try XCTUnwrap(functionBody(named: "queueActions", in: source))
         let contextMenu = try XCTUnwrap(slice(
             source,
             from: "private struct LibraryRowContextMenu",
             to: "private struct LibraryStatusGlyph"
         ))
 
-        XCTAssertTrue(source.contains("Button(\"调整配置\")"),
-                      "待开始任务应使用“调整配置”，不能误称为“重新处理”")
+        XCTAssertTrue(source.contains("Button(\"更改选项…\")"),
+                      "待开始任务应使用“更改选项”，不能误称为“重新处理”")
         XCTAssertTrue(source.contains("if processing?.state.isQueued == true"),
                       "普通重新处理不应与待开始任务的配置动作并存")
         XCTAssertTrue(contextMenu.contains("if let recovery = workspace.queuedReadinessRecovery(for: item.id)"),
                       "预检阻塞时，右键菜单应改给恢复入口而不是继续提供无效的开始动作")
         XCTAssertTrue(contextMenu.contains("} else {\n                        Button(\"开始\")"),
                       "仅无阻塞的待开始任务才显示开始动作")
-        XCTAssertTrue(quickActions.contains("workspace.canRevealInFinder(itemID: item.id)"),
-                      "没有本地产物的已取消项不应显示必然失败的访达按钮")
-        XCTAssertTrue(source.contains("} else {\n                if workspace.canRevealInFinder(itemID: item.id) {"),
-                      "队列对象已离开内存后，收起 Inspector 的取消项也必须隐藏无效的访达按钮")
+        XCTAssertTrue(source.contains("if workspace.canRevealInFinder(itemID: item.id)"),
+                      "没有本地产物的完成或异常项不应显示必然失败的访达按钮")
     }
 
     func testTrashConfirmationClearsItsTargetAndRequiresAnExistingFile() throws {
@@ -313,6 +505,22 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         XCTAssertTrue(model.contains("guard !existingURLs.isEmpty"))
     }
 
+    func testActiveTasksCannotTrashArtifactsStillUsedByThePipeline() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+        let contextMenu = try XCTUnwrap(slice(
+            view,
+            from: "private struct LibraryRowContextMenu",
+            to: "private struct LibraryStatusGlyph"
+        ))
+        let moveToTrash = try XCTUnwrap(functionBody(named: "moveArtifactsToTrash", in: model))
+
+        XCTAssertTrue(contextMenu.contains("if processing?.state.isActive != true"),
+                      "运行或待开始的任务不应提供会移走仍在使用产物的废纸篓操作")
+        XCTAssertTrue(moveToTrash.contains("guard processing(for: item.id)?.state.isActive != true"),
+                      "即使从其他 UI 路径调用，模型层也必须拒绝活动任务的废纸篓操作")
+    }
+
     func testActiveRowsExposeProgressAndEtaToVoiceOver() throws {
         let source = try libraryWorkspaceViewSource()
 
@@ -322,10 +530,9 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
     }
 
     func testInterruptedLibraryItemsExposeARealRestartAction() throws {
-        let view = try libraryWorkspaceViewSource()
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(view.contains("重新开始"))
+        XCTAssertTrue(model.contains("case .restart: \"重新开始\""))
         XCTAssertTrue(model.contains("func restartInterruptedTask"))
         XCTAssertTrue(model.contains("restartInterruptedLibraryItem"))
     }
