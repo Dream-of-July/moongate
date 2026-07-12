@@ -1,6 +1,49 @@
 import XCTest
 
 final class MacOSSettingsBoundaryTests: XCTestCase {
+    func testSettingsDraftPersistenceDebouncesOrdinaryChangesAndGatesCredentials() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+
+        XCTAssertTrue(source.contains("@State private var settingsDraftCoordinator = SettingsDraftCoordinator()"))
+        XCTAssertTrue(source.contains("recordDraftChange(from: oldValue, to: newValue)"))
+        XCTAssertTrue(source.contains("private func recordDraftChange(from oldValue: AppSettings, to newValue: AppSettings)"))
+        XCTAssertTrue(source.contains("settingsDraftCoordinator.record(draftChangeKind(from: oldValue, to: newValue))"))
+        XCTAssertTrue(source.contains("oldValue.translationAuthToken != newValue.translationAuthToken"))
+        XCTAssertTrue(source.contains("oldValue.aiAuthToken != newValue.aiAuthToken"))
+        XCTAssertTrue(source.contains("oldValue.summaryAuthToken != newValue.summaryAuthToken"))
+        XCTAssertTrue(source.contains("oldValue.cloudASRAuthToken != newValue.cloudASRAuthToken"))
+        XCTAssertTrue(source.contains("private func commitDraftImmediately() -> Bool"))
+        XCTAssertTrue(source.contains("settingsDraftCoordinator.commitImmediately"))
+        XCTAssertTrue(source.contains(".onDisappear {\n            testTask?.cancel()"))
+        XCTAssertTrue(source.contains("commitDraftImmediately()"))
+        XCTAssertFalse(source.contains("persistDraftLive"))
+
+        let onAppearRange = try XCTUnwrap(source.range(of: ".onAppear {"))
+        let onAppearEnd = try XCTUnwrap(source.range(
+            of: "        .onChange(of: model.pendingSettingsPaneID)",
+            range: onAppearRange.upperBound..<source.endIndex
+        ))
+        let onAppearBody = String(source[onAppearRange.lowerBound..<onAppearEnd.lowerBound])
+        XCTAssertFalse(onAppearBody.contains("commitDraftImmediately()"))
+        XCTAssertFalse(onAppearBody.contains("persistDraft"))
+
+        let fetchBody = try XCTUnwrap(functionBody(named: "fetchModels", in: source))
+        XCTAssertTrue(fetchBody.contains("guard commitDraftImmediately() else { return }"))
+
+        let connectionBody = try XCTUnwrap(functionBody(named: "runConnectionTest", in: source))
+        XCTAssertTrue(connectionBody.contains("guard commitDraftImmediately() else { return }"))
+        XCTAssertTrue(source.contains("commitDraft: commitDraftImmediately"))
+        XCTAssertTrue(source.contains("@FocusState private var defaultAIAuthTokenFocused: Bool"))
+        XCTAssertTrue(source.contains(".focused($defaultAIAuthTokenFocused)"))
+        XCTAssertTrue(source.contains(".onChange(of: defaultAIAuthTokenFocused)"))
+        XCTAssertTrue(source.contains("@FocusState private var authTokenFocused: Bool"))
+        XCTAssertTrue(source.contains(".focused($authTokenFocused)"))
+        XCTAssertTrue(source.contains(".onChange(of: authTokenFocused)"))
+    }
+
     func testSettingsViewUsesSplitNavigationHubWithLocalASRAndNotifications() throws {
         let source = try String(contentsOf: packageRoot()
             .appendingPathComponent("Sources")
@@ -46,10 +89,10 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("NavigationSplitView"))
         XCTAssertTrue(source.contains("List(SettingsPane.allCases, selection: $selectedPane)"))
         XCTAssertTrue(source.contains("settingsPaneDetail"))
-        // 11c：设置改为独立窗口 + 实时保存，不再有底部「完成/取消」按钮，改为 persistDraftLive 自动落盘。
+        // 0.9.1：普通改动短暂防抖；凭证必须通过显式动作或关闭设置提交。
         XCTAssertFalse(source.contains("private var bottomBar"))
-        XCTAssertTrue(source.contains("private func persistDraftLive"))
-        XCTAssertTrue(source.contains(".onChange(of: draft) { _, newValue in"))
+        XCTAssertTrue(source.contains("private func persistDraft"))
+        XCTAssertTrue(source.contains(".onChange(of: draft) { oldValue, newValue in"))
         XCTAssertTrue(source.contains("applyPendingSettingsPane()"))
         XCTAssertTrue(source.contains(".onChange(of: model.pendingSettingsPaneID)"))
         XCTAssertTrue(source.contains(".frame(minWidth: 760"))

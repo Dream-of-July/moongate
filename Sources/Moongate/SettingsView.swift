@@ -51,7 +51,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 }
 
 /// 独立设置窗口：通用、字幕与翻译、本地语音识别、AI 服务、视频与输出、站点登录、组件与存储、更新与关于。
-/// 实时同步：draft 仅作输入缓冲，onChange 即通过 persistDraftLive 落盘，无「完成 / 取消」按钮（红灯关闭即可）。
+/// 草稿仅作输入缓冲：普通设置短暂防抖，凭证改动必须由明确动作或关闭窗口提交。
 struct SettingsView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
@@ -61,6 +61,8 @@ struct SettingsView: View {
     typealias ModelFetchState = APIModelFetchState
 
     @State private var draft = AppSettings()
+    @State private var settingsDraftCoordinator = SettingsDraftCoordinator()
+    @FocusState private var defaultAIAuthTokenFocused: Bool
     @ObservedObject private var updater: UpdateService
     @State private var testState: TestState = .idle
     @State private var testTask: Task<Void, Never>?
@@ -119,9 +121,8 @@ struct SettingsView: View {
                 }
         }
         .frame(minWidth: 760, idealWidth: 820, maxWidth: 860, minHeight: 560, idealHeight: 640)
-        // 实时同步：草稿任何字段变化即写回 model.settings 并保存（不再需要「完成」按钮）。
-        .onChange(of: draft) { _, newValue in
-            persistDraftLive(newValue)
+        .onChange(of: draft) { oldValue, newValue in
+            recordDraftChange(from: oldValue, to: newValue)
         }
         // 任一字段被改动：上一次的测试结果不再可信，回到初始态。
         .onChange(of: draft.aiBaseURL) { resetTestState(); resetModelFetch() }
@@ -139,7 +140,6 @@ struct SettingsView: View {
             model.hydrateCredentials()
             let sanitizedSettings = sanitizeRemovedRecognitionExpertSettings(model.settings)
             draft = sanitizedSettings
-            persistDraftLive(sanitizedSettings)
             applyPendingSettingsPane()
             refreshLoginStatus()
             refreshDraftRuntimeReadiness()
@@ -156,17 +156,45 @@ struct SettingsView: View {
             testTask?.cancel()
             modelFetchTask?.cancel()
             draftRuntimeReadinessTask?.cancel()
-            // 实时保存模式：关闭即同步（兜底再保存一次，确保最后一次编辑落盘）。
-            persistDraftLive(draft)
+            // 关闭窗口是一个明确的提交动作，也会把被凭证修改暂停的普通保存安全落盘。
+            _ = commitDraftImmediately()
         }
     }
 
-    /// 实时把草稿写回 model.settings 并持久化。语言变化已由 onChange(draft.appLanguage) 即时反映到 UI。
-    private func persistDraftLive(_ newValue: AppSettings) {
+    private func recordDraftChange(from oldValue: AppSettings, to newValue: AppSettings) {
         let sanitized = sanitizeRemovedRecognitionExpertSettings(newValue)
+        // hydrateCredentials() 会先更新 model.settings 再把值放进 draft；这不是用户修改，
+        // 绝不能因此把 Keychain 凭证再写一遍。
         guard model.settings != sanitized else { return }
+        settingsDraftCoordinator.record(draftChangeKind(from: oldValue, to: newValue)) {
+            persistDraft(newValue)
+        }
+    }
+
+    private func draftChangeKind(from oldValue: AppSettings, to newValue: AppSettings) -> SettingsDraftChange {
+        if oldValue.translationAuthToken != newValue.translationAuthToken
+            || oldValue.aiAuthToken != newValue.aiAuthToken
+            || oldValue.summaryAuthToken != newValue.summaryAuthToken
+            || oldValue.cloudASRAuthToken != newValue.cloudASRAuthToken {
+            return .sensitive
+        }
+        return .ordinary
+    }
+
+    /// 仅在 coordinator 调度或用户明确动作时把草稿写回 model.settings 并持久化。
+    @discardableResult
+    private func persistDraft(_ newValue: AppSettings) -> Bool {
+        let sanitized = sanitizeRemovedRecognitionExpertSettings(newValue)
+        guard model.settings != sanitized else { return true }
         model.settings = sanitized
-        model.saveSettings()
+        return model.saveSettings()
+    }
+
+    @discardableResult
+    private func commitDraftImmediately() -> Bool {
+        settingsDraftCoordinator.commitImmediately {
+            persistDraft(draft)
+        }
     }
 
     private func sanitizeRemovedRecognitionExpertSettings(_ settings: AppSettings) -> AppSettings {
@@ -2204,7 +2232,8 @@ struct SettingsView: View {
                             authToken: draft.translationAuthToken
                         ) },
                         baseURLPrompt: baseURLPrompt(for: draft.translationEngine),
-                        modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
+                        modelPrompt: localizer.t(L.Settings.modelPromptEmpty),
+                        commitDraft: commitDraftImmediately
                     )
                 } else {
                     Text(localizer.t(L.Settings.localEngineNoCredentials))
@@ -2264,7 +2293,8 @@ struct SettingsView: View {
                     authToken: draft.summaryAuthToken
                 ) },
                 baseURLPrompt: baseURLPrompt(for: draft.summaryEngine),
-                modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
+                modelPrompt: localizer.t(L.Settings.modelPromptEmpty),
+                commitDraft: commitDraftImmediately
             )
         } else {
             Text(localizer.t(L.Settings.localEngineNoCredentials))
@@ -2287,6 +2317,11 @@ struct SettingsView: View {
         .autocorrectionDisabled()
         VStack(alignment: .leading, spacing: 4) {
             SecureField(localizer.t(L.Settings.apiCredential), text: $draft.aiAuthToken)
+                .focused($defaultAIAuthTokenFocused)
+                .onChange(of: defaultAIAuthTokenFocused) { wasFocused, isFocused in
+                    guard wasFocused, !isFocused else { return }
+                    _ = commitDraftImmediately()
+                }
             Text(credentialSummaryText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2780,6 +2815,7 @@ struct SettingsView: View {
     }
 
     private func runConnectionTest() {
+        guard commitDraftImmediately() else { return }
         testTask?.cancel()
         testState = .testing
         // 默认配置编辑的是 ai*；测试连接必须只测默认 AI，而不是当前翻译 override。
@@ -2809,6 +2845,7 @@ struct SettingsView: View {
     }
 
     private func fetchModels() {
+        guard commitDraftImmediately() else { return }
         modelFetchTask?.cancel()
         modelFetchState = .fetching
         let settings = draft.applyingTranslationConfig(defaultAIConfig)
@@ -3009,16 +3046,16 @@ struct SettingsView: View {
         cookieDate = dates.max()
     }
 
-    /// 点「登录 ××」：实时保存模式下草稿已即时回写，这里只需走登录流程。
+    /// 点「登录 ××」前先显式提交草稿，避免关闭窗口时才发现凭证保存失败。
     private func requestLogin(site: String) {
         clearFeedback = nil
-        persistDraftLive(draft)
+        guard commitDraftImmediately() else { return }
         model.requestLogin(site: site)
     }
 
-    /// 点「配置依赖」：实时保存模式下草稿已即时回写，这里只需走依赖流程。
+    /// 点「配置依赖」前先显式提交草稿，保持与登录流程相同的保存边界。
     private func requestDependencySetup() {
-        persistDraftLive(draft)
+        guard commitDraftImmediately() else { return }
         model.requestDependencySetup()
     }
 
@@ -3078,18 +3115,44 @@ struct APIConfigEditor: View {
     let settingsForRequest: () -> AppSettings
     let baseURLPrompt: String
     let modelPrompt: String
+    /// 网络动作是编辑凭证后的明确提交边界；由父设置窗口统一完成持久化。
+    let commitDraft: () -> Bool
 
     @State private var testState: APIConnectionTestState = .idle
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: APIModelFetchState = .idle
     @State private var modelFetchTask: Task<Void, Never>?
+    @FocusState private var authTokenFocused: Bool
     @EnvironmentObject private var localizer: Localizer
+
+    init(
+        baseURL: Binding<String>,
+        model: Binding<String>,
+        authToken: Binding<String>,
+        settingsForRequest: @escaping () -> AppSettings,
+        baseURLPrompt: String,
+        modelPrompt: String,
+        commitDraft: @escaping () -> Bool = { true }
+    ) {
+        self._baseURL = baseURL
+        self._model = model
+        self._authToken = authToken
+        self.settingsForRequest = settingsForRequest
+        self.baseURLPrompt = baseURLPrompt
+        self.modelPrompt = modelPrompt
+        self.commitDraft = commitDraft
+    }
 
     var body: some View {
         TextField(localizer.t(L.Settings.serviceURL), text: $baseURL, prompt: Text(baseURLPrompt))
             .autocorrectionDisabled()
             .onChange(of: baseURL) { resetTestState(); resetModelFetch() }
         SecureField(localizer.t(L.Settings.apiCredential), text: $authToken)
+            .focused($authTokenFocused)
+            .onChange(of: authTokenFocused) { wasFocused, isFocused in
+                guard wasFocused, !isFocused else { return }
+                _ = commitDraft()
+            }
             .onChange(of: authToken) { resetTestState(); resetModelFetch() }
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button(localizer.t(L.Settings.fetchModels)) { fetchModels() }
@@ -3163,6 +3226,7 @@ struct APIConfigEditor: View {
     }
 
     private func fetchModels() {
+        guard commitDraft() else { return }
         modelFetchTask?.cancel()
         modelFetchState = .fetching
         let settings = settingsForRequest()
@@ -3180,6 +3244,7 @@ struct APIConfigEditor: View {
     }
 
     private func runConnectionTest() {
+        guard commitDraft() else { return }
         testTask?.cancel()
         testState = .testing
         let settings = settingsForRequest()
