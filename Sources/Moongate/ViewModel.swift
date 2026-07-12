@@ -218,8 +218,6 @@ final class ViewModel: ObservableObject {
     private var pendingReadyReanalyzeURL: String?
     /// 设置窗里点了「配置依赖」：先收起设置 sheet，再由其 onDismiss 弹出依赖配置窗
     private var pendingDependencySetup = false
-    /// 首次进入主界面时只做一次依赖体检，避免 sheet 被反复弹起。
-    private var didRunStartupDependencyCheck = false
     /// 代际令牌：reset / 取消后，旧解析任务的回调全部作废
     private var session = 0
 
@@ -289,9 +287,6 @@ final class ViewModel: ObservableObject {
     func onAppear() {
         prefillFromClipboardIfAppropriate()
         showOnboardingIfNeeded()
-        if settings.onboardingCompleted {
-            showDependencySetupIfNeededOnStartup()
-        }
         checkForUpdatesIfNeeded()
         refreshTranslationRuntimeReadiness()
         refreshSummaryRuntimeReadiness()
@@ -2004,20 +1999,6 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    private func showDependencySetupIfNeededOnStartup() {
-        guard !didRunStartupDependencyCheck else { return }
-        didRunStartupDependencyCheck = true
-        // check() 会 spawn ffmpeg 子进程并 waitUntilExit，绝不能在 onAppear 同步路径里跑。
-        Task { [weak self] in
-            let components = await Task.detached(priority: .utility) {
-                DependencySetup.check()
-            }.value
-            guard let self, DependencySetup.needsSetup(components) else { return }
-            self.settingsNotice = CoreL10n.t(L.Dependency.setupRequiredNotice)
-            self.showDependencySetup = true
-        }
-    }
-
     private func showOnboardingIfNeeded() {
         guard !settings.onboardingCompleted else { return }
         showOnboarding = true
@@ -2077,62 +2058,84 @@ final class ViewModel: ObservableObject {
     }
 
     @discardableResult
-    func completeOnboarding(
-        appLanguage: AppLanguage,
-        translationTargetLanguage: String,
-        useLocalTranslation: Bool,
-        translationProvider: TranslationProvider,
-        preferLocalSpeechRecognition: Bool,
-        apiBaseURL: String = "",
-        apiModel: String = "",
-        apiAuthToken: String = ""
-    ) -> Bool {
-        // 必须先 hydrate 再取 draft：启动期 settings 以 readCredentials:false 载入（三个 Token 为空），
-        // 若直接以此为 draft 落盘，save() → writeTokensToStore() 会把空值当“删除”抹掉 Keychain 里
-        // 既有 Token（重跑 onboarding / settings.json 被重置或损坏后重建时尤甚）。
-        // hydrate 后 settings 带真实 Token，draft 继承后只覆盖 onboarding 字段，未重填的 Token 得以保留。
+    func acknowledgeOnboardingKeepingCurrentDefaults() -> Bool {
+        // This is the welcome-page exit: it must preserve every existing
+        // download, subtitle, service, and credential preference.
         hydrateCredentials()
-        var draft = settings
-        draft.appLanguage = appLanguage.rawValue
-        draft.translationTargetLanguage = translationTargetLanguage
-        draft.onboardingCompleted = true
-        draft.localASREnabled = preferLocalSpeechRecognition
-        draft.subtitleRecognitionMode = preferLocalSpeechRecognition ? .automatic : .platformOnly
-        let engine = TranslationEngine.compatible(with: translationProvider)
-        draft.translationProvider = translationProvider
-        draft.aiEngine = engine
-        draft.aiBaseURL = translationProvider.defaultBaseURL
-        draft.translationBaseURL = translationProvider.defaultBaseURL
-        if useLocalTranslation {
-            draft.translationEngine = .appleTranslationLowLatency
-            draft.translationFollowsDefault = false
-        } else {
-            draft.translationEngine = engine
-            draft.translationFollowsDefault = true
-            let normalizedModel = apiModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            draft.aiModel = normalizedModel
-            draft.translationModel = normalizedModel
-            // Apply user-entered API credentials from onboarding
-            if !apiBaseURL.isEmpty {
-                draft.aiBaseURL = apiBaseURL
-                draft.translationBaseURL = apiBaseURL
-            }
-            if !apiAuthToken.isEmpty {
-                draft.aiAuthToken = apiAuthToken
-                draft.translationAuthToken = apiAuthToken
-            }
-        }
+        let draft = Self.acknowledgingOnboarding(settings)
         do {
             try draft.save()
             settings = draft
             settingsNotice = nil
             showOnboarding = false
-            showDependencySetupIfNeededOnStartup()
             return true
         } catch {
             settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)
             return false
         }
+    }
+
+    /// Persists only the choices a person explicitly made in onboarding's
+    /// optional defaults page. Service endpoints and credentials stay intact.
+    @discardableResult
+    func commitOnboardingDefaultEdits(
+        appLanguage: AppLanguage,
+        subtitleMode: ChineseSubtitleMode,
+        translationTargetLanguage: String?,
+        useSystemTranslation: Bool?
+    ) -> Bool {
+        hydrateCredentials()
+        let draft = Self.applyingOnboardingDefaults(
+            to: settings,
+            appLanguage: appLanguage,
+            subtitleMode: subtitleMode,
+            translationTargetLanguage: translationTargetLanguage,
+            useSystemTranslation: useSystemTranslation
+        )
+        do {
+            try draft.save()
+            settings = draft
+            settingsNotice = nil
+            showOnboarding = false
+            return true
+        } catch {
+            settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)
+            return false
+        }
+    }
+
+    /// The two download-first onboarding exits deliberately share small,
+    /// side-effect-free settings transitions. This keeps the persisted action
+    /// easy to verify with isolated settings/credential stores and prevents a
+    /// future UI branch from silently rewriting unrelated service or ASR data.
+    static func acknowledgingOnboarding(_ settings: AppSettings) -> AppSettings {
+        var draft = settings
+        draft.onboardingCompleted = true
+        return draft
+    }
+
+    static func applyingOnboardingDefaults(
+        to settings: AppSettings,
+        appLanguage: AppLanguage,
+        subtitleMode: ChineseSubtitleMode,
+        translationTargetLanguage: String?,
+        useSystemTranslation: Bool?
+    ) -> AppSettings {
+        var draft = acknowledgingOnboarding(settings)
+        draft.appLanguage = appLanguage.rawValue
+        draft.lastSubtitleMode = subtitleMode.rawValue
+        if let translationTargetLanguage {
+            draft.translationTargetLanguage = translationTargetLanguage
+        }
+        if let useSystemTranslation {
+            if useSystemTranslation {
+                draft.translationEngine = .appleTranslationLowLatency
+                draft.translationFollowsDefault = false
+            } else {
+                draft.translationFollowsDefault = true
+            }
+        }
+        return draft
     }
 
     // MARK: - 设置与站点登录

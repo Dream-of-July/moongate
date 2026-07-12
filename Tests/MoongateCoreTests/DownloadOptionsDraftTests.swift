@@ -46,4 +46,20 @@ final class DownloadOptionsDraftTests: XCTestCase {
         XCTAssertEqual(draft.recognitionChoice, .automatic)
         XCTAssertEqual(draft.queuedConfiguration().subtitleSourcePolicy, .preferPlatform)
     }
+
+    func testExistingSubtitleSourcePoliciesRoundTripUntilThePersonChangesThem() {
+        for policy in SubtitleSourcePolicy.allCases {
+            var configuration = QueuedProcessingConfiguration.defaults(from: AppSettings())
+            configuration.subtitleMode = .srtOnly
+            configuration.subtitleSourcePolicy = policy
+
+            let draft = DownloadOptionsDraft(configuration: configuration)
+
+            XCTAssertEqual(
+                draft.queuedConfiguration().subtitleSourcePolicy,
+                policy,
+                "未修改时不能把 \(policy.rawValue) 静默改成另一种字幕来源策略"
+            )
+        }
+    }
 }

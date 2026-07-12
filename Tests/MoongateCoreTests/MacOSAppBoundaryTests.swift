@@ -37,7 +37,7 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
         XCTAssertTrue(source.contains("Toggle(\"资料库工作台\""),
                       "新布局必须保留菜单级 legacy fallback")
-        XCTAssertTrue(rootHost.contains("model.enqueueDeferredDrafts(from: urlText, configuration: configuration)"),
+        XCTAssertTrue(rootHost.contains("model.enqueueDeferredDrafts(from: urlText, configuration: draft.queuedConfiguration())"),
                       "⌘N 的新建下载 sheet 必须创建可编辑的待开始任务")
     }
 
@@ -51,11 +51,14 @@ final class MacOSAppBoundaryTests: XCTestCase {
         let rootHost = try appRootHostSource()
         let viewModel = try viewModelSource()
 
-        XCTAssertTrue(rootHost.contains("@State private var configuration: QueuedProcessingConfiguration"))
-        XCTAssertTrue(rootHost.contains("Picker(\"画质\""))
-        XCTAssertTrue(rootHost.contains("Picker(\"字幕来源\""))
-        XCTAssertTrue(rootHost.contains("Picker(\"字幕样式\""))
-        XCTAssertFalse(rootHost.contains("高级设置\") {\n                Text(\"画质、字幕来源和模型可在“设置”中调整"))
+        XCTAssertTrue(rootHost.contains("@State private var draft: DownloadOptionsDraft"))
+        XCTAssertTrue(rootHost.contains("Picker(localizer.t(L.Download.quality)"))
+        XCTAssertTrue(rootHost.contains("Picker(localizer.t(L.Download.subtitleResult)"))
+        XCTAssertTrue(rootHost.contains("Picker(localizer.t(L.Download.outputFormat)"))
+        XCTAssertTrue(rootHost.contains("DisclosureGroup(localizer.t(L.Download.advancedOptions)"))
+        XCTAssertTrue(rootHost.contains("configuration: draft.queuedConfiguration()"))
+        XCTAssertFalse(rootHost.contains("L.SplitLayout.addSheetHint"),
+                       "新下载流程不能复用旧的当前设置提示")
 
         let body = try XCTUnwrap(functionBody(prefix: "func enqueueDeferredDrafts", in: viewModel))
         XCTAssertTrue(body.contains("startImmediately: false"))
@@ -91,7 +94,7 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(rootHost.contains("@State private var isSubmitting"))
         XCTAssertTrue(rootHost.contains("submissionResult"))
         XCTAssertTrue(rootHost.contains(".onChange(of: model.enqueueNotice)"))
-        XCTAssertTrue(rootHost.contains("正在解析链接…"))
+        XCTAssertTrue(rootHost.contains("localizer.t(L.Download.resolvingLinks)"))
         XCTAssertTrue(viewModel.contains("func enqueueDeferredDrafts(from text: String, configuration: QueuedProcessingConfiguration) -> Bool"),
                       "无效链接必须让 Sheet 当场保留并显示结果")
     }

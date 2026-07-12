@@ -208,18 +208,63 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         XCTAssertTrue(startBody.contains("hydrateCredentials()"))
     }
 
-    func testCompleteOnboardingHydratesCredentialsBeforeBuildingDraft() throws {
-        // 回归保护：completeOnboarding 发生在首次启动、任何 parse/download 之前，此时凭证尚未 hydrate。
-        // 若以启动期（readCredentials:false）的空 Token settings 为 draft 直接 save()，
-        // writeTokensToStore() 会把空值当“删除”抹掉 Keychain 既有 Token（重跑 onboarding / settings 被重置时）。
-        // 因此必须先 hydrate，且必须在取 draft 之前，draft 才能继承真实 Token。
+    func testDownloadFirstOnboardingAcknowledgementOnlyMarksCompletion() throws {
         let source = try viewModelSource()
-        let body = try XCTUnwrap(functionBody(prefix: "func completeOnboarding", in: source))
-        XCTAssertTrue(body.contains("hydrateCredentials()"), "completeOnboarding 必须先 hydrateCredentials()")
-        let hydrateIndex = try XCTUnwrap(body.range(of: "hydrateCredentials()")?.lowerBound)
-        let draftIndex = try XCTUnwrap(body.range(of: "var draft = settings")?.lowerBound)
-        XCTAssertTrue(hydrateIndex < draftIndex, "hydrateCredentials() 必须在 var draft = settings 之前")
-        XCTAssertTrue(body.contains("draft.subtitleRecognitionMode = preferLocalSpeechRecognition ? .automatic : .platformOnly"))
+        let body = try XCTUnwrap(functionBody(
+            prefix: "func acknowledgeOnboardingKeepingCurrentDefaults",
+            in: source
+        ))
+        let transition = try XCTUnwrap(functionBody(
+            prefix: "static func acknowledgingOnboarding",
+            in: source
+        ))
+
+        XCTAssertTrue(body.contains("hydrateCredentials()"))
+        XCTAssertTrue(body.contains("Self.acknowledgingOnboarding(settings)"))
+        XCTAssertTrue(transition.contains("var draft = settings"))
+        XCTAssertTrue(transition.contains("draft.onboardingCompleted = true"))
+        XCTAssertFalse(transition.contains("draft.lastSubtitleMode"))
+        XCTAssertFalse(transition.contains("draft.translation"))
+        XCTAssertFalse(transition.contains("draft.ai"))
+        XCTAssertFalse(transition.contains("draft.localASR"))
+        XCTAssertFalse(body.contains("showDependencySetup"))
+    }
+
+    func testDownloadFirstOnboardingDefaultsOnlyWriteExplicitResultFields() throws {
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(
+            prefix: "func commitOnboardingDefaultEdits",
+            in: source
+        ))
+        let transition = try XCTUnwrap(functionBody(
+            prefix: "static func applyingOnboardingDefaults",
+            in: source
+        ))
+
+        XCTAssertTrue(body.contains("hydrateCredentials()"))
+        XCTAssertTrue(body.contains("Self.applyingOnboardingDefaults("))
+        XCTAssertTrue(transition.contains("draft.lastSubtitleMode = subtitleMode.rawValue"))
+        XCTAssertTrue(transition.contains("if let translationTargetLanguage"))
+        XCTAssertTrue(transition.contains("if let useSystemTranslation"))
+        XCTAssertFalse(transition.contains("draft.aiBaseURL"))
+        XCTAssertFalse(transition.contains("draft.aiModel"))
+        XCTAssertFalse(transition.contains("draft.aiAuthToken"))
+        XCTAssertFalse(body.contains("showDependencySetup"))
+    }
+
+    func testStartupAndOnboardingCompletionDoNotAutomaticallyOpenDependencySetup() throws {
+        let source = try viewModelSource()
+        let onAppear = try XCTUnwrap(functionBody(prefix: "func onAppear", in: source))
+        let dependencyFailure = try XCTUnwrap(functionBody(prefix: "private func dependenciesReady", in: source))
+        let pendingAction = try XCTUnwrap(functionBody(prefix: "private func consumePendingDependencySetup", in: source))
+
+        XCTAssertFalse(onAppear.contains("showDependencySetup"))
+        XCTAssertFalse(source.contains("func completeOnboarding("),
+                       "已废弃的 onboarding 路径不能继续保留在产品代码里")
+        XCTAssertTrue(dependencyFailure.contains("showDependencySetup = true"),
+                      "真实下载失败仍应给出可行动的依赖修复入口")
+        XCTAssertTrue(pendingAction.contains("showDependencySetup = true"),
+                      "用户从设置显式请求后仍应打开依赖设置")
     }
 
     func testAdoptingLocalRuntimeHydratesCredentialsBeforePersistingSettings() throws {

@@ -67,7 +67,7 @@ struct ContentView: View {
                 .environmentObject(localizer)
         }
         .sheet(isPresented: $model.showOnboarding) {
-            OnboardingView(model: model)
+            DownloadFirstOnboardingView(model: model)
                 .environmentObject(localizer)
         }
         .sheet(isPresented: $model.showDependencySetup) {
@@ -1528,40 +1528,24 @@ private struct SourceLanguagePickerSheet: View {
     }
 }
 
-private enum OnboardingStep: String, CaseIterable, Identifiable {
-    case language
-    case subtitleSource
-    case translationMethod
-    case readiness
+/// The first-run path is intentionally short: a person can immediately add a
+/// link, or make only the defaults that affect the result of that link. The
+/// former multi-step component inspection remains out of this product path.
+private enum DownloadFirstOnboardingStep: String, CaseIterable, Identifiable {
+    case welcome
+    case defaults
 
     var id: String { rawValue }
-
-    @MainActor
-    func title(_ localizer: Localizer) -> String {
-        switch self {
-        case .language: return localizer.t(L.Onboarding.languageStep)
-        case .subtitleSource: return localizer.t(L.Onboarding.subtitleSourceStep)
-        case .translationMethod: return localizer.t(L.Onboarding.translationMethodStep)
-        case .readiness: return localizer.t(L.Onboarding.readinessStep)
-        }
-    }
 }
 
-private struct OnboardingView: View {
+private struct DownloadFirstOnboardingView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appLanguage: AppLanguage
     @State private var translationTargetLanguage: String
-    @State private var useLocalTranslation = true
-    @State private var selectedTranslationProvider: TranslationProvider
-    @State private var preferLocalSpeechRecognition: Bool
-    @State private var selectedStep: OnboardingStep = .language
-    // Onboarding API key fields — shown when user opts out of local translation
-    @State private var onboardingBaseURL: String
-    @State private var onboardingModel: String
-    @State private var onboardingAuthToken: String
-    @State private var showPreparationCenter = false
+    @State private var subtitleOutcome: DownloadSubtitleOutcome
+    @State private var useSystemTranslation: Bool
+    @State private var selectedStep: DownloadFirstOnboardingStep = .welcome
 
     private let targetLanguages = ["zh-Hans", "zh-Hant", "en"]
 
@@ -1569,356 +1553,111 @@ private struct OnboardingView: View {
         self.model = model
         _appLanguage = State(initialValue: AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
         _translationTargetLanguage = State(initialValue: model.settings.translationTargetLanguage)
-        _selectedTranslationProvider = State(initialValue: model.settings.aiEngine.legacyProvider ?? model.settings.translationProvider)
-        _preferLocalSpeechRecognition = State(initialValue: model.settings.localASREnabled)
-        _onboardingBaseURL = State(initialValue: model.settings.aiBaseURL)
-        _onboardingModel = State(initialValue: model.settings.aiModel)
-        _onboardingAuthToken = State(initialValue: model.settings.aiAuthToken)
+        _subtitleOutcome = State(initialValue: DownloadOptionsDraft.defaults(from: model.settings).subtitleOutcome)
+        _useSystemTranslation = State(initialValue:
+            !model.settings.onboardingCompleted || !model.settings.translationEngine.requiresCloudConfiguration
+        )
     }
 
     var body: some View {
-        // spacing 18：分步引导各区块的纵向节奏，off-grid（介于 xl=16 与 xxl=20），保留现值
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: Spacing.sm) {   // 6 → sm：标题—副标题两级行距
-                Text(localizer.t(L.Onboarding.title))
-                    .font(.title2.weight(.semibold))
-                Text(localizer.t(L.Onboarding.subtitle))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            header
 
-            onboardingStepHeader
-            onboardingStepContent
+            switch selectedStep {
+            case .welcome:
+                welcomeContent
+            case .defaults:
+                defaultsContent
+            }
 
             if let notice = model.settingsNotice {
                 Text(notice)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-
-            onboardingFooter
         }
-        .padding(24)   // sheet 内容边距，off-grid（无对应 token，介于 xxl=20 与 xxxl=32），保留现值
-        .frame(width: 520)
+        .padding(Spacing.xl)
+        .frame(width: 480)
         .onDisappear {
             localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
         }
-        .sheet(isPresented: $showPreparationCenter) {
-            PreparationCenterView(
-                model: model.preparationCenter,
-                onOpenDependencySetup: { model.showDependencySetup = true },
-                onAdoptRuntime: { _ = model.adoptExistingLocalASRRuntime() },
-                onOpenSystemSettings: {
-                    if let url = URL(string: "x-apple.systempreferences:") {
-                        NSWorkspace.shared.open(url)
-                    }
-                },
-                onManageComponent: { _, _ in
-                    // The model manager is a real Settings flow today. Close
-                    // the nested setup sheets first so its controls are not
-                    // hidden behind onboarding; no onboarding draft is saved.
-                    showPreparationCenter = false
-                    model.showOnboarding = false
-                    model.openSettings(paneID: "localSpeech")
-                }
-            )
-            .frame(minWidth: 620, minHeight: 520)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(selectedStep == .welcome
+                 ? localizer.t(L.Onboarding.downloadFirstTitle)
+                 : localizer.t(L.Onboarding.configureDownloadDefaults))
+                .font(.title2.weight(.semibold))
+            Text(selectedStep == .welcome
+                 ? localizer.t(L.Onboarding.downloadFirstSubtitle)
+                 : localizer.t(L.Onboarding.configureDownloadDefaultsSubtitle))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var onboardingStepHeader: some View {
-        // 当前步在 allCases 中的序号，用于区分「已完成 / 当前 / 待办」三态
-        let currentIndex = OnboardingStep.allCases.firstIndex(of: selectedStep) ?? 0
-        return HStack(spacing: Spacing.md) {   // 8 → md：分步指示器按钮组节奏
-            ForEach(OnboardingStep.allCases) { step in
-                onboardingStepButton(step, currentIndex: currentIndex)
+    private var welcomeContent: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Button(localizer.t(L.Onboarding.addFirstVideo)) {
+                acknowledgeOnboarding(openNewDownload: true)
             }
-        }
-    }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
 
-    // 分步指示器单个按钮：当前步用 accent 实底（.borderedProminent）+ 半粗字重双重强调；
-    // 已完成步显示对勾并保持 accent 前景；待办步用次级色，形成清晰的进度层级。
-    @ViewBuilder
-    private func onboardingStepButton(_ step: OnboardingStep, currentIndex: Int) -> some View {
-        let stepIndex = OnboardingStep.allCases.firstIndex(of: step) ?? 0
-        let isSelected = step == selectedStep
-        let isCompleted = stepIndex < currentIndex
-
-        let label = HStack(spacing: Spacing.xs) {   // 4 → xs：对勾与标题的紧凑间距
-            if isCompleted {
-                Image(systemName: "checkmark.circle.fill")
-                    .imageScale(.small)
-            }
-            Text(step.title(localizer))
-                .font(.caption.weight(isSelected ? .semibold : .regular))
-        }
-        .frame(maxWidth: .infinity)
-
-        // 当前步与其余步使用不同 buttonStyle（类型不同），用 if/else 让 ViewBuilder 正确擦除
-        if isSelected {
-            Button { selectStep(step) } label: { label }
-                .buttonStyle(.borderedProminent)
-                .tint(.accentColor)
-        } else {
-            Button { selectStep(step) } label: { label }
-                .buttonStyle(.bordered)
-                .tint(isCompleted ? .accentColor : .secondary)
-        }
-    }
-
-    // 保持原有状态机：仅赋值 selectedStep；尊重减弱动效偏好
-    private func selectStep(_ step: OnboardingStep) {
-        if reduceMotion {
-            selectedStep = step
-        } else {
-            withAnimation(.easeInOut(duration: 0.2)) { selectedStep = step }
-        }
-    }
-
-    @ViewBuilder
-    private var onboardingStepContent: some View {
-        switch selectedStep {
-        case .language:
-            languageStepContent
-        case .subtitleSource:
-            subtitleSourceStepContent
-        case .translationMethod:
-            translationMethodStepContent
-        case .readiness:
-            readinessStepContent
-        }
-    }
-
-    private var languageStepContent: some View {
-        Form {
-            Picker(localizer.t(L.Onboarding.appLanguage), selection: $appLanguage) {
-                Text(localizer.t(L.Settings.followSystem)).tag(AppLanguage.auto)
-                Text(localizer.t(L.Settings.langHans)).tag(AppLanguage.zhHans)
-                Text(localizer.t(L.Settings.langHant)).tag(AppLanguage.zhHant)
-                Text(localizer.t(L.Settings.langEn)).tag(AppLanguage.en)
-            }
-            .onChange(of: appLanguage) { _, next in
-                localizer.setLanguage(next)
-            }
-
-            Picker(localizer.t(L.Onboarding.translationTarget), selection: $translationTargetLanguage) {
-                ForEach(targetLanguages, id: \.self) { code in
-                    Text(TranslationLanguage.displayName(for: code)).tag(code)
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var subtitleSourceStepContent: some View {
-        Form {
-            LocalASROnboardingOptionView
-        }
-        .formStyle(.grouped)
-    }
-
-    @ViewBuilder
-    private var LocalASROnboardingOptionView: some View {
-        onboardingComponentRow(
-            icon: "wrench.and.screwdriver",
-            title: localizer.t(L.Onboarding.requiredComponentsTitle),
-            detail: localizer.t(L.Onboarding.requiredComponentsDetail),
-            status: localizer.t(L.Onboarding.statusReadyToCheck),
-            tint: .secondary
-        )
-        onboardingComponentRow(
-            icon: "captions.bubble",
-            title: localizer.t(L.Onboarding.recommendedComponentsTitle),
-            detail: localizer.t(L.Onboarding.recommendedComponentsDetail),
-            status: model.localASRReadyForDownload
-                ? localizer.t(L.Onboarding.statusReady)
-                : localizer.t(L.Onboarding.statusRecommended),
-            tint: model.localASRReadyForDownload ? .green : .orange
-        )
-
-        Toggle(isOn: $preferLocalSpeechRecognition) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(localizer.t(L.Onboarding.preferLocalSpeechRecognition))
-                Text(localizer.t(L.Onboarding.localSpeechSetupLater))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-
-        HStack {
-            Button {
-                showPreparationCenter = true
-            } label: {
-                Label(localizer.t(L.Onboarding.configureLocalSpeechOptional), systemImage: "waveform")
+            Button(localizer.t(L.Onboarding.configureDownloadDefaults)) {
+                selectedStep = .defaults
             }
             .buttonStyle(.bordered)
-            Spacer()
-            Text(localizer.t(L.Onboarding.localSpeechOptionalDependencyHint))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+
+            Button(localizer.t(L.Onboarding.setDefaultsLater)) {
+                acknowledgeOnboarding(openNewDownload: false)
+            }
+            .buttonStyle(.link)
         }
     }
 
-    private func onboardingComponentRow(
-        icon: String,
-        title: String,
-        detail: String,
-        status: String,
-        tint: Color
-    ) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.callout.weight(.medium))
-                    Text(status)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(tint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(tint.opacity(0.12)))
+    private var defaultsContent: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Form {
+                Picker(localizer.t(L.Onboarding.appLanguage), selection: $appLanguage) {
+                    Text(localizer.t(L.Settings.followSystem)).tag(AppLanguage.auto)
+                    Text(localizer.t(L.Settings.langHans)).tag(AppLanguage.zhHans)
+                    Text(localizer.t(L.Settings.langHant)).tag(AppLanguage.zhHant)
+                    Text(localizer.t(L.Settings.langEn)).tag(AppLanguage.en)
                 }
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: icon)
-        }
-    }
-
-    private var translationMethodStepContent: some View {
-        Form {
-            Toggle(localizer.t(L.Onboarding.useLocalTranslation), isOn: $useLocalTranslation)
-            Text(localizer.t(L.Onboarding.localTranslationHint))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Picker(localizer.t(L.Onboarding.translationProvider), selection: $selectedTranslationProvider) {
-                ForEach(TranslationProvider.allCases, id: \.self) { provider in
-                    Text(translationProviderLabel(provider)).tag(provider)
+                .onChange(of: appLanguage) { _, next in
+                    localizer.setLanguage(next)
                 }
-            }
-            .disabled(useLocalTranslation)
-            .onChange(of: selectedTranslationProvider) { _, provider in
-                let trimmed = onboardingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                let defaults = Set(TranslationProvider.allCases.map(\.defaultBaseURL))
-                if trimmed.isEmpty || defaults.contains(trimmed) {
-                    onboardingBaseURL = provider.defaultBaseURL
-                }
-                onboardingModel = ""
-            }
-            Text(localizer.t(L.Onboarding.aiOptional))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
-            if !useLocalTranslation {
-                Divider()
-                APIConfigEditor(
-                    baseURL: $onboardingBaseURL,
-                    model: $onboardingModel,
-                    authToken: $onboardingAuthToken,
-                    settingsForRequest: { onboardingSettingsForRequest() },
-                    baseURLPrompt: selectedTranslationProvider.defaultBaseURL,
-                    modelPrompt: localizer.t(L.Settings.modelPromptEmpty)
-                )
-                Text(localizer.t(L.Settings.credentialSummary))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var readinessStepContent: some View {
-        VStack(alignment: .leading, spacing: Spacing.rowGutter) {   // 10 → rowGutter：就绪清单行距
-            Text(localizer.t(L.Onboarding.readinessSummary))
-                .font(.headline)
-            readinessRow(localizer.t(L.Onboarding.appLanguage), appLanguageLabel(appLanguage))
-            readinessRow(
-                localizer.t(L.Onboarding.translationTarget),
-                TranslationLanguage.displayName(for: translationTargetLanguage)
-            )
-            readinessRow(
-                localizer.t(L.Onboarding.translationMethodStep),
-                useLocalTranslation
-                    ? localizer.t(L.Onboarding.localTranslationSummary)
-                    : translationProviderLabel(selectedTranslationProvider)
-            )
-            readinessRow(
-                localizer.t(L.Onboarding.subtitleSourceStep),
-                onboardingSubtitleSourceSummary
-            )
-        }
-        .padding(Spacing.lg)   // 12 → lg：就绪清单内边距
-    }
-
-    private var onboardingSubtitleSourceSummary: String {
-        guard preferLocalSpeechRecognition else {
-            return localizer.t(L.Onboarding.platformSubtitleSummary)
-        }
-        return model.localASRReadyForDownload
-            ? localizer.t(L.Onboarding.localSpeechSummary)
-            : localizer.t(L.Settings.localASROptionalNotConfigured)
-    }
-
-    private func readinessRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.md) {   // 8 → md：标签—值行内节奏
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .multilineTextAlignment(.trailing)
-        }
-        .font(.callout)
-    }
-
-    private func appLanguageLabel(_ language: AppLanguage) -> String {
-        switch language {
-        case .auto: return localizer.t(L.Settings.followSystem)
-        case .zhHans: return localizer.t(L.Settings.langHans)
-        case .zhHant: return localizer.t(L.Settings.langHant)
-        case .en: return localizer.t(L.Settings.langEn)
-        }
-    }
-
-    private func translationProviderLabel(_ provider: TranslationProvider) -> String {
-        TranslationEngine.compatible(with: provider).displayName
-    }
-
-    private var onboardingFooter: some View {
-        HStack {
-            if selectedStep != .language {
-                Button(localizer.t(L.Onboarding.back)) {
-                    moveStep(by: -1)
-                }
-                .buttonStyle(.bordered)
-            }
-            Spacer()
-            if selectedStep == .readiness {
-                Button(localizer.t(L.Onboarding.start)) {
-                    if model.completeOnboarding(
-                        appLanguage: appLanguage,
-                        translationTargetLanguage: translationTargetLanguage,
-                        useLocalTranslation: useLocalTranslation,
-                        translationProvider: selectedTranslationProvider,
-                        preferLocalSpeechRecognition: preferLocalSpeechRecognition,
-                        apiBaseURL: useLocalTranslation ? selectedTranslationProvider.defaultBaseURL : onboardingBaseURL.trimmingCharacters(in: .whitespaces),
-                        apiModel: useLocalTranslation ? "" : onboardingModel.trimmingCharacters(in: .whitespaces),
-                        apiAuthToken: useLocalTranslation ? "" : onboardingAuthToken.trimmingCharacters(in: .whitespaces)
-                    ) {
-                        localizer.setLanguage(appLanguage)
+                Picker(localizer.t(L.Onboarding.defaultSubtitleResult), selection: $subtitleOutcome) {
+                    ForEach(DownloadSubtitleOutcome.allCases) { outcome in
+                        Text(localizer.t(outcome.localizationKey)).tag(outcome)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-            } else {
-                Button(localizer.t(L.Onboarding.next)) {
-                    moveStep(by: 1)
+
+                if needsTranslationDefaults {
+                    Picker(localizer.t(L.Onboarding.translateTo), selection: $translationTargetLanguage) {
+                        ForEach(targetLanguages, id: \.self) { code in
+                            Text(targetLanguageTitle(for: code)).tag(code)
+                        }
+                    }
+
+                    Toggle(localizer.t(L.Onboarding.useSystemTranslation), isOn: $useSystemTranslation)
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Button(localizer.t(L.Onboarding.back)) {
+                    selectedStep = .welcome
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button(localizer.t(L.Common.done)) {
+                    commitDefaults()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -1926,29 +1665,54 @@ private struct OnboardingView: View {
         }
     }
 
-    private func moveStep(by offset: Int) {
-        let steps = OnboardingStep.allCases
-        guard let index = steps.firstIndex(of: selectedStep) else { return }
-        let nextIndex = min(max(index + offset, 0), steps.count - 1)
-        selectStep(steps[nextIndex])
+    private var needsTranslationDefaults: Bool {
+        subtitleOutcome == .translatedFile || subtitleOutcome == .embeddedTranslation
     }
 
-    private func onboardingSettingsForRequest() -> AppSettings {
-        let engine = TranslationEngine.compatible(with: selectedTranslationProvider)
-        let baseURL = onboardingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let config = LLMEndpointConfig(
-            engine: engine,
-            baseURL: baseURL.isEmpty ? selectedTranslationProvider.defaultBaseURL : baseURL,
-            model: onboardingModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            authToken: onboardingAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-        var draft = model.settings
-        draft.translationProvider = selectedTranslationProvider
-        draft.aiEngine = engine
-        draft.aiBaseURL = config.baseURL
-        draft.aiModel = config.model
-        draft.aiAuthToken = config.authToken
-        draft.translationFollowsDefault = true
-        return draft.applyingTranslationConfig(config)
+    private func targetLanguageTitle(for code: String) -> String {
+        switch code {
+        case "zh-Hans": localizer.t(L.Download.languageChineseSimplified)
+        case "zh-Hant": localizer.t(L.Download.languageChineseTraditional)
+        case "en": localizer.t(L.Download.languageEnglish)
+        default: TranslationLanguage.displayName(for: code)
+        }
+    }
+
+    private func acknowledgeOnboarding(openNewDownload: Bool) {
+        guard model.acknowledgeOnboardingKeepingCurrentDefaults() else {
+            return
+        }
+
+        guard openNewDownload else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: AppWorkspaceCommand.newDownloadRequested,
+                object: nil
+            )
+        }
+    }
+
+    private func commitDefaults() {
+        let translationTarget = needsTranslationDefaults ? translationTargetLanguage : nil
+        let systemTranslation = needsTranslationDefaults ? useSystemTranslation : nil
+        guard model.commitOnboardingDefaultEdits(
+            appLanguage: appLanguage,
+            subtitleMode: subtitleMode(for: subtitleOutcome),
+            translationTargetLanguage: translationTarget,
+            useSystemTranslation: systemTranslation
+        ) else {
+            return
+        }
+
+        localizer.setLanguage(appLanguage)
+    }
+
+    private func subtitleMode(for outcome: DownloadSubtitleOutcome) -> ChineseSubtitleMode {
+        switch outcome {
+        case .none: .off
+        case .original: .burnOriginal
+        case .translatedFile: .srtOnly
+        case .embeddedTranslation: .burnIn
+        }
     }
 }

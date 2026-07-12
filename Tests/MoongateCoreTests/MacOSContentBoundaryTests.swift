@@ -1,107 +1,57 @@
 import XCTest
 
 final class MacOSContentBoundaryTests: XCTestCase {
-    func testFirstRunOnboardingLetsUsersChooseLanguagesWithOptionalApiSetup() throws {
+    func testFirstRunOnboardingLeadsWithTheFirstDownloadAndKeepsDefaultsOptional() throws {
         let content = try contentViewSource()
+        let onboarding = try downloadFirstOnboardingSource()
         let viewModel = try viewModelSource()
 
         XCTAssertTrue(content.contains("@EnvironmentObject private var localizer: Localizer"))
         XCTAssertTrue(content.contains(".sheet(isPresented: $model.showOnboarding)"))
-        XCTAssertTrue(content.contains("OnboardingView(model: model)"))
-        XCTAssertTrue(content.contains("Picker(localizer.t(L.Onboarding.appLanguage)"))
-        XCTAssertTrue(content.contains("Picker(localizer.t(L.Onboarding.translationTarget)"))
-        XCTAssertTrue(content.contains("Toggle(localizer.t(L.Onboarding.useLocalTranslation)"))
-        XCTAssertTrue(content.contains("Picker(localizer.t(L.Onboarding.translationProvider)"))
-        XCTAssertTrue(content.contains("ForEach(TranslationProvider.allCases"))
-        XCTAssertTrue(content.contains("model.completeOnboarding("))
-        // 任务 3：选了 AI 翻译（非本地）时，onboarding 直接给出 API 凭证输入（可选填）。
-        XCTAssertTrue(content.contains("if !useLocalTranslation"))
-        XCTAssertTrue(content.contains("$onboardingBaseURL"))
-        XCTAssertTrue(content.contains("$onboardingModel"))
-        XCTAssertTrue(content.contains("$onboardingAuthToken"))
-        XCTAssertTrue(content.contains("APIConfigEditor("))
-        XCTAssertTrue(content.contains("settingsForRequest: { onboardingSettingsForRequest() }"))
-        XCTAssertTrue(content.contains("apiBaseURL:"))
-        XCTAssertTrue(content.contains("apiModel:"))
-        XCTAssertTrue(content.contains("apiAuthToken:"))
+        XCTAssertTrue(content.contains("DownloadFirstOnboardingView(model: model)"))
+        XCTAssertTrue(onboarding.contains("Button(localizer.t(L.Onboarding.addFirstVideo))"))
+        XCTAssertTrue(onboarding.contains("Button(localizer.t(L.Onboarding.configureDownloadDefaults))"))
+        XCTAssertTrue(onboarding.contains("Button(localizer.t(L.Onboarding.setDefaultsLater))"))
+        XCTAssertTrue(onboarding.contains("Picker(localizer.t(L.Onboarding.defaultSubtitleResult)"))
+        XCTAssertTrue(onboarding.contains("if needsTranslationDefaults"))
+        XCTAssertTrue(onboarding.contains("model.acknowledgeOnboardingKeepingCurrentDefaults()"))
+        XCTAssertTrue(onboarding.contains("model.commitOnboardingDefaultEdits("))
+        XCTAssertTrue(onboarding.contains("AppWorkspaceCommand.newDownloadRequested"))
+        XCTAssertFalse(onboarding.contains("APIConfigEditor("))
+        XCTAssertFalse(onboarding.contains("onboardingAuthToken"))
+        XCTAssertFalse(onboarding.contains("PreparationCenterView"))
 
         XCTAssertTrue(viewModel.contains("@Published var showOnboarding = false"))
         XCTAssertTrue(viewModel.contains("showOnboardingIfNeeded()"))
-        XCTAssertTrue(viewModel.contains("func completeOnboarding("))
-        XCTAssertTrue(viewModel.contains("var draft = settings"))
+        XCTAssertTrue(viewModel.contains("func acknowledgeOnboardingKeepingCurrentDefaults()"))
+        XCTAssertTrue(viewModel.contains("func commitOnboardingDefaultEdits("))
+        XCTAssertTrue(viewModel.contains("static func acknowledgingOnboarding"))
+        XCTAssertTrue(viewModel.contains("static func applyingOnboardingDefaults"))
         XCTAssertTrue(viewModel.contains("draft.appLanguage = appLanguage.rawValue"))
-        XCTAssertTrue(viewModel.contains("draft.translationTargetLanguage = translationTargetLanguage"))
+        XCTAssertTrue(viewModel.contains("draft.lastSubtitleMode = subtitleMode.rawValue"))
         XCTAssertTrue(viewModel.contains("draft.onboardingCompleted = true"))
-        XCTAssertTrue(viewModel.contains("useLocalTranslation: Bool"))
-        XCTAssertTrue(viewModel.contains("translationProvider: TranslationProvider"))
-        XCTAssertTrue(viewModel.contains("if useLocalTranslation"))
-        XCTAssertTrue(viewModel.contains("draft.translationEngine = .appleTranslationLowLatency"))
-        XCTAssertTrue(viewModel.contains("let engine = TranslationEngine.compatible(with: translationProvider)"))
-        XCTAssertTrue(viewModel.contains("draft.aiEngine = engine"))
-        XCTAssertTrue(viewModel.contains("draft.translationEngine = engine"))
-        XCTAssertTrue(viewModel.contains("draft.aiBaseURL = translationProvider.defaultBaseURL"))
-        XCTAssertTrue(viewModel.contains("draft.translationBaseURL = translationProvider.defaultBaseURL"))
-        XCTAssertTrue(viewModel.contains("draft.translationFollowsDefault = true"))
-        // 凭证可选填：填了才覆盖默认 base URL / token。
-        XCTAssertTrue(viewModel.contains("draft.aiAuthToken = apiAuthToken"))
-        XCTAssertTrue(viewModel.contains("let normalizedModel = apiModel.trimmingCharacters"))
-        XCTAssertTrue(viewModel.contains("draft.aiModel = normalizedModel"))
-        XCTAssertTrue(viewModel.contains("draft.translationModel = normalizedModel"))
         XCTAssertTrue(viewModel.contains("try draft.save()"))
         XCTAssertTrue(viewModel.contains("settings = draft"))
-        XCTAssertTrue(viewModel.contains("showDependencySetupIfNeededOnStartup()"))
+        XCTAssertFalse(viewModel.contains("showDependencySetupIfNeededOnStartup()"),
+                       "首启或 onboarding 完成不应自动弹出依赖安装")
+        XCTAssertFalse(viewModel.contains("func completeOnboarding("),
+                       "旧的多步骤 onboarding 提交路径必须移除，避免重新暴露技术配置")
     }
 
-    func testFirstRunOnboardingIsStagedAndKeepsLocalASRConsentDownloadFree() throws {
-        let content = try contentViewSource()
-        let viewModel = try viewModelSource()
+    func testFirstRunOnboardingHasOnlyTwoUserFacingSteps() throws {
+        let onboarding = try downloadFirstOnboardingSource()
 
-        XCTAssertTrue(content.contains("enum OnboardingStep: String, CaseIterable, Identifiable"))
-        XCTAssertTrue(content.contains("case language"))
-        XCTAssertTrue(content.contains("case subtitleSource"))
-        XCTAssertTrue(content.contains("case translationMethod"))
-        XCTAssertTrue(content.contains("case readiness"))
-        XCTAssertTrue(content.contains("@State private var selectedStep: OnboardingStep = .language"))
-        XCTAssertTrue(content.contains("onboardingStepContent"))
-        XCTAssertTrue(content.contains("onboardingFooter"))
-        XCTAssertTrue(content.contains("Button(localizer.t(L.Onboarding.next))"))
-        XCTAssertTrue(content.contains("Button(localizer.t(L.Onboarding.back))"))
-        XCTAssertTrue(content.contains("preferLocalSpeechRecognition"))
-        XCTAssertTrue(content.contains("$preferLocalSpeechRecognition"))
-        XCTAssertTrue(content.contains("LocalASROnboardingOptionView"))
-        XCTAssertTrue(content.contains("onboardingComponentRow("))
-        XCTAssertTrue(content.contains("icon: \"wrench.and.screwdriver\""))
-        XCTAssertTrue(content.contains("icon: \"captions.bubble\""))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.requiredComponentsTitle)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.recommendedComponentsTitle)"))
-        XCTAssertFalse(content.contains("localizer.t(L.Onboarding.optionalComponentsTitle)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.statusReadyToCheck)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.statusReady)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.statusRecommended)"))
-        XCTAssertFalse(content.contains("localizer.t(L.Onboarding.statusLater)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.localSpeechSetupLater)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.configureLocalSpeechOptional)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.localSpeechOptionalDependencyHint)"))
-        XCTAssertTrue(content.contains("model.openSettings(paneID: \"localSpeech\")"))
-        XCTAssertTrue(content.contains("showPreparationCenter = false"))
-        XCTAssertTrue(content.contains("model.showOnboarding = false"))
-        XCTAssertTrue(content.contains("onboardingSubtitleSourceSummary"))
-        XCTAssertTrue(content.contains("localizer.t(L.Settings.localASROptionalNotConfigured)"))
-        XCTAssertTrue(content.contains("selectedTranslationProvider"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.translationProvider)"))
-        XCTAssertTrue(content.contains("translationProviderLabel(selectedTranslationProvider)"))
-        XCTAssertTrue(content.contains("localizer.t(L.Onboarding.readinessSummary)"))
-        XCTAssertTrue(content.contains("useLocalTranslation: useLocalTranslation"))
-        XCTAssertTrue(content.contains("translationProvider: selectedTranslationProvider"))
-        XCTAssertTrue(content.contains("preferLocalSpeechRecognition: preferLocalSpeechRecognition"))
-
-        XCTAssertFalse(content.localizedCaseInsensitiveContains("downloadModel"))
-        XCTAssertFalse(content.localizedCaseInsensitiveContains("modelDownload"))
-        XCTAssertFalse(content.contains("localASRModelPath"))
-        XCTAssertFalse(content.contains("localASRRuntimePath"))
-
-        XCTAssertTrue(viewModel.contains("preferLocalSpeechRecognition: Bool"))
-        XCTAssertTrue(viewModel.contains("draft.localASREnabled = preferLocalSpeechRecognition"))
+        XCTAssertTrue(onboarding.contains("case welcome"))
+        XCTAssertTrue(onboarding.contains("case defaults"))
+        XCTAssertFalse(onboarding.contains("case readiness"))
+        XCTAssertFalse(onboarding.contains("case subtitleSource"))
+        XCTAssertFalse(onboarding.contains("case translationMethod"))
+        XCTAssertFalse(onboarding.contains("showPreparationCenter"))
+        XCTAssertFalse(onboarding.contains("PreparationCenterView"))
+        XCTAssertFalse(onboarding.contains("localASRRuntimePath"))
+        XCTAssertFalse(onboarding.contains("localASRModelPath"))
+        XCTAssertFalse(onboarding.localizedCaseInsensitiveContains("whisper"))
+        XCTAssertFalse(onboarding.localizedCaseInsensitiveContains("runtime"))
     }
 
     func testPrimaryMainWindowFlowUsesLocalizer() throws {
@@ -566,6 +516,14 @@ final class MacOSContentBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("ContentView.swift"))
+    }
+
+    private func downloadFirstOnboardingSource() throws -> String {
+        let source = try contentViewSource()
+        guard let start = source.range(of: "private enum DownloadFirstOnboardingStep") else {
+            throw XCTSkip("download-first onboarding has not been added")
+        }
+        return String(source[start.lowerBound...])
     }
 
     private func viewModelSource() throws -> String {

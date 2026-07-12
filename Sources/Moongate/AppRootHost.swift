@@ -20,15 +20,15 @@ struct RootNewDownloadSheet: View {
     @EnvironmentObject private var localizer: Localizer
     @Environment(\.dismiss) private var dismiss
     @State private var urlText = ""
-    @State private var configuration: QueuedProcessingConfiguration
-    @State private var processingOptionsExpanded = false
+    @State private var draft: DownloadOptionsDraft
+    @State private var advancedOptionsExpanded = false
     @State private var isSubmitting = false
     @State private var submissionResult: String?
     @FocusState private var urlFieldFocused: Bool
 
     init(model: ViewModel) {
         self.model = model
-        self._configuration = State(initialValue: .defaults(from: model.settings))
+        self._draft = State(initialValue: .defaults(from: model.settings))
     }
 
     var body: some View {
@@ -37,7 +37,7 @@ struct RootNewDownloadSheet: View {
                 .font(.headline)
 
             TextField(
-                localizer.t(L.SplitLayout.addSheetPlaceholder),
+                localizer.t(L.Download.linkPlaceholder),
                 text: $urlText,
                 axis: .vertical
             )
@@ -46,67 +46,70 @@ struct RootNewDownloadSheet: View {
             .focused($urlFieldFocused)
             .accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))
 
-            Text(localizer.t(L.SplitLayout.addSheetHint))
+            Text(localizer.t(L.Download.multipleLinksHint))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text(configurationSummary)
+            Text(localizer.t(L.Download.defaultSummary, configurationSummary))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .accessibilityLabel("当前处理设置：\(configurationSummary)")
+                .accessibilityLabel(localizer.t(L.Download.defaultSummary, configurationSummary))
 
-            DisclosureGroup("处理选项", isExpanded: $processingOptionsExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("画质", selection: $configuration.quality) {
-                        Text("最佳可用").tag("best")
-                        Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
-                        Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
-                    }
+            Picker(localizer.t(L.Download.quality), selection: $draft.quality) {
+                Text(localizer.t(L.Download.qualityBestAvailable)).tag("best")
+                Text(localizer.t(L.Download.quality1080p)).tag("bv*[height<=1080]+ba/b[height<=1080]")
+                Text(localizer.t(L.Download.quality720p)).tag("bv*[height<=720]+ba/b[height<=720]")
+            }
 
-                    Picker("输出格式", selection: outputFormatBinding) {
-                        Text("保持源格式").tag(OutputFormat.original.rawValue)
-                        Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
-                        Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
-                        Text("MKV").tag(OutputFormat.mkv.rawValue)
-                    }
+            Picker(localizer.t(L.Download.subtitleResult), selection: $draft.subtitleOutcome) {
+                ForEach(DownloadSubtitleOutcome.allCases) { outcome in
+                    Text(localizer.t(outcome.localizationKey)).tag(outcome)
+                }
+            }
 
-                    Picker("字幕处理", selection: subtitleModeBinding) {
-                        Text("不处理字幕").tag(ChineseSubtitleMode.off.rawValue)
-                        Text("生成译文 SRT").tag(ChineseSubtitleMode.srtOnly.rawValue)
-                        Text("压制译文字幕").tag(ChineseSubtitleMode.burnIn.rawValue)
-                        Text("压制原字幕").tag(ChineseSubtitleMode.burnOriginal.rawValue)
-                    }
+            Picker(localizer.t(L.Download.outputFormat), selection: outputFormatBinding) {
+                Text(localizer.t(L.Download.outputOriginal)).tag(OutputFormat.original.rawValue)
+                Text(localizer.t(L.Download.outputMP4H264)).tag(OutputFormat.mp4H264.rawValue)
+                Text(localizer.t(L.Download.outputMP4H265)).tag(OutputFormat.mp4H265.rawValue)
+                Text(localizer.t(L.Download.outputMKV)).tag(OutputFormat.mkv.rawValue)
+            }
 
-                    Picker("字幕来源", selection: subtitleSourcePolicyBinding) {
-                        Text("自动选择最佳来源").tag(SubtitleSourcePolicy.autoBest.rawValue)
-                        Text("优先平台字幕").tag(SubtitleSourcePolicy.preferPlatform.rawValue)
-                        Text("仅平台字幕").tag(SubtitleSourcePolicy.forcePlatform.rawValue)
-                        Text("本地识别（Whisper）").tag(SubtitleSourcePolicy.forceLocalASR.rawValue)
-                        Text("云端识别").tag(SubtitleSourcePolicy.cloudASR.rawValue)
-                    }
+            if draft.showsTranslationOptions {
+                Picker(localizer.t(L.Download.targetLanguage), selection: $draft.targetLanguage) {
+                    Text(localizer.t(L.Download.languageChineseSimplified)).tag("zh-Hans")
+                    Text(localizer.t(L.Download.languageChineseTraditional)).tag("zh-Hant")
+                    Text(localizer.t(L.Download.languageEnglish)).tag("en")
+                }
 
-                    if configuration.subtitleMode != .off {
-                        Picker("目标语言", selection: $configuration.targetLanguage) {
-                            Text("简体中文").tag("zh-Hans")
-                            Text("繁體中文").tag("zh-Hant")
-                            Text("English").tag("en")
-                        }
-
-                        Picker("字幕样式", selection: subtitleStyleBinding) {
-                            Text("双语").tag(SubtitleStyle.bilingual.rawValue)
-                            Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
-                        }
-
-                        TranscriptionModelPicker(selection: transcriptionModelBinding)
-                        TextField("翻译模型（可选）", text: optionalTextBinding(\.translationModel))
+                if draft.subtitleOutcome == .embeddedTranslation {
+                    Picker(localizer.t(L.Download.subtitleStyle), selection: subtitleStyleBinding) {
+                        Text(localizer.t(L.Download.subtitleStyleBilingual)).tag(SubtitleStyle.bilingual.rawValue)
+                        Text(localizer.t(L.Download.subtitleStyleTranslationOnly)).tag(SubtitleStyle.chineseOnly.rawValue)
                     }
                 }
-                .padding(.top, 8)
-            }
-            .font(.callout)
 
-            Text("确认后会加入待开始队列。你可以在资料库中逐项修改，再开始处理。")
+                DisclosureGroup(localizer.t(L.Download.advancedOptions), isExpanded: $advancedOptionsExpanded) {
+                    Toggle(localizer.t(L.Download.customizeRecognition), isOn: $draft.usesCustomRecognition)
+
+                    if draft.usesCustomRecognition {
+                        Picker(localizer.t(L.Download.recognitionMethod), selection: $draft.recognitionChoice) {
+                            ForEach(DownloadRecognitionChoice.allCases) { choice in
+                                Text(localizer.t(choice.localizationKey)).tag(choice)
+                            }
+                        }
+
+                        if draft.recognitionChoice == .local {
+                            TranscriptionModelPicker(selection: transcriptionModelBinding)
+                        }
+                    }
+
+                    TextField(localizer.t(L.Download.translationModelAdvanced), text: optionalTextBinding(\.translationModel))
+                }
+                .font(.callout)
+            }
+
+            Text(localizer.t(L.Download.deferredQueueHint))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -114,12 +117,12 @@ struct RootNewDownloadSheet: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text(model.batchStatusText ?? "正在解析链接…")
+                    Text(model.batchStatusText ?? localizer.t(L.Download.resolvingLinks))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(model.batchStatusText ?? "正在解析链接")
+                .accessibilityLabel(model.batchStatusText ?? localizer.t(L.Download.resolvingLinks))
             }
 
             if let submissionResult {
@@ -139,15 +142,15 @@ struct RootNewDownloadSheet: View {
                 .keyboardShortcut(.cancelAction)
 
                 if submissionResult != nil {
-                    Button("完成") { dismiss() }
+                    Button(localizer.t(L.Common.done)) { dismiss() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("加入待开始队列") {
-                        if model.enqueueDeferredDrafts(from: urlText, configuration: configuration) {
+                    Button(localizer.t(L.Download.addToDeferredQueue)) {
+                        if model.enqueueDeferredDrafts(from: urlText, configuration: draft.queuedConfiguration()) {
                             isSubmitting = true
                         } else {
-                            submissionResult = model.enqueueNotice ?? "没有找到可用链接。"
+                            submissionResult = model.enqueueNotice ?? localizer.t(L.Download.noUsableLinks)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -176,73 +179,54 @@ struct RootNewDownloadSheet: View {
 
     private var outputFormatBinding: Binding<String> {
         Binding(
-            get: { configuration.outputFormat.rawValue },
-            set: { configuration.outputFormat = OutputFormat(rawValue: $0) ?? .original }
-        )
-    }
-
-    private var subtitleModeBinding: Binding<String> {
-        Binding(
-            get: { configuration.subtitleMode.rawValue },
-            set: { configuration.subtitleMode = ChineseSubtitleMode(rawValue: $0) ?? .off }
-        )
-    }
-
-    private var subtitleSourcePolicyBinding: Binding<String> {
-        Binding(
-            get: { configuration.subtitleSourcePolicy.rawValue },
-            set: { configuration.subtitleSourcePolicy = SubtitleSourcePolicy(rawValue: $0) ?? .autoBest }
+            get: { draft.outputFormat.rawValue },
+            set: { draft.outputFormat = OutputFormat(rawValue: $0) ?? .original }
         )
     }
 
     private var subtitleStyleBinding: Binding<String> {
         Binding(
-            get: { configuration.subtitleStyle.rawValue },
-            set: { configuration.subtitleStyle = SubtitleStyle(rawValue: $0) ?? .bilingual }
+            get: { draft.subtitleStyle.rawValue },
+            set: { draft.subtitleStyle = SubtitleStyle(rawValue: $0) ?? .bilingual }
         )
     }
 
     private var transcriptionModelBinding: Binding<String> {
         Binding(
-            get: { configuration.transcriptionModel ?? "" },
+            get: { draft.localModelID ?? "" },
             set: { value in
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                configuration.transcriptionModel = trimmed.isEmpty ? nil : trimmed
+                draft.localModelID = trimmed.isEmpty ? nil : trimmed
             }
         )
     }
 
     private var configurationSummary: String {
         let quality: String
-        switch configuration.quality {
-        case "best": quality = "最佳画质"
-        case "bv*[height<=1080]+ba/b[height<=1080]": quality = "1080p"
-        case "bv*[height<=720]+ba/b[height<=720]": quality = "720p"
-        default: quality = "自定义画质"
+        switch draft.quality {
+        case "best": quality = localizer.t(L.Download.qualityBestAvailable)
+        case "bv*[height<=1080]+ba/b[height<=1080]": quality = localizer.t(L.Download.quality1080p)
+        case "bv*[height<=720]+ba/b[height<=720]": quality = localizer.t(L.Download.quality720p)
+        default: quality = localizer.t(L.Download.qualityCustom)
         }
-        let format = switch configuration.outputFormat {
-        case .original: "保持源格式"
-        case .mp4H264: "MP4 · H.264"
-        case .mp4H265: "MP4 · H.265"
-        case .mkv: "MKV"
+        let format = switch draft.outputFormat {
+        case .original: localizer.t(L.Download.outputOriginal)
+        case .mp4H264: localizer.t(L.Download.outputMP4H264)
+        case .mp4H265: localizer.t(L.Download.outputMP4H265)
+        case .mkv: localizer.t(L.Download.outputMKV)
         }
-        let subtitles = switch configuration.subtitleMode {
-        case .off: "不处理字幕"
-        case .srtOnly: "生成译文 SRT"
-        case .burnIn: "压制译文字幕"
-        case .burnOriginal: "压制原字幕"
-        }
+        let subtitles = localizer.t(draft.subtitleOutcome.localizationKey)
         return [quality, format, subtitles].joined(separator: " · ")
     }
 
     private func optionalTextBinding(
-        _ keyPath: WritableKeyPath<QueuedProcessingConfiguration, String?>
+        _ keyPath: WritableKeyPath<DownloadOptionsDraft, String?>
     ) -> Binding<String> {
         Binding(
-            get: { configuration[keyPath: keyPath] ?? "" },
+            get: { draft[keyPath: keyPath] ?? "" },
             set: { value in
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                configuration[keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
+                draft[keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
             }
         )
     }

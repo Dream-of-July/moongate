@@ -45,6 +45,50 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.format(L.Main.saveToVideoFolder, language: .en, ["Demo"]), "Save to Downloads/Moongate/Demo and keep adding links")
     }
 
+    func testDownloadFirstOnboardingAndNewDownloadStringsAreLocalizedInEverySupportedLanguage() {
+        let keys = [
+            L.Onboarding.downloadFirstTitle,
+            L.Onboarding.downloadFirstSubtitle,
+            L.Onboarding.configureDownloadDefaults,
+            L.Onboarding.configureDownloadDefaultsSubtitle,
+            L.Onboarding.addFirstVideo,
+            L.Onboarding.setDefaultsLater,
+            L.Onboarding.defaultSubtitleResult,
+            L.Onboarding.translateTo,
+            L.Onboarding.useSystemTranslation,
+            L.Download.linkPlaceholder,
+            L.Download.multipleLinksHint,
+            L.Download.defaultSummary,
+            L.Download.quality,
+            L.Download.subtitleResult,
+            L.Download.outputFormat,
+            L.Download.advancedOptions,
+            L.Download.transcriptionModel,
+            L.Download.useDefaultTranscriptionModel,
+            L.Download.customTranscriptionModel,
+            L.Download.transcriptionModelReadinessHint,
+            L.Download.deferredQueueHint,
+            L.Download.resolvingLinks,
+            L.Download.noUsableLinks,
+            L.Download.addToDeferredQueue,
+        ]
+
+        for language in ResolvedLanguage.allCases {
+            for key in keys {
+                XCTAssertNotEqual(
+                    LocalizedStrings.string(key, language: language),
+                    key,
+                    "\(key) must be translated for \(language.rawValue)"
+                )
+            }
+        }
+
+        XCTAssertEqual(
+            LocalizedStrings.format(L.Download.defaultSummary, language: .zhHans, ["最佳可用 · MP4 · H.264"]),
+            "默认将使用：最佳可用 · MP4 · H.264"
+        )
+    }
+
     func testReadyPageFormatAndSubtitleStringsAreLocalized() {
         XCTAssertEqual(LocalizedStrings.string(L.Ready.formatSection, language: .en), "Format")
         XCTAssertEqual(LocalizedStrings.string(L.Ready.outputOptionsSection, language: .zhHans), "输出选项")

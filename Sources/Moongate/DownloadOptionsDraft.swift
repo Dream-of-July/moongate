@@ -11,12 +11,12 @@ enum DownloadSubtitleOutcome: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var localizationKey: String {
         switch self {
-        case .none: "不处理"
-        case .original: "保留原字幕"
-        case .translatedFile: "翻译字幕"
-        case .embeddedTranslation: "嵌入字幕"
+        case .none: L.Download.subtitleResultNone
+        case .original: L.Download.subtitleResultOriginal
+        case .translatedFile: L.Download.subtitleResultTranslated
+        case .embeddedTranslation: L.Download.subtitleResultEmbedded
         }
     }
 }
@@ -30,11 +30,11 @@ enum DownloadRecognitionChoice: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var localizationKey: String {
         switch self {
-        case .automatic: "自动选择"
-        case .local: "本机识别"
-        case .cloud: "云端识别"
+        case .automatic: L.Download.recognitionAutomatic
+        case .local: L.Download.recognitionLocal
+        case .cloud: L.Download.recognitionCloud
         }
     }
 }
@@ -46,26 +46,31 @@ struct DownloadOptionsDraft: Equatable, Sendable {
     var quality: String
     var outputFormat: OutputFormat
     var subtitleOutcome: DownloadSubtitleOutcome
-    var recognitionChoice: DownloadRecognitionChoice
+    var recognitionChoice: DownloadRecognitionChoice {
+        didSet {
+            subtitleSourcePolicy = Self.policy(for: recognitionChoice)
+        }
+    }
     var targetLanguage: String
     var subtitleStyle: SubtitleStyle
     var localModelID: String?
     var translationModel: String?
 
-    /// Preserves an existing automatic policy (for example, prefer platform
-    /// captions) rather than silently changing a user's saved default.
-    private var automaticSubtitleSourcePolicy: SubtitleSourcePolicy
+    /// Keeps the exact queue-level policy until a person explicitly changes
+    /// the advanced recognition choice. This preserves distinctions such as
+    /// prefer-local versus force-local when reopening a queued task.
+    private var subtitleSourcePolicy: SubtitleSourcePolicy
 
     init(configuration: QueuedProcessingConfiguration) {
         quality = configuration.quality
         outputFormat = configuration.outputFormat
         subtitleOutcome = Self.outcome(for: configuration.subtitleMode)
+        subtitleSourcePolicy = configuration.subtitleSourcePolicy
         recognitionChoice = Self.recognitionChoice(for: configuration.subtitleSourcePolicy)
         targetLanguage = configuration.targetLanguage
         subtitleStyle = configuration.subtitleStyle
         localModelID = configuration.transcriptionModel
         translationModel = configuration.translationModel
-        automaticSubtitleSourcePolicy = configuration.subtitleSourcePolicy
     }
 
     static func defaults(from settings: AppSettings) -> Self {
@@ -99,31 +104,16 @@ struct DownloadOptionsDraft: Equatable, Sendable {
         case .embeddedTranslation: .burnIn
         }
 
-        let sourcePolicy: SubtitleSourcePolicy = switch recognitionChoice {
-        case .automatic: automaticPolicyForAutomaticChoice
-        case .local: .forceLocalASR
-        case .cloud: .cloudASR
-        }
-
         return QueuedProcessingConfiguration(
             quality: quality,
             outputFormat: outputFormat,
             subtitleMode: subtitleMode,
-            subtitleSourcePolicy: sourcePolicy,
+            subtitleSourcePolicy: subtitleSourcePolicy,
             targetLanguage: targetLanguage,
             transcriptionModel: showsRecognitionOptions && recognitionChoice == .local ? localModelID : nil,
             translationModel: showsTranslationOptions ? translationModel : nil,
             subtitleStyle: subtitleStyle
         )
-    }
-
-    private var automaticPolicyForAutomaticChoice: SubtitleSourcePolicy {
-        switch automaticSubtitleSourcePolicy {
-        case .forceLocalASR, .preferLocalASR, .compareLocalASR, .cloudASR:
-            .autoBest
-        case .autoBest, .preferPlatform, .forcePlatform, .importedFile:
-            automaticSubtitleSourcePolicy
-        }
     }
 
     private static func outcome(for mode: ChineseSubtitleMode) -> DownloadSubtitleOutcome {
@@ -140,6 +130,14 @@ struct DownloadOptionsDraft: Equatable, Sendable {
         case .forceLocalASR, .preferLocalASR, .compareLocalASR: .local
         case .cloudASR: .cloud
         case .autoBest, .preferPlatform, .forcePlatform, .importedFile: .automatic
+        }
+    }
+
+    private static func policy(for recognitionChoice: DownloadRecognitionChoice) -> SubtitleSourcePolicy {
+        switch recognitionChoice {
+        case .automatic: .autoBest
+        case .local: .forceLocalASR
+        case .cloud: .cloudASR
         }
     }
 }
