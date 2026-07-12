@@ -6,17 +6,17 @@ final class LibraryAttentionTests: XCTestCase {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let processing = ProcessingSummary(
-            state: .needsAttention,
-            stage: .recovery,
-            progress: 0.4,
-            updatedAt: Date(timeIntervalSince1970: 100)
-        )
+        let timestamp = Date(timeIntervalSince1970: 100)
         let item = LibraryItem(
             title: "Legacy item",
-            versions: [LibraryVersion(number: 1, processing: processing)],
-            createdAt: Date(timeIntervalSince1970: 100),
-            updatedAt: Date(timeIntervalSince1970: 100)
+            versions: [
+                LibraryVersion(number: 1, processing: ProcessingSummary(state: .needsAttention, stage: .recovery, progress: 0.4, updatedAt: timestamp)),
+                LibraryVersion(number: 2, processing: ProcessingSummary(state: .failed, stage: .download, progress: 0.4, updatedAt: timestamp)),
+                LibraryVersion(number: 3, processing: ProcessingSummary(state: .partialSuccess, stage: .complete, progress: 1, updatedAt: timestamp)),
+                LibraryVersion(number: 4, processing: ProcessingSummary(state: .interrupted, stage: .recovery, progress: 0.4, updatedAt: timestamp)),
+            ],
+            createdAt: timestamp,
+            updatedAt: timestamp
         )
         let legacyEnvelope = LibraryEnvelope(schemaVersion: 1, items: [item])
         let fileURL = directory.appendingPathComponent("library.json")
@@ -25,10 +25,40 @@ final class LibraryAttentionTests: XCTestCase {
         let loaded = try await LibraryStore(directory: directory).load()
 
         XCTAssertEqual(loaded.schemaVersion, 2)
-        XCTAssertEqual(loaded.items.first?.latestVersion?.processing.state, .needsAttention)
-        XCTAssertEqual(loaded.items.first?.latestVersion?.processing.attention?.kind, .needsReview)
-        XCTAssertEqual(loaded.items.first?.latestVersion?.processing.attention?.primaryAction, .review,
-                       "v1 records keep their state, but must receive an explicit non-invented recovery action.")
+        let attentions = loaded.items.first?.versions.map(\.processing.attention)
+        XCTAssertEqual(attentions?[0]?.kind, .needsReview)
+        XCTAssertEqual(attentions?[1]?.kind, .needsReview)
+        XCTAssertEqual(attentions?[2]?.kind, .needsReview)
+        XCTAssertEqual(attentions?[3]?.kind, .interrupted)
+        XCTAssertEqual(attentions?[3]?.primaryAction, .restart,
+                       "Interrupted records have a known safe recovery action even when v1 did not persist a raw reason.")
+    }
+
+    func testMigrationWriteFailureDoesNotQuarantineValidV1Library() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let item = LibraryItem(
+            title: "Legacy item",
+            versions: [LibraryVersion(number: 1, processing: ProcessingSummary(state: .needsAttention, stage: .recovery, progress: 0))]
+        )
+        let legacyURL = directory.appendingPathComponent("library.json")
+        try JSONEncoder().encode(LibraryEnvelope(schemaVersion: 1, items: [item])).write(to: legacyURL)
+        let failingStore = LibraryStore(directory: directory) { _, _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }
+
+        do {
+            _ = try await failingStore.load()
+            XCTFail("A failed migration write must be surfaced to the caller.")
+        } catch {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
+            let unchanged = try JSONDecoder().decode(LibraryEnvelope.self, from: Data(contentsOf: legacyURL))
+            XCTAssertEqual(unchanged.schemaVersion, 1)
+            let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            XCTAssertFalse(names.contains(where: { $0.hasPrefix("library.corrupt-") }),
+                           "A valid v1 library must never be quarantined just because its migration write failed.")
+        }
     }
 
     func testAttentionRoundTripDropsUnsafeStatusDetails() throws {
@@ -75,7 +105,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .recovery,
             statusText: "Request failed: HTTP 403",
             loginSite: "www.youtube.com",
-            isDeferredDraft: false,
             usesLocalRecognition: false,
             usesCloudRecognition: false,
             occurredAt: date
@@ -89,7 +118,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .download,
             statusText: "所选的本地转录模型尚未准备好。",
             loginSite: nil,
-            isDeferredDraft: false,
             usesLocalRecognition: true,
             usesCloudRecognition: false,
             occurredAt: date
@@ -102,7 +130,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .download,
             statusText: "所选的本地转录模型尚未准备好。",
             loginSite: nil,
-            isDeferredDraft: true,
             usesLocalRecognition: true,
             usesCloudRecognition: false,
             occurredAt: date
@@ -115,7 +142,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .download,
             statusText: "Cloud recognition needs setup.",
             loginSite: nil,
-            isDeferredDraft: false,
             usesLocalRecognition: false,
             usesCloudRecognition: true,
             occurredAt: date
@@ -128,7 +154,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .transcribe,
             statusText: "Configure cloud recognition before retrying.",
             loginSite: nil,
-            isDeferredDraft: false,
             usesLocalRecognition: false,
             usesCloudRecognition: true,
             occurredAt: date
@@ -141,7 +166,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .recovery,
             statusText: nil,
             loginSite: nil,
-            isDeferredDraft: false,
             usesLocalRecognition: false,
             usesCloudRecognition: false,
             occurredAt: date
@@ -154,7 +178,6 @@ final class LibraryAttentionTests: XCTestCase {
             stage: .recovery,
             statusText: "File not found",
             loginSite: nil,
-            isDeferredDraft: false,
             usesLocalRecognition: false,
             usesCloudRecognition: false,
             occurredAt: date
@@ -218,8 +241,6 @@ final class LibraryAttentionTests: XCTestCase {
 
         XCTAssertTrue(source.contains("ProcessingAttentionClassifier.classify("),
                       "Queue snapshots must map runtime failures to a durable, typed attention record.")
-        XCTAssertTrue(source.contains("isDeferredDraft:"),
-                      "Queued local/cloud readiness failures must be distinguishable from a task that has already started.")
         XCTAssertFalse(source.contains("if attention != nil, state == .queued"),
                        "A queued draft must not be reclassified as needs-attention before the person starts it.")
     }

@@ -964,7 +964,6 @@ private struct QueueLibrarySnapshot: Sendable {
             stage: stage,
             statusText: item.statusText,
             loginSite: item.needsLogin?.site,
-            isDeferredDraft: item.isDeferredDraft,
             usesLocalRecognition: usesLocalRecognition,
             usesCloudRecognition: usesCloudRecognition,
             occurredAt: updatedAt

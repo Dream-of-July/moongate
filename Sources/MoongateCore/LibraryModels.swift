@@ -337,7 +337,6 @@ public enum ProcessingAttentionClassifier {
         stage: LibraryProcessingStage,
         statusText: String?,
         loginSite: String?,
-        isDeferredDraft: Bool,
         usesLocalRecognition: Bool,
         usesCloudRecognition: Bool,
         occurredAt: Date
@@ -364,7 +363,6 @@ public enum ProcessingAttentionClassifier {
             // A queued draft remains editable even when its eventual local or
             // cloud capability is not ready. Surface setup only if the person
             // starts it, rather than turning a draft into a failure state.
-            _ = isDeferredDraft
             return nil
         case .failed, .partialSuccess:
             if isFileMissingStatus(statusText) {

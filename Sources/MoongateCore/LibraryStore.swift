@@ -68,16 +68,20 @@ public actor LibraryStore {
         }
 
         let data = try Data(contentsOf: fileURL)
+        let decodedEnvelope: LibraryEnvelope
         do {
-            var envelope = try JSONDecoder().decode(LibraryEnvelope.self, from: data)
-            try migrate(&envelope)
-            return envelope
-        } catch let error as LibraryStoreError {
-            throw error
+            decodedEnvelope = try JSONDecoder().decode(LibraryEnvelope.self, from: data)
         } catch {
+            // Only invalid JSON (or an invalid decoded shape) is corrupt. A
+            // later migration write failure must leave this valid file in
+            // place and reach the caller for recovery.
             try backupCorruptLibrary()
             return LibraryEnvelope()
         }
+
+        var envelope = decodedEnvelope
+        try migrate(&envelope)
+        return envelope
     }
 
     public func save(_ envelope: LibraryEnvelope) throws {
@@ -293,13 +297,22 @@ public actor LibraryStore {
                 for itemIndex in envelope.items.indices {
                     for versionIndex in envelope.items[itemIndex].versions.indices {
                         let processing = envelope.items[itemIndex].versions[versionIndex].processing
-                        guard processing.state == .needsAttention,
+                        guard processing.state.needsAttention,
                               processing.attention == nil else {
                             continue
                         }
+                        let kind: ProcessingAttentionKind
+                        let action: ProcessingAttentionAction
+                        if processing.state == .interrupted {
+                            kind = .interrupted
+                            action = .restart
+                        } else {
+                            kind = .needsReview
+                            action = .review
+                        }
                         envelope.items[itemIndex].versions[versionIndex].processing.attention = ProcessingAttention(
-                            kind: .needsReview,
-                            primaryAction: .review,
+                            kind: kind,
+                            primaryAction: action,
                             stage: processing.stage,
                             occurredAt: processing.updatedAt
                         )
