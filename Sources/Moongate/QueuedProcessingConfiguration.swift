@@ -61,12 +61,29 @@ struct QueuedProcessingConfiguration: Equatable, Sendable {
         )
     }
 
-    func applying(to settings: AppSettings) -> AppSettings {
+    func applying(
+        to settings: AppSettings,
+        modelManifest: ASRModelManifest = .recommendedWhisperCpp,
+        modelStore: ASRModelStore? = nil
+    ) -> AppSettings {
         var snapshot = settings
         snapshot.translationTargetLanguage = targetLanguage
         snapshot.subtitleStyle = subtitleStyle
         if let transcriptionModel {
             snapshot.localASRModelID = transcriptionModel
+            // A model ID is not enough to switch the recognizer. Reusing the
+            // previous model path would make the UI claim one model while
+            // whisper actually runs another. Keep a same-ID custom setup,
+            // otherwise resolve only a verified managed model; a missing or
+            // unknown selection is deliberately left pathless so start can
+            // report a recoverable readiness issue instead of lying.
+            if transcriptionModel != settings.localASRModelID {
+                snapshot.localASRModelPath = Self.managedModelPath(
+                    id: transcriptionModel,
+                    manifest: modelManifest,
+                    store: modelStore
+                ) ?? ""
+            }
         }
         if let translationModel {
             snapshot.translationModel = translationModel
@@ -78,6 +95,7 @@ struct QueuedProcessingConfiguration: Equatable, Sendable {
     var libraryConfiguration: LibraryProcessingConfiguration {
         LibraryProcessingConfiguration(
             outputFormat: outputFormat.rawValue,
+            subtitleMode: subtitleMode.rawValue,
             subtitleSource: librarySubtitleSource?.rawValue,
             transcriptionModel: transcriptionModel,
             translationModel: translationModel,
@@ -108,6 +126,25 @@ struct QueuedProcessingConfiguration: Equatable, Sendable {
             return nil
         }
         return trimmed
+    }
+
+    private static func managedModelPath(
+        id: String,
+        manifest: ASRModelManifest,
+        store: ASRModelStore?
+    ) -> String? {
+        guard let model = manifest.models.first(where: { $0.id == id }) else {
+            return nil
+        }
+        let resolvedStore = store ?? ASRModelStore(
+            directoryURL: AppSettings.supportDirectory
+                .appendingPathComponent("asr", isDirectory: true)
+                .appendingPathComponent("models", isDirectory: true)
+        )
+        guard let status = try? resolvedStore.status(for: model), status.isInstalled else {
+            return nil
+        }
+        return status.installedURL.path
     }
 }
 

@@ -24,6 +24,32 @@ public struct LibraryProjectedItem: Sendable, Equatable, Identifiable {
 }
 
 public enum LibraryProjection {
+    /// Counts the five fixed sidebar destinations in one linear pass. Unlike
+    /// `items`, this deliberately never sorts, so progress updates for a large
+    /// library don't repeat list-order work just to redraw badges.
+    public static func sidebarCounts(
+        in envelope: LibraryEnvelope,
+        liveProcessing: [UUID: ProcessingSummary] = [:]
+    ) -> [LibraryFilter: Int] {
+        var counts: [LibraryFilter: Int] = [
+            .all: 0,
+            .active: 0,
+            .needsAttention: 0,
+            .completed: 0,
+            .pinned: 0
+        ]
+
+        for item in envelope.items {
+            let processing = liveProcessing[item.id] ?? item.latestVersion?.processing
+            counts[.all, default: 0] += 1
+            if processing?.state.isActive == true { counts[.active, default: 0] += 1 }
+            if processing?.state.needsAttention == true { counts[.needsAttention, default: 0] += 1 }
+            if processing?.state == .completed { counts[.completed, default: 0] += 1 }
+            if item.isPinned { counts[.pinned, default: 0] += 1 }
+        }
+        return counts
+    }
+
     public static func items(
         in envelope: LibraryEnvelope,
         filter: LibraryFilter = .all,

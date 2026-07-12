@@ -58,6 +58,22 @@ final class LibraryProjectionTests: XCTestCase {
         XCTAssertEqual(search.map(\.item.title), ["Needle Video"])
     }
 
+    func testSidebarCountsUseOneLiveProjectionPassWithoutSorting() {
+        let completed = makeItem(title: "Complete", state: .completed, pinned: true, timestamp: 1)
+        let recoverable = makeItem(title: "Recover", state: .failed, timestamp: 2)
+        let overlay = ProcessingSummary(state: .downloading, stage: .download, progress: 0.4)
+        let counts = LibraryProjection.sidebarCounts(
+            in: LibraryEnvelope(items: [completed, recoverable]),
+            liveProcessing: [completed.id: overlay]
+        )
+
+        XCTAssertEqual(counts[.all], 2)
+        XCTAssertEqual(counts[.active], 1)
+        XCTAssertEqual(counts[.needsAttention], 1)
+        XCTAssertEqual(counts[.completed], 0)
+        XCTAssertEqual(counts[.pinned], 1)
+    }
+
     private func makeItem(
         title: String,
         state: LibraryItemState,

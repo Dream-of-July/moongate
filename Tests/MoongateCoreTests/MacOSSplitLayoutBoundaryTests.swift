@@ -59,7 +59,8 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let source = try libraryWorkspaceModelSource()
         let layout = try XCTUnwrap(functionBody(named: "updateLayout", in: source))
 
-        XCTAssertTrue(layout.contains("guard !inspectorPreferenceIsExplicit else { return }"))
+        XCTAssertTrue(layout.contains("!inspectorPreferenceIsExplicit"))
+        XCTAssertTrue(layout.contains("transaction.disablesAnimations = true"))
         XCTAssertTrue(layout.contains("showInspector = width >= 1_380"),
                       "1100–1379 pt 和 900–1099 pt 初始都应收起 Inspector")
     }
@@ -109,7 +110,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let undo = try XCTUnwrap(functionBody(named: "undoRemoveFromLibrary", in: source))
         let synchronize = try XCTUnwrap(functionBody(named: "synchronizeQueue", in: source))
 
-        XCTAssertTrue(remove.contains("suppressedQueueLibraryItemIDs.insert(selectedItemID)"),
+        XCTAssertTrue(remove.contains("suppressedQueueLibraryItemIDs.insert(targetItemID)"),
                       "索引移除后，尚在内存的 QueueItem 不能在下一次同步时复活记录")
         XCTAssertTrue(undo.contains("suppressedQueueLibraryItemIDs.remove(removedItemForUndo.id)"),
                       "撤销必须重新允许该资料库记录接收实时队列投影")
@@ -150,6 +151,216 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         // 两个 Section 带计数。
         XCTAssertTrue(source.contains("L.SplitLayout.sectionActive"))
         XCTAssertTrue(source.contains("L.SplitLayout.sectionFinished"))
+    }
+
+    func testCancellingTaskStaysVisibleButDoesNotOfferConflictingControls() throws {
+        let legacy = try queueItemViewSource()
+        let split = try splitLayoutSource()
+        let workspace = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(legacy.contains("case .cancelling:"),
+                      "legacy 队列必须给可见的 cancelling 状态专门文案")
+        XCTAssertTrue(split.contains("case .queued, .cancelling, .downloading, .translating, .burning:"),
+                      "取消收敛中仍属于进行中，不能提前移入已完成分组")
+        let controls = try XCTUnwrap(functionBody(named: "buttons", in: legacy))
+        XCTAssertTrue(controls.contains("case .cancelling:"),
+                      "取消收敛中不能复用暂停/重试控制，避免相互竞争")
+        XCTAssertTrue(workspace.contains("CollapsedInspectorActionStrip"),
+                      "收起 Inspector 后必须仍有状态化快捷操作")
+        XCTAssertTrue(workspace.contains("workspace.startSelectedQueuedTask()"),
+                      "待开始任务必须提供真实开始入口")
+    }
+
+    func testLibraryRowsProvideStateAwareContextMenuAndSafeDeletion() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains(".contextMenu"),
+                      "列表行应提供 macOS 原生右键菜单")
+        for label in ["播放", "在访达中显示", "复制来源链接", "重新处理", "移出资料库", "移到废纸篓…"] {
+            XCTAssertTrue(source.contains(label), "右键菜单缺少 \(label) 操作")
+        }
+        XCTAssertTrue(source.contains("LibraryRowContextMenu"),
+                      "右键操作应从列表行抽成可审查的独立组件")
+        XCTAssertTrue(source.contains("case .queued:") && source.contains("Button(\"开始\")"),
+                      "待开始任务在右键菜单中必须显示“开始”，不能被误称为恢复")
+    }
+
+    func testLibraryContextActionsTargetTheirOwnItemAndKeepTrashSeparate() throws {
+        let source = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(source.contains("func removeFromLibrary(itemID:"),
+                      "右键移出资料库必须能针对被点中的项目，而非依赖当前选中行")
+        XCTAssertTrue(source.contains("func moveArtifactsToTrash(itemID:"),
+                      "右键废纸篓操作必须能针对被点中的项目")
+        XCTAssertTrue(source.contains("func revealInFinder(itemID:"),
+                      "右键在访达中显示必须能针对被点中的项目")
+        XCTAssertTrue(source.contains("func canRevealInFinder(itemID:"),
+                      "没有本地产物的记录不应提供一个必然失败的访达动作")
+    }
+
+    func testWorkspacePolishAvoidsMisleadingEmptyCopyAndPrefersVideoInFinder() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(view.contains("点列表标题中的＋添加链接。"))
+        XCTAssertFalse(view.contains("点右上角“新建下载”添加链接。"))
+        XCTAssertTrue(model.contains("$0.role == .video || $0.role == .renderedVideo"))
+    }
+
+    func testLibraryRowsUseSpecificRecoveryTextWithoutGreenSuccessBadge() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("LibraryDisplay.recoveryLabel("),
+                      "异常项目应优先显示具体恢复原因，而不是笼统的“需要登录或处理”")
+        XCTAssertTrue(source.contains("LibraryDisplay.completedDetail(projected.item)"),
+                      "完成项的第三行应显示保存结果，不能重复“已完成”")
+        XCTAssertFalse(source.contains("Image(systemName: \"checkmark.circle.fill\").foregroundStyle(.green)"),
+                      "完成项不应再额外显示绿色成功徽章")
+    }
+
+    func testPausedRunningTaskKeepsItsProcessingSnapshotReadOnly() throws {
+        let model = try libraryWorkspaceModelSource()
+        let view = try libraryWorkspaceViewSource()
+
+        XCTAssertFalse(model.contains("if item.isPaused {\n            state = .queued"),
+                       "暂停只是运行任务的覆盖状态，不能把它重新投影成可编辑的待开始任务")
+        XCTAssertTrue(view.contains("processing.state.isRunning"),
+                      "Inspector 必须继续以运行态锁定暂停任务的处理快照")
+    }
+
+    func testQueuedInspectorEditsItsOwnConfigurationWithoutCreatingAVersion() throws {
+        let source = try libraryWorkspaceViewSource()
+        XCTAssertTrue(source.contains("queuedProcessingEditor"))
+    }
+
+    func testInspectorCarriesSubtitleModeThroughQueuedAndReprocessFlows() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(view.contains("Picker(\"字幕处理\""))
+        XCTAssertTrue(model.contains("changes.insert(.subtitleMode)"))
+        XCTAssertTrue(model.contains("previousConfiguration: version.processing.configuration"))
+    }
+
+    func testLocalReprocessDoesNotRequireASourceButRefreshDoes() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(model.contains("func reprocessBlockerReason"))
+        XCTAssertTrue(model.contains("plan.steps.contains(.refreshVideo)"))
+        XCTAssertTrue(model.contains("source.supportsRestart"))
+        XCTAssertTrue(view.contains("workspace.canCreateReprocess"))
+        XCTAssertFalse(view.contains("if item.source != nil {\n                        Button(\"创建重新处理任务\")"))
+    }
+
+    func testExpandedFailedTaskKeepsRecoveryActionsVisible() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("else if case .failed = item.stage"),
+                      "Inspector 展开时失败任务不能只靠收起后的快捷条恢复")
+        XCTAssertTrue(source.contains("workspace.recoverQueueTask(for: item.libraryItemID)"),
+                      "失败任务必须复用同一条登录或重试恢复动作")
+    }
+
+    func testBlockedQueuedTasksExposeSpecificWarningAndRealRecoveryActions() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(view.contains("LibraryDisplay.queuedReadinessDetail(details)"),
+                      "待开始预检失败时，列表第三行必须优先显示具体的可恢复原因")
+        XCTAssertTrue(view.contains("需要处理，\\(readiness)"),
+                      "VoiceOver 必须读出待开始任务的具体阻塞原因，而不是笼统的等待中")
+        XCTAssertTrue(view.contains("workspace.openQueuedReadinessRecovery"),
+                      "待开始的本地/云端预检失败必须提供真实恢复入口")
+        XCTAssertTrue(model.contains("enum QueuedReadinessRecovery"))
+        XCTAssertTrue(model.contains("case .localSpeech: \"subtitlesLanguage\""),
+                      "本地模型缺失应直达真实的字幕与语言设置")
+        XCTAssertTrue(model.contains("case .cloudASR: \"servicesAccounts\""),
+                      "云端 ASR 缺失应直达真实的服务与账户设置")
+        XCTAssertTrue(model.contains("appModel.openSettings(paneID: recovery.settingsPaneID)"))
+    }
+
+    func testQueuedContextMenuUsesConfigurationLanguageAndFinderNeedsAnArtifact() throws {
+        let source = try libraryWorkspaceViewSource()
+        let quickActions = try XCTUnwrap(functionBody(named: "queueActions", in: source))
+        let contextMenu = try XCTUnwrap(slice(
+            source,
+            from: "private struct LibraryRowContextMenu",
+            to: "private struct LibraryStatusGlyph"
+        ))
+
+        XCTAssertTrue(source.contains("Button(\"调整配置\")"),
+                      "待开始任务应使用“调整配置”，不能误称为“重新处理”")
+        XCTAssertTrue(source.contains("if processing?.state.isQueued == true"),
+                      "普通重新处理不应与待开始任务的配置动作并存")
+        XCTAssertTrue(contextMenu.contains("if let recovery = workspace.queuedReadinessRecovery(for: item.id)"),
+                      "预检阻塞时，右键菜单应改给恢复入口而不是继续提供无效的开始动作")
+        XCTAssertTrue(contextMenu.contains("} else {\n                        Button(\"开始\")"),
+                      "仅无阻塞的待开始任务才显示开始动作")
+        XCTAssertTrue(quickActions.contains("workspace.canRevealInFinder(itemID: item.id)"),
+                      "没有本地产物的已取消项不应显示必然失败的访达按钮")
+        XCTAssertTrue(source.contains("} else {\n                if workspace.canRevealInFinder(itemID: item.id) {"),
+                      "队列对象已离开内存后，收起 Inspector 的取消项也必须隐藏无效的访达按钮")
+    }
+
+    func testTrashConfirmationClearsItsTargetAndRequiresAnExistingFile() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(view.contains("let itemID = trashItemID"))
+        XCTAssertTrue(view.contains("trashItemID = nil"))
+        XCTAssertTrue(model.contains("let existingURLs = urls.filter"))
+        XCTAssertTrue(model.contains("guard !existingURLs.isEmpty"))
+    }
+
+    func testActiveRowsExposeProgressAndEtaToVoiceOver() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("activeAccessibilityValue"))
+        XCTAssertTrue(source.contains("LibraryDisplay.liveDetail(details)"),
+                      "活跃任务的 VoiceOver 值必须包含 ETA 或估算状态")
+    }
+
+    func testInterruptedLibraryItemsExposeARealRestartAction() throws {
+        let view = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(view.contains("重新开始"))
+        XCTAssertTrue(model.contains("func restartInterruptedTask"))
+        XCTAssertTrue(model.contains("restartInterruptedLibraryItem"))
+    }
+
+    func testWorkspaceShowsRestartAndBatchFeedbackOutsideTheDownloadSheet() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("LibraryEnqueueNoticeBar"))
+        XCTAssertTrue(source.contains("model.enqueueNotice"))
+    }
+
+    func testPlayerDistinguishesMissingFilesFromUnsupportedFormatsAndStopsOnTeardown() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("missingVideoStage"),
+                      "文件已移动时必须给明确恢复态，不能误报格式不支持")
+        XCTAssertTrue(source.contains("视频文件已移动或删除"),
+                      "缺失文件状态应使用可行动的中文文案")
+        XCTAssertTrue(source.contains("func dismantleNSView"),
+                      "离开详情时系统播放器必须停止，避免后台继续播放")
+        XCTAssertTrue(source.contains("workspace.consumePlaybackRequest"),
+                      "右键播放请求只能消费一次，不能在再次选中同一项目时意外自动播放")
+        XCTAssertTrue(source.contains("handledPlaybackRequestID"),
+                      "系统播放器必须按请求 nonce 去重，而不是按所选视频去重")
+        XCTAssertTrue(source.contains("onPlaybackRequestHandled"),
+                      "播放器实际开始后必须回调清除一次性播放请求")
+    }
+
+    func testIndexRemovalUndoLivesAboveTheSelectedDetail() throws {
+        let source = try libraryWorkspaceViewSource()
+
+        XCTAssertTrue(source.contains("LibraryRemovalUndoBar"),
+                      "移出最后一个项目后，撤销入口仍应留在工作台根部")
+        XCTAssertTrue(source.contains("workspace.undoRemoveFromLibrary()"),
+                      "根级撤销条必须接入真实恢复动作")
     }
 
     /// 复用既有组件与真实队列操作，不重造：ProgressRingView 进度环 + QueueManager 操作。

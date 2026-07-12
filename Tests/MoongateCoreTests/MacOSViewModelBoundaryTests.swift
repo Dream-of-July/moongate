@@ -89,7 +89,8 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let processBatchBody = try XCTUnwrap(functionBody(prefix: "private func processBatch", in: source))
         let compactBatchBody = compactWhitespace(processBatchBody)
 
-        XCTAssertTrue(compactBatchBody.contains("let mode = chineseMode guard dependenciesReady(for: mode) else { return }"))
+        XCTAssertTrue(compactBatchBody.contains("let mode = queuedConfiguration?.subtitleMode ?? chineseMode guard !startImmediately || dependenciesReady(for: mode) else { return }"),
+                      "待开始任务必须能在依赖未准备好时入库，只有实际启动才检查依赖")
         XCTAssertFalse(compactBatchBody.contains(
             "let mode = chineseMode guard blockIfTranslationNotReady(for: mode) else { return }"
         ))
@@ -219,6 +220,30 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
         let draftIndex = try XCTUnwrap(body.range(of: "var draft = settings")?.lowerBound)
         XCTAssertTrue(hydrateIndex < draftIndex, "hydrateCredentials() 必须在 var draft = settings 之前")
         XCTAssertTrue(body.contains("draft.subtitleRecognitionMode = preferLocalSpeechRecognition ? .automatic : .platformOnly"))
+    }
+
+    func testAdoptingLocalRuntimeHydratesCredentialsBeforePersistingSettings() throws {
+        // 准备中心可从重跑 onboarding 直接调用该动作。启动期的 settings 尚未读取 Keychain，
+        // 因此写入 runtime 路径前必须先补齐 Token，避免 save() 把空凭证解释为删除。
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(prefix: "func adoptExistingLocalASRRuntime", in: source))
+
+        XCTAssertTrue(body.contains("hydrateCredentials()"))
+        let hydrateIndex = try XCTUnwrap(body.range(of: "hydrateCredentials()")?.lowerBound)
+        let draftIndex = try XCTUnwrap(body.range(of: "var draft = settings")?.lowerBound)
+        let saveIndex = try XCTUnwrap(body.range(of: "try draft.save()")?.lowerBound)
+        XCTAssertTrue(hydrateIndex < draftIndex)
+        XCTAssertTrue(hydrateIndex < saveIndex)
+    }
+
+    func testRestartOnboardingOnlyRestartsTheDraftFlow() throws {
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(prefix: "func restartOnboarding", in: source))
+
+        XCTAssertTrue(body.contains("showOnboarding = true"))
+        XCTAssertFalse(body.contains("saveSettings"))
+        XCTAssertFalse(body.contains("settings ="))
+        XCTAssertFalse(body.contains("Library"))
     }
 
     func testReadySelectionAlwaysIncludesLocalASRTracksAndGatesDownloadOnReadiness() throws {

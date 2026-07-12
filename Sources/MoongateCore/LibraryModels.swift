@@ -25,6 +25,20 @@ public struct LibrarySourceDescriptor: Codable, Sendable, Equatable {
         self.urlString = safeURL
     }
 
+    /// A privacy-sanitized source is only restartable when its path still
+    /// identifies the media. For example, stripping `?v=` from YouTube's
+    /// `/watch` URL intentionally leaves no safe identifier to replay.
+    public var supportsRestart: Bool {
+        guard let components = URLComponents(string: urlString) else { return false }
+        let path = components.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path != "/" else { return false }
+        let host = components.host?.lowercased() ?? ""
+        if host == "youtube.com" || host.hasSuffix(".youtube.com") {
+            return path.lowercased() != "/watch"
+        }
+        return true
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let storedURL = try container.decode(String.self)
@@ -203,6 +217,7 @@ public struct LibraryActualModels: Codable, Sendable, Equatable {
 /// tokens, cookies, or API credentials.
 public struct LibraryProcessingConfiguration: Codable, Sendable, Equatable {
     public var outputFormat: String?
+    public var subtitleMode: String?
     public var subtitleSource: String?
     public var transcriptionModel: String?
     public var translationModel: String?
@@ -212,6 +227,7 @@ public struct LibraryProcessingConfiguration: Codable, Sendable, Equatable {
 
     public init(
         outputFormat: String? = nil,
+        subtitleMode: String? = nil,
         subtitleSource: String? = nil,
         transcriptionModel: String? = nil,
         translationModel: String? = nil,
@@ -220,6 +236,7 @@ public struct LibraryProcessingConfiguration: Codable, Sendable, Equatable {
         quality: String? = nil
     ) {
         self.outputFormat = outputFormat
+        self.subtitleMode = subtitleMode
         self.subtitleSource = subtitleSource
         self.transcriptionModel = transcriptionModel
         self.translationModel = translationModel

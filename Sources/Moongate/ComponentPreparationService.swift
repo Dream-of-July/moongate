@@ -136,8 +136,21 @@ public actor ComponentPreparationService {
             .appendingPathComponent("asr", isDirectory: true)
             .appendingPathComponent("vad", isDirectory: true))
             .standardizedFileURL
+        var runtimeSearchURLs = [resolvedRuntimeDirectory]
+        let configuredRuntimePath = AppSettings.load(readCredentials: false)
+            .localASRRuntimePath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredRuntimePath.isEmpty {
+            runtimeSearchURLs.append(URL(fileURLWithPath: configuredRuntimePath))
+        }
+        if let bundledRuntimeURL = Bundle.main.resourceURL?
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true) {
+            runtimeSearchURLs.append(bundledRuntimeURL)
+            runtimeSearchURLs.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
+        }
         let resolvedRuntimeLocator = runtimeLocator ?? ASRRuntimeLocator(
-            extraSearchURLs: [resolvedRuntimeDirectory]
+            extraSearchURLs: runtimeSearchURLs
         )
 
         self.configuration = ComponentPreparationConfiguration(
@@ -341,9 +354,10 @@ private enum ComponentPreparationSnapshotBuilder {
                     : "External runtime; managed by its existing installation",
                 actualDiskUsageBytes: fileSize(at: runtime.executableURL),
                 storageURL: runtime.executableURL,
-                allowedOperations: isManaged
-                    ? [.refresh, .removeManagedRuntime]
-                    : [.refresh]
+                // Runtime removal has no production operation handler yet.
+                // Do not expose a destructive control until it can validate
+                // the managed path and show a real confirmation.
+                allowedOperations: [.refresh]
             )
         }
 

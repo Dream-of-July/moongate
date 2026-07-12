@@ -36,6 +36,28 @@ final class LibraryWorkspaceModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    /// A deferred task can remain editable when its selected local or cloud
+    /// recognizer is unavailable. Keep the recovery destination typed here so
+    /// the workspace never presents a button that merely looks actionable.
+    enum QueuedReadinessRecovery: Equatable {
+        case localSpeech
+        case cloudASR
+
+        var settingsPaneID: String {
+            switch self {
+            case .localSpeech: "subtitlesLanguage"
+            case .cloudASR: "servicesAccounts"
+            }
+        }
+
+        var actionTitle: String {
+            switch self {
+            case .localSpeech: "打开字幕与语言设置"
+            case .cloudASR: "打开服务与账户设置"
+            }
+        }
+    }
+
     struct LiveQueueDetails: Equatable {
         let queueID: UUID
         let speedText: String?
@@ -45,18 +67,49 @@ final class LibraryWorkspaceModel: ObservableObject {
         let statusText: String?
     }
 
-    @Published private(set) var envelope = LibraryEnvelope()
-    @Published var sidebarDestination: SidebarDestination = .all
+    struct PlaybackRequest: Equatable {
+        let requestID: UUID
+        let itemID: UUID
+
+        init(itemID: UUID) {
+            requestID = UUID()
+            self.itemID = itemID
+        }
+    }
+
+    @Published private(set) var envelope = LibraryEnvelope() {
+        didSet {
+            rebuildProjectionCache()
+            selectFirstItemIfNeeded()
+        }
+    }
+    @Published var sidebarDestination: SidebarDestination = .all {
+        didSet {
+            rebuildProjectionCache()
+            selectFirstItemIfNeeded()
+        }
+    }
     @Published var selectedItemID: UUID? {
         didSet { loadDraftForSelection() }
     }
-    @Published var searchText = ""
+    @Published var searchText = "" {
+        didSet {
+            rebuildProjectionCache()
+            selectFirstItemIfNeeded()
+        }
+    }
     @Published var showInspector = true
+    @Published private(set) var inspectorInteractionGeneration = 0
     @Published var inspectorMode: InspectorMode = .information
+    /// A one-way request from a list context-menu action to the AVKit stage.
+    /// Its nonce makes repeated explicit plays of the same item distinguishable.
+    @Published private(set) var playbackRequest: PlaybackRequest?
     @Published var processingDraft = LibraryProcessingConfiguration()
     @Published var showRecoverySheet = false
     @Published private(set) var recoveryCandidates: [LibraryRecoveredCandidate] = []
     @Published private(set) var liveQueueDetails: [UUID: LiveQueueDetails] = [:]
+    @Published private(set) var projectedItems: [LibraryProjectedItem] = []
+    @Published private(set) var sidebarCounts: [LibraryFilter: Int] = [:]
     @Published var errorMessage: String?
     @Published private(set) var undoRemovalAvailable = false
 
@@ -70,7 +123,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// QueueItem on its next progress update. This is session-scoped because
     /// QueueItem itself is intentionally not restored across app launches.
     private var suppressedQueueLibraryItemIDs = Set<UUID>()
-    private var liveProcessing: [UUID: ProcessingSummary] = [:]
+    private var liveProcessing: [UUID: ProcessingSummary] = [:] {
+        didSet {
+            rebuildProjectionCache()
+            selectFirstItemIfNeeded()
+        }
+    }
     /// The queue publisher emits immediately during init. Do not let that
     /// first value race the on-disk library load; bootstrap replays the latest
     /// queue state once the durable envelope is ready.
@@ -100,13 +158,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         queueSyncTask?.cancel()
     }
 
-    var projectedItems: [LibraryProjectedItem] {
-        LibraryProjection.items(
-            in: envelope,
-            filter: sidebarDestination.libraryFilter,
-            searchQuery: searchText,
-            liveProcessing: liveProcessing
-        )
+    func sidebarCount(for filter: LibraryFilter) -> Int {
+        sidebarCounts[filter] ?? 0
     }
 
     var selectedItem: MoongateCore.LibraryItem? {
@@ -133,17 +186,176 @@ final class LibraryWorkspaceModel: ObservableObject {
         liveQueueDetails[itemID]
     }
 
+    var selectedQueueItem: QueueManager.QueueItem? {
+        guard let selectedItemID else { return nil }
+        return queueItem(for: selectedItemID)
+    }
+
+    func queueItem(for itemID: UUID) -> QueueManager.QueueItem? {
+        if let queueID = liveQueueDetails[itemID]?.queueID,
+           let exact = appModel.queue.items.first(where: { $0.id == queueID }) {
+            return exact
+        }
+        return appModel.queue.items.last(where: { $0.libraryItemID == itemID })
+    }
+
+    /// Returns a real settings destination only for a deferred task that has
+    /// already failed its recognizer preflight. Ordinary queued work continues
+    /// to use the normal Start action.
+    func queuedReadinessRecovery(for itemID: UUID) -> QueuedReadinessRecovery? {
+        guard let queueItem = queueItem(for: itemID),
+              queueItem.isDeferredDraft,
+              let status = queueItem.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !status.isEmpty else {
+            return nil
+        }
+
+        if queueItem.request.subtitleSourcePolicy == .cloudASR {
+            return .cloudASR
+        }
+
+        switch queueItem.request.subtitleSourcePolicy {
+        case .forceLocalASR, .preferLocalASR, .compareLocalASR:
+            return .localSpeech
+        case .autoBest, .preferPlatform, .forcePlatform, .cloudASR, .importedFile:
+            return queueItem.request.primarySubtitleTrack?.sourceKind == .localASR
+                ? .localSpeech
+                : nil
+        }
+    }
+
+    /// Opens an existing Settings pane; the action label deliberately matches
+    /// the destination instead of promising an in-place component installer.
+    func openQueuedReadinessRecovery(for itemID: UUID) {
+        guard let recovery = queuedReadinessRecovery(for: itemID) else { return }
+        appModel.openSettings(paneID: recovery.settingsPaneID)
+    }
+
+    var hasQueuedTasks: Bool {
+        appModel.queue.items.contains { $0.isDeferredDraft }
+    }
+
+    @discardableResult
+    func startSelectedQueuedTask() -> Bool {
+        guard let selectedQueueItem, selectedQueueItem.isDeferredDraft else { return false }
+        return appModel.startQueuedTask(id: selectedQueueItem.id)
+    }
+
+    @discardableResult
+    func startAllQueuedTasks() -> Int {
+        appModel.startAllQueuedTasks()
+    }
+
+    func recoverQueueTask(for itemID: UUID) {
+        guard let queueItem = queueItem(for: itemID) else { return }
+        switch queueItem.stage {
+        case .queued:
+            guard queueItem.isDeferredDraft else { return }
+            _ = appModel.startQueuedTask(id: queueItem.id)
+        case .failed:
+            if let prompt = queueItem.needsLogin {
+                appModel.openLoginForQueueItem(site: prompt.site, loginURL: prompt.loginURL)
+            } else {
+                appModel.queue.retry(queueItem.id)
+            }
+        case .cancelling, .downloading, .translating, .burning, .done, .cancelled:
+            break
+        }
+    }
+
     /// Defaults follow the agreed three breakpoints: show at 1380 pt and
     /// above; hide in the compact and medium ranges. The toolbar can still
     /// explicitly show/hide the Inspector at any usable window width.
     func updateLayout(for width: CGFloat) {
-        guard !inspectorPreferenceIsExplicit else { return }
-        showInspector = width >= 1_380
+        guard width > 0, !inspectorPreferenceIsExplicit else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            showInspector = width >= 1_380
+        }
     }
 
     func toggleInspector() {
         inspectorPreferenceIsExplicit = true
+        inspectorInteractionGeneration &+= 1
         showInspector.toggle()
+    }
+
+    func showInspector(_ mode: InspectorMode) {
+        inspectorPreferenceIsExplicit = true
+        inspectorMode = mode
+        guard !showInspector else { return }
+        inspectorInteractionGeneration &+= 1
+        showInspector = true
+    }
+
+    func showInspector(_ mode: InspectorMode, for itemID: UUID) {
+        selectedItemID = itemID
+        showInspector(mode)
+    }
+
+    func revealSelectedInFinder() {
+        guard let selectedItemID else { return }
+        revealInFinder(itemID: selectedItemID)
+    }
+
+    func canRevealInFinder(itemID: UUID) -> Bool {
+        revealableArtifactURL(itemID: itemID) != nil
+    }
+
+    func revealInFinder(itemID: UUID) {
+        guard let url = revealableArtifactURL(itemID: itemID) else {
+            errorMessage = "找不到可在访达中显示的本地文件。"
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func revealableArtifactURL(itemID: UUID) -> URL? {
+        guard let item = libraryItem(id: itemID),
+              let artifact = item.latestVersion?.artifacts.first(where: {
+                  $0.role == .video || $0.role == .renderedVideo
+              }) ?? item.latestVersion?.artifacts.first,
+              let url = absoluteURL(for: artifact),
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        return url
+    }
+
+    func copySourceLink(itemID: UUID) {
+        guard let source = libraryItem(id: itemID)?.source?.urlString,
+              !source.isEmpty else {
+            errorMessage = "这个项目没有可复制的来源链接。"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(source, forType: .string)
+    }
+
+    func canPlayEmbeddedVideo(itemID: UUID) -> Bool {
+        guard let artifact = libraryItem(id: itemID)?.latestVersion?.artifacts.first(where: {
+            $0.role == .video || $0.role == .renderedVideo
+        }),
+        let url = absoluteURL(for: artifact) else {
+            return false
+        }
+        return ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
+            && FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func playEmbeddedVideo(itemID: UUID) {
+        guard canPlayEmbeddedVideo(itemID: itemID) else {
+            errorMessage = "该视频暂时不能在月之门内播放。"
+            return
+        }
+        selectedItemID = itemID
+        playbackRequest = PlaybackRequest(itemID: itemID)
+    }
+
+    func consumePlaybackRequest(id: UUID) {
+        guard playbackRequest?.requestID == id else { return }
+        playbackRequest = nil
     }
 
     func requestSearchFocus() {
@@ -158,13 +370,19 @@ final class LibraryWorkspaceModel: ObservableObject {
             set: { value in
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.processingDraft[keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
+                self.persistSelectedQueuedConfiguration()
             }
         )
+    }
+
+    var draftSubtitleMode: ChineseSubtitleMode {
+        ChineseSubtitleMode(rawValue: processingDraft.subtitleMode ?? "") ?? .off
     }
 
     var changedFields: Set<ReprocessChangedField> {
         guard let original = selectedItem?.latestVersion?.processing.configuration else { return [] }
         var changes = Set<ReprocessChangedField>()
+        if original.subtitleMode != processingDraft.subtitleMode { changes.insert(.subtitleMode) }
         if original.subtitleStyle != processingDraft.subtitleStyle { changes.insert(.subtitleStyle) }
         if original.targetLanguage != processingDraft.targetLanguage { changes.insert(.targetLanguage) }
         if original.translationModel != processingDraft.translationModel { changes.insert(.translationModel) }
@@ -176,19 +394,40 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var reprocessPlan: ReprocessPlan? {
-        guard let sourceVersionID = selectedItem?.latestVersion?.id,
+        guard let version = selectedItem?.latestVersion,
               !changedFields.isEmpty else {
             return nil
         }
         return ReprocessPlanner.plan(for: ReprocessRequest(
-            sourceVersionID: sourceVersionID,
+            sourceVersionID: version.id,
             changedFields: changedFields,
-            configuration: processingDraft
+            configuration: processingDraft,
+            previousConfiguration: version.processing.configuration
         ))
     }
 
-    func setPinned(_ pinned: Bool) {
-        guard var item = selectedItem else { return }
+    var reprocessBlockerReason: String? {
+        guard let plan = reprocessPlan else { return nil }
+        return reprocessBlockerReason(for: plan)
+    }
+
+    var canCreateReprocess: Bool {
+        reprocessPlan != nil && reprocessBlockerReason == nil
+    }
+
+    func reprocessBlockerReason(for plan: ReprocessPlan) -> String? {
+        guard !plan.steps.isEmpty else {
+            return "此修改不会改变当前输出。"
+        }
+        guard plan.steps.contains(.refreshVideo) else { return nil }
+        guard let source = selectedItem?.source, source.supportsRestart else {
+            return "此变更需要重新下载原视频。请使用可安全重新开始的原链接新建下载。"
+        }
+        return nil
+    }
+
+    func setPinned(_ pinned: Bool, itemID: UUID? = nil) {
+        guard var item = libraryItem(id: itemID ?? selectedItemID) else { return }
         item.isPinned = pinned
         item.updatedAt = Date()
         persistItem(item)
@@ -230,18 +469,20 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     /// Removes only the durable index. The returned item stays in memory so
     /// the UI can offer a genuine undo rather than pretending media was erased.
-    func removeFromLibrary() {
-        guard let selectedItemID else { return }
+    func removeFromLibrary(itemID: UUID? = nil) {
+        guard let targetItemID = itemID ?? selectedItemID else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
-                removedItemForUndo = try await store.remove(itemID: selectedItemID)
+                removedItemForUndo = try await store.remove(itemID: targetItemID)
                 undoRemovalAvailable = removedItemForUndo != nil
                 if removedItemForUndo != nil {
-                    suppressedQueueLibraryItemIDs.insert(selectedItemID)
+                    suppressedQueueLibraryItemIDs.insert(targetItemID)
                 }
                 envelope = try await store.load()
-                self.selectedItemID = envelope.items.first?.id
+                if selectedItemID == targetItemID {
+                    self.selectedItemID = envelope.items.first?.id
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -298,8 +539,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     /// The destructive operation is intentionally separate from index removal
     /// and is called only after the Inspector's explicit confirmation dialog.
-    func moveArtifactsToTrash() {
-        guard let item = selectedItem else { return }
+    func moveArtifactsToTrash(itemID: UUID? = nil) {
+        guard let item = libraryItem(id: itemID ?? selectedItemID) else { return }
         let urls = Array(Set(
             item.versions
                 .flatMap(\.artifacts)
@@ -310,8 +551,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             return
         }
 
+        let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existingURLs.isEmpty else {
+            errorMessage = "本地文件已不在原位置。若只想隐藏这条记录，请使用“从资料库移除”。"
+            return
+        }
+
         do {
-            for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            for url in existingURLs {
                 _ = try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             }
             // Finder's trash operation is destructive from the library's
@@ -326,7 +573,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 do {
                     _ = try await store.remove(itemID: item.id)
                     envelope = try await store.load()
-                    selectedItemID = envelope.items.first?.id
+                    if selectedItemID == item.id {
+                        selectedItemID = envelope.items.first?.id
+                    }
                 } catch {
                     errorMessage = "文件已移到废纸篓，但未能从资料库移除：\(error.localizedDescription)"
                 }
@@ -340,7 +589,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// cannot overwrite the completed record currently shown in the Inspector.
     func createReprocessTask() {
         guard let item = selectedItem,
-              let plan = reprocessPlan else {
+              let plan = reprocessPlan,
+              reprocessBlockerReason(for: plan) == nil else {
             return
         }
         let configuration = processingDraft
@@ -357,6 +607,14 @@ final class LibraryWorkspaceModel: ObservableObject {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func restartInterruptedTask() {
+        guard let item = selectedItem,
+              selectedProcessing?.state == .interrupted else {
+            return
+        }
+        appModel.restartInterruptedLibraryItem(item)
     }
 
     private func bootstrap() async {
@@ -403,6 +661,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    private func rebuildProjectionCache() {
+        projectedItems = LibraryProjection.items(
+            in: envelope,
+            filter: sidebarDestination.libraryFilter,
+            searchQuery: searchText,
+            liveProcessing: liveProcessing
+        )
+        sidebarCounts = LibraryProjection.sidebarCounts(
+            in: envelope,
+            liveProcessing: liveProcessing
+        )
+    }
+
     private func selectFirstItemIfNeeded() {
         let projectedIDs = Set(projectedItems.map(\.id))
         if let selectedItemID, projectedIDs.contains(selectedItemID) {
@@ -411,9 +682,25 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedItemID = projectedItems.first?.id
     }
 
+    private func libraryItem(id: UUID?) -> MoongateCore.LibraryItem? {
+        guard let id else { return nil }
+        return envelope.items.first { $0.id == id }
+    }
+
     private func loadDraftForSelection() {
         processingDraft = selectedItem?.latestVersion?.processing.configuration ?? .init()
         inspectorMode = .information
+    }
+
+    private func persistSelectedQueuedConfiguration() {
+        guard let selectedQueueItem,
+              selectedQueueItem.isDeferredDraft else {
+            return
+        }
+        _ = appModel.updateQueuedTaskConfiguration(
+            id: selectedQueueItem.id,
+            configuration: processingDraft
+        )
     }
 
     private static let recoveryScanDefaultsKey = "v0.9.libraryRecoveryScanV1"
@@ -583,12 +870,18 @@ private struct QueueLibrarySnapshot: Sendable {
         source = LibrarySourceDescriptor(urlString: item.request.url)
         thumbnail = item.thumbnailURL.flatMap { LibrarySourceDescriptor(urlString: $0.absoluteString) }
         processing = Self.processingSummary(for: item, updatedAt: now)
-        artifacts = Self.libraryArtifacts(from: item.resultFiles)
+        artifacts = Self.libraryArtifacts(from: item)
         speedText = item.speedText
         remainingSeconds = item.remainingSeconds
         remainingIsApproximate = item.remainingIsApproximate
         isEstimatingRemaining = item.isEstimatingRemaining
-        statusText = item.statusText
+        statusText = item.needsLogin.map {
+            CoreL10n.text(
+                en: "Login required · \($0.site)",
+                zhHans: "需要登录 · \($0.site)",
+                zhHant: "需要登入 · \($0.site)"
+            )
+        } ?? item.statusText
         createdAt = now
         updatedAt = now
     }
@@ -598,14 +891,13 @@ private struct QueueLibrarySnapshot: Sendable {
         let state: LibraryItemState
         let stage: LibraryProcessingStage
 
-        if item.isPaused {
-            state = .queued
-            stage = .download
-        } else {
-            switch item.stage {
+        switch item.stage {
             case .queued:
-                state = .queued
+                state = item.isDeferredDraft ? .queued : .downloading
                 stage = .download
+            case .cancelling:
+                state = .cancelling
+                stage = .recovery
             case .downloading:
                 switch item.progressPhase {
                 case .speechRecognition, .audioExtract, .subtitleSegment:
@@ -629,31 +921,31 @@ private struct QueueLibrarySnapshot: Sendable {
                 stage = .complete
             case .failed:
                 state = item.needsLogin == nil ? .failed : .needsAttention
-                stage = .complete
+                stage = .recovery
             case .cancelled:
                 state = .cancelled
                 stage = .complete
-            }
         }
 
-        let primaryTrack = item.request.primarySubtitleTrack
-        let transcriptionModel: String?
-        switch primaryTrack?.sourceKind {
+        let actualSource = item.resolvedSubtitleSource?.selectedKind ?? item.request.primarySubtitleTrack?.sourceKind
+        let requestedTranscriptionModel: String?
+        switch actualSource {
         case .localASR:
-            transcriptionModel = item.settings.localASRModelID.isEmpty ? "Whisper" : item.settings.localASRModelID
+            requestedTranscriptionModel = item.settings.localASRModelID.isEmpty ? "Whisper" : item.settings.localASRModelID
         case .cloudASR:
-            transcriptionModel = item.settings.cloudASRModel.isEmpty ? nil : item.settings.cloudASRModel
+            requestedTranscriptionModel = item.settings.cloudASRModel.isEmpty ? nil : item.settings.cloudASRModel
         default:
-            transcriptionModel = nil
+            requestedTranscriptionModel = nil
         }
-        let translationModel = item.chineseMode.requiresTranslation
+        let requestedTranslationModel = item.chineseMode.requiresTranslation
             ? (item.settings.translationFollowsDefault ? item.settings.aiModel : item.settings.translationModel)
             : nil
-        let safeTranslationModel = translationModel?.isEmpty == true ? nil : translationModel
+        let safeTranslationModel = requestedTranslationModel?.isEmpty == true ? nil : requestedTranslationModel
         let configuration = LibraryProcessingConfiguration(
             outputFormat: item.request.outputFormat.rawValue,
-            subtitleSource: primaryTrack?.sourceKind.rawValue,
-            transcriptionModel: transcriptionModel,
+            subtitleMode: item.chineseMode.rawValue,
+            subtitleSource: actualSource?.rawValue,
+            transcriptionModel: requestedTranscriptionModel,
             translationModel: safeTranslationModel,
             targetLanguage: item.chineseMode.requiresTranslation ? item.settings.translationTargetLanguage : nil,
             subtitleStyle: item.chineseMode == .off ? nil : item.settings.subtitleStyle.rawValue,
@@ -663,14 +955,24 @@ private struct QueueLibrarySnapshot: Sendable {
             state: state,
             stage: stage,
             progress: item.overallProgress ?? item.progress ?? 0,
-            actualModels: LibraryActualModels(transcription: transcriptionModel, translation: safeTranslationModel),
+            actualModels: item.executedModels,
             configuration: configuration,
             updatedAt: updatedAt
         )
     }
 
     @MainActor
-    private static func libraryArtifacts(from files: [URL]) -> [LibraryArtifact] {
+    private static func libraryArtifacts(from item: QueueManager.QueueItem) -> [LibraryArtifact] {
+        let files = item.resultFiles
+        let videoFiles = files.filter {
+            QueueManager.videoExtensions.contains($0.pathExtension.lowercased())
+        }
+        // Burner inserts its new output before the still-clean input video.
+        // Persist that distinction so a later vN reprocess can never burn
+        // captions onto an already rendered result.
+        let renderedVideo = item.chineseMode.requiresBurner && videoFiles.count > 1
+            ? videoFiles.first?.standardizedFileURL
+            : nil
         let root = ViewModel.appDownloadsDirectory.standardizedFileURL
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         return files.compactMap { fileURL in
@@ -679,7 +981,8 @@ private struct QueueLibrarySnapshot: Sendable {
             let relativePath = String(standardized.path.dropFirst(rootPrefix.count))
             let role: LibraryArtifactRole
             switch standardized.pathExtension.lowercased() {
-            case "mp4", "mov", "m4v", "mkv", "webm", "avi", "flv", "ts": role = .video
+            case "mp4", "mov", "m4v", "mkv", "webm", "avi", "flv", "ts":
+                role = standardized == renderedVideo ? .renderedVideo : .video
             case "srt", "vtt", "ass":
                 role = TranslationLanguage.isTranslatedSubtitleFileName(standardized.lastPathComponent)
                     ? .translatedSubtitle : .sourceSubtitle

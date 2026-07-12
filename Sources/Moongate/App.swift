@@ -49,16 +49,28 @@ struct MoongateApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
-                // Cmd+L：兼容 legacy 工作流，聚焦链接输入框（ContentView 监听 requestUrlFocus）。
+                // Cmd+L focuses the legacy URL field, or opens the equivalent
+                // new-download sheet while the library workspace is active.
                 Button(localizer.t(L.Main.urlInputAccessibility)) {
-                    model.requestUrlFocus += 1
+                    if useLibraryWorkspace {
+                        NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
+                    } else {
+                        model.requestUrlFocus += 1
+                    }
                 }
                 .keyboardShortcut("l", modifiers: .command)
 
-                Button("搜索资料库") {
-                    NotificationCenter.default.post(name: AppWorkspaceCommand.searchRequested, object: nil)
+                if useLibraryWorkspace {
+                    Button("搜索资料库") {
+                        NotificationCenter.default.post(name: AppWorkspaceCommand.searchRequested, object: nil)
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
+                } else {
+                    Button(localizer.t(L.Main.urlInputAccessibility)) {
+                        model.requestUrlFocus += 1
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
                 }
-                .keyboardShortcut("f", modifiers: .command)
 
                 // Cmd+Shift+V：粘贴变体，直接从剪贴板粘贴并解析。
                 Button(localizer.t(L.App.pasteAndParseCommand)) {

@@ -6,9 +6,19 @@ final class MacOSQueueBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("let libraryItemID: UUID"))
         XCTAssertTrue(source.contains("let libraryVersionID: UUID"))
-        XCTAssertTrue(source.contains("libraryItemID: id"))
-        XCTAssertTrue(source.contains("libraryVersionID: UUID()"))
+        XCTAssertTrue(source.contains("libraryItemID: libraryItemID ?? id"))
+        XCTAssertTrue(source.contains("libraryVersionID: libraryVersionID ?? UUID()"))
         XCTAssertTrue(source.contains("func enqueueReprocess("))
+    }
+
+    func testStartedDraftIsNotExposedAsEditableQueuedWork() throws {
+        let source = try queueManagerSource()
+        let workspace = try workspaceModelSource()
+
+        XCTAssertTrue(source.contains("var isDeferredDraft: Bool"))
+        XCTAssertTrue(source.contains("stage == .queued && task == nil"))
+        XCTAssertTrue(workspace.contains("selectedQueueItem.isDeferredDraft"))
+        XCTAssertTrue(workspace.contains("$0.isDeferredDraft"))
     }
 
     func testIsolatedFormatReprocessTranscodesWithoutInvokingDownloadEngine() throws {
@@ -46,8 +56,12 @@ final class MacOSQueueBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("let snapshot: ProcessingSnapshot"),
                       "运行上下文必须保存单一不可变处理快照，而不是分别读可变 QueueItem 字段")
-        XCTAssertTrue(beginRun.contains("snapshot: ProcessingSnapshot("),
+        XCTAssertTrue(beginRun.contains("let snapshot = ProcessingSnapshot("),
                       "只有开始任务时才能冻结请求、模式、设置与既有产物")
+        XCTAssertTrue(beginRun.contains("snapshot: snapshot"),
+                      "运行上下文必须接收同一个已冻结快照")
+        XCTAssertTrue(beginRun.contains("let asr = makeASRRunResources(settings: snapshot.settings)"),
+                      "开始任务时还必须冻结 ASR 资源，不能在流水线中回读当前设置")
         XCTAssertTrue(source.contains("var request: DownloadRequest { snapshot.request }"))
         XCTAssertTrue(source.contains("var initialFiles: [URL] { snapshot.initialFiles }"))
     }
@@ -522,6 +536,13 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("QueueOverlayView.swift"))
+    }
+
+    private func workspaceModelSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("LibraryWorkspaceModel.swift"))
     }
 
     private func packageRoot() -> URL {

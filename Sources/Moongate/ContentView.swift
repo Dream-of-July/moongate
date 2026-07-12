@@ -1561,6 +1561,7 @@ private struct OnboardingView: View {
     @State private var onboardingBaseURL: String
     @State private var onboardingModel: String
     @State private var onboardingAuthToken: String
+    @State private var showPreparationCenter = false
 
     private let targetLanguages = ["zh-Hans", "zh-Hant", "en"]
 
@@ -1601,6 +1602,27 @@ private struct OnboardingView: View {
         .frame(width: 520)
         .onDisappear {
             localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
+        }
+        .sheet(isPresented: $showPreparationCenter) {
+            PreparationCenterView(
+                model: model.preparationCenter,
+                onOpenDependencySetup: { model.showDependencySetup = true },
+                onAdoptRuntime: { _ = model.adoptExistingLocalASRRuntime() },
+                onOpenSystemSettings: {
+                    if let url = URL(string: "x-apple.systempreferences:") {
+                        NSWorkspace.shared.open(url)
+                    }
+                },
+                onManageComponent: { _, _ in
+                    // The model manager is a real Settings flow today. Close
+                    // the nested setup sheets first so its controls are not
+                    // hidden behind onboarding; no onboarding draft is saved.
+                    showPreparationCenter = false
+                    model.showOnboarding = false
+                    model.openSettings(paneID: "localSpeech")
+                }
+            )
+            .frame(minWidth: 620, minHeight: 520)
         }
     }
 
@@ -1726,7 +1748,7 @@ private struct OnboardingView: View {
 
         HStack {
             Button {
-                model.openSettings(paneID: "components")
+                showPreparationCenter = true
             } label: {
                 Label(localizer.t(L.Onboarding.configureLocalSpeechOptional), systemImage: "waveform")
             }

@@ -60,6 +60,109 @@ final class QueueManagerLifecycleTests: XCTestCase {
         XCTAssertEqual(updated.workPlan.phases.map(\.phase), [.download, .transcode, .translate, .burn])
     }
 
+    func testForceLocalDraftDoesNotStartUntilItsSelectedModelIsReady() async throws {
+        let engine = ControlledDownloadEngine(mode: .immediate(makeDownloadResult()))
+        let queue = QueueManager(engine: engine)
+        let localTrack = SubtitleChoice(
+            languageCode: "en",
+            label: "English · Local recognition",
+            sourceKind: .localASR
+        )
+        let request = DownloadRequest(
+            url: "https://example.com/local-asr",
+            videoID: "queue-lifecycle-video",
+            formatID: "best",
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [localTrack],
+            primarySubtitleTrackID: localTrack.id,
+            preferredSubtitleLanguageCode: "en",
+            subtitleSourcePolicy: .forceLocalASR,
+            destinationDirectory: FileManager.default.temporaryDirectory
+        )
+        let id = queue.enqueue(
+            info: makeVideoInfo(),
+            request: request,
+            chineseMode: .srtOnly,
+            settings: AppSettings(
+                localASREnabled: true,
+                localASRModelID: "whisper.cpp:not-installed"
+            ),
+            startImmediately: false
+        )
+
+        XCTAssertFalse(queue.start(id: id))
+        let item = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertTrue(item.isDeferredDraft)
+        XCTAssertTrue(item.statusText?.contains("本地转录模型") == true)
+        let downloadCallCount = await engine.downloadCallCount
+        XCTAssertEqual(downloadCallCount, 0)
+    }
+
+    func testStartedRunUsesItsFrozenLocalASRResourceInsteadOfMutableQueueReadiness() async throws {
+        let engine = ControlledDownloadEngine(mode: .immediate(makeDownloadResult()))
+        let frozenGenerator = TaggedLocalASRGenerator(tag: "frozen")
+        let mutableGenerator = TaggedLocalASRGenerator(tag: "mutable")
+        let queue = QueueManager(
+            engine: engine,
+            localASRGenerator: mutableGenerator,
+            localASRRunProvider: { _ in frozenGenerator }
+        )
+        let localTrack = SubtitleChoice(
+            languageCode: "en",
+            label: "English · Local recognition",
+            sourceKind: .localASR
+        )
+        let request = DownloadRequest(
+            url: "https://example.com/frozen-local-asr",
+            videoID: "queue-lifecycle-video",
+            formatID: "best",
+            subtitleLangs: [],
+            autoSubtitleLangs: [],
+            subtitleTracks: [localTrack],
+            primarySubtitleTrackID: localTrack.id,
+            preferredSubtitleLanguageCode: "en",
+            subtitleSourcePolicy: .forceLocalASR,
+            destinationDirectory: FileManager.default.temporaryDirectory
+        )
+        let id = queue.enqueue(
+            info: makeVideoInfo(),
+            request: request,
+            chineseMode: .off,
+            settings: AppSettings(localASREnabled: true, localASRModelID: "fixture"),
+            startImmediately: false
+        )
+
+        XCTAssertTrue(queue.start(id: id))
+        try await waitForStage(.done, id: id, in: queue)
+
+        XCTAssertEqual(frozenGenerator.callCount, 1)
+        XCTAssertEqual(mutableGenerator.callCount, 0)
+        let completed = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertEqual(completed.executedModels.transcription, "fixture")
+        XCTAssertTrue(completed.resultFiles.contains { $0.lastPathComponent.contains("frozen") })
+    }
+
+    func testEnqueueUsesProvidedLibraryItemAndVersionIDs() throws {
+        let queue = QueueManager(engine: ControlledDownloadEngine(mode: .immediate(makeDownloadResult())))
+        let libraryItemID = UUID()
+        let libraryVersionID = UUID()
+
+        let id = queue.enqueue(
+            info: makeVideoInfo(),
+            request: makeRequest(),
+            chineseMode: .off,
+            settings: AppSettings(),
+            libraryItemID: libraryItemID,
+            libraryVersionID: libraryVersionID,
+            startImmediately: false
+        )
+
+        let queued = try XCTUnwrap(queue.items.first { $0.id == id })
+        XCTAssertEqual(queued.libraryItemID, libraryItemID)
+        XCTAssertEqual(queued.libraryVersionID, libraryVersionID)
+    }
+
     func testStartRunsUpdatedSnapshotOnlyOnceAndRejectsFurtherUpdates() async throws {
         let engine = ControlledDownloadEngine(mode: .suspended(makeDownloadResult()))
         let queue = QueueManager(engine: engine)
@@ -297,6 +400,41 @@ private actor ControlledDownloadEngine: DownloadEngine {
         let ready = suspensionWaiters.filter { $0.minimum <= pendingDownloads.count }
         suspensionWaiters.removeAll { $0.minimum <= pendingDownloads.count }
         ready.forEach { $0.continuation.resume() }
+    }
+}
+
+private final class TaggedLocalASRGenerator: LocalASRSubtitleGenerator, @unchecked Sendable {
+    private let tag: String
+    private let lock = NSLock()
+    private var storedCallCount = 0
+
+    init(tag: String) {
+        self.tag = tag
+    }
+
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    func generateSourceSubtitle(
+        videoFile: URL,
+        languageCode: String,
+        promptMetadata: ASRPromptMetadata?,
+        control: TaskControlToken?,
+        progress: @escaping @Sendable (ASRProgress) -> Void
+    ) async throws -> GeneratedLocalASRSource {
+        lock.withLock { storedCallCount += 1 }
+        let output = videoFile
+            .deletingPathExtension()
+            .appendingPathExtension("local-asr.\(languageCode).\(tag).srt")
+        try """
+        1
+        00:00:00,000 --> 00:00:01,000
+        \(tag)
+
+        """.write(to: output, atomically: true, encoding: .utf8)
+        progress(ASRProgress(phase: .speechRecognition, completedUnits: 1, totalUnits: 1))
+        return GeneratedLocalASRSource(url: output, confidence: nil)
     }
 }
 

@@ -152,6 +152,9 @@ final class QueueManager: ObservableObject {
         var statusText: String?
         /// 已落盘的产物（下载文件、译文、烧录视频）
         var resultFiles: [URL]
+        /// 仅在对应引擎真正被调用后写入。配置模型与实际调用模型
+        /// 分开保存，避免资料库把待开始草稿误标为已执行的模型。
+        var executedModels: LibraryActualModels = .init()
         var isPaused: Bool
         /// 下载已 100%、正在合并/转码/字幕转换（progress 为 nil 但仍处于 .downloading）。
         /// UI 据此显示「处理中…」而非「下载中…」（避免像卡死）。
@@ -175,6 +178,12 @@ final class QueueManager: ObservableObject {
         /// 重新处理任务可跳过网络下载，但仍会在启动时按冻结配置执行后处理。
         var skipDownloadWhenStarted: Bool
         var task: Task<Void, Never>?
+
+        /// A queued item is editable only before its processing task is
+        /// created. A slot-waiting task intentionally keeps `.queued` until
+        /// its download stage begins, so the task reference is the stable
+        /// boundary between a deferred draft and an already frozen run.
+        var isDeferredDraft: Bool { stage == .queued && task == nil }
 
         @MainActor
         var canRetryWithLocalASR: Bool {
@@ -208,12 +217,23 @@ final class QueueManager: ObservableObject {
         let generation: Int
         let control: TaskControlToken
         let snapshot: ProcessingSnapshot
+        let asr: ASRRunResources
 
         var request: DownloadRequest { snapshot.request }
         var mode: ChineseSubtitleMode { snapshot.mode }
         var settings: AppSettings { snapshot.settings }
         var skipDownload: Bool { snapshot.skipDownload }
         var initialFiles: [URL] { snapshot.initialFiles }
+    }
+
+    /// ASR can be reconfigured in Settings while another item is running.
+    /// Keep the concrete generators in the run context so that a started task
+    /// never changes model or transport half-way through its pipeline.
+    private struct ASRRunResources {
+        let local: (any LocalASRSubtitleGenerator)?
+        let cloud: (any CloudASRSubtitleGenerator)?
+        let localModelLabel: String?
+        let cloudModelLabel: String?
     }
 
     @Published var items: [QueueItem] = []
@@ -246,6 +266,8 @@ final class QueueManager: ObservableObject {
     private var phaseDurationSamples: [QueueProgressPhase: [Double]] = [:]
     private var localASRGenerator: (any LocalASRSubtitleGenerator)?
     private var cloudASRGenerator: (any CloudASRSubtitleGenerator)?
+    private let localASRRunProvider: ((AppSettings) -> (any LocalASRSubtitleGenerator)?)?
+    private let cloudASRRunProvider: ((AppSettings, (any LocalASRSubtitleGenerator)?) -> (any CloudASRSubtitleGenerator)?)?
     private let completionNotifier: (any QueueCompletionNotifying)?
     private var notifiedTerminalIDs = Set<UUID>()
 
@@ -260,11 +282,15 @@ final class QueueManager: ObservableObject {
         engine: any DownloadEngine = makeDefaultEngine(),
         localASRGenerator: (any LocalASRSubtitleGenerator)? = nil,
         cloudASRGenerator: (any CloudASRSubtitleGenerator)? = nil,
+        localASRRunProvider: ((AppSettings) -> (any LocalASRSubtitleGenerator)?)? = nil,
+        cloudASRRunProvider: ((AppSettings, (any LocalASRSubtitleGenerator)?) -> (any CloudASRSubtitleGenerator)?)? = nil,
         completionNotifier: (any QueueCompletionNotifying)? = nil
     ) {
         self.engine = engine
         self.localASRGenerator = localASRGenerator
         self.cloudASRGenerator = cloudASRGenerator
+        self.localASRRunProvider = localASRRunProvider
+        self.cloudASRRunProvider = cloudASRRunProvider
         self.completionNotifier = completionNotifier
         let settings = AppSettings.load()
         self.maxConcurrentDownloads = settings.maxConcurrentDownloads
@@ -546,14 +572,16 @@ final class QueueManager: ObservableObject {
         request: DownloadRequest,
         chineseMode: ChineseSubtitleMode,
         settings: AppSettings,
+        libraryItemID: UUID? = nil,
+        libraryVersionID: UUID? = nil,
         startImmediately: Bool = true
     ) -> UUID {
         let id = UUID()
         let control = TaskControlToken()
         let item = QueueItem(
             id: id,
-            libraryItemID: id,
-            libraryVersionID: UUID(),
+            libraryItemID: libraryItemID ?? id,
+            libraryVersionID: libraryVersionID ?? UUID(),
             title: info.title,
             thumbnailURL: info.thumbnailURL,
             info: info,
@@ -639,17 +667,33 @@ final class QueueManager: ObservableObject {
             return false
         }
 
+        let snapshot = ProcessingSnapshot(
+            request: target.request,
+            mode: target.chineseMode,
+            settings: target.settings,
+            skipDownload: target.skipDownloadWhenStarted,
+            initialFiles: target.resultFiles
+        )
+        let asr = makeASRRunResources(settings: snapshot.settings)
+        if Self.localASRLanguageCode(in: snapshot.request) != nil, asr.local == nil {
+            update(id) {
+                $0.statusText = "所选的本地转录模型尚未准备好。请在准备中心安装模型，或选择已准备好的模型。"
+            }
+            return false
+        }
+        if snapshot.request.subtitleSourcePolicy == .cloudASR, asr.cloud == nil {
+            update(id) {
+                $0.statusText = CoreL10n.t(L.Ready.cloudASRSetupRequired)
+            }
+            return false
+        }
+
         let context = RunContext(
             id: id,
             generation: target.generation,
             control: target.control,
-            snapshot: ProcessingSnapshot(
-                request: target.request,
-                mode: target.chineseMode,
-                settings: target.settings,
-                skipDownload: target.skipDownloadWhenStarted,
-                initialFiles: target.resultFiles
-            )
+            snapshot: snapshot,
+            asr: asr
         )
         notifiedTerminalIDs.remove(id)
         let task = Task { [weak self] in
@@ -658,6 +702,28 @@ final class QueueManager: ObservableObject {
         }
         update(id) { $0.task = task }
         return true
+    }
+
+    private func makeASRRunResources(settings: AppSettings) -> ASRRunResources {
+        let local = localASRRunProvider?(settings) ?? localASRGenerator
+        let cloud = cloudASRRunProvider?(settings, local) ?? cloudASRGenerator
+        let localModelLabel: String?
+        if local == nil {
+            localModelLabel = nil
+        } else if settings.localASRPreciseModeEnabled {
+            localModelLabel = "sidecar:local-precise"
+        } else {
+            let configured = settings.localASRModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            localModelLabel = configured.isEmpty ? "Whisper" : configured
+        }
+        let configuredCloud = settings.cloudASRModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cloudModelLabel = cloud == nil || configuredCloud.isEmpty ? nil : configuredCloud
+        return ASRRunResources(
+            local: local,
+            cloud: cloud,
+            localModelLabel: localModelLabel,
+            cloudModelLabel: cloudModelLabel
+        )
     }
 
     /// Starts one deferred draft and freezes its current request, mode, and settings.
@@ -670,7 +736,7 @@ final class QueueManager: ObservableObject {
     @discardableResult
     func startAll() -> Int {
         let ids = items.compactMap { item -> UUID? in
-            item.stage == .queued && item.task == nil ? item.id : nil
+            item.isDeferredDraft ? item.id : nil
         }
         var started = 0
         for id in ids where beginRun(id: id) {
@@ -803,14 +869,16 @@ final class QueueManager: ObservableObject {
                 request: request,
                 id: id,
                 generation: generation,
-                control: control
+                control: control,
+                asr: context.asr
             )
             downloadFiles = try await prepareCloudASRSourceSubtitleIfNeeded(
                 files: downloadFiles,
                 request: request,
                 id: id,
                 generation: generation,
-                control: control
+                control: control,
+                asr: context.asr
             )
             guard ensureRunActive(context) else { return }
         } catch {
@@ -869,7 +937,8 @@ final class QueueManager: ObservableObject {
                 info: info,
                 id: id,
                 generation: generation,
-                control: control
+                control: control,
+                asr: context.asr
             )
             guard ensureRunActive(context) else { return }
             sourceSubtitle = resolution.selectedFile
@@ -1052,6 +1121,12 @@ final class QueueManager: ObservableObject {
                 $0.statusText = nil
                 $0.isPostDownloadProcessing = false
                 $0.postDownloadProcessingKind = nil
+                let configuredModel = $0.settings.translationFollowsDefault
+                    ? $0.settings.aiModel
+                    : $0.settings.translationModel
+                $0.executedModels.translation = configuredModel
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty ? nil : configuredModel
                 self.applyProgress(&$0, id: id, generation: generation, phase: .translate, phaseProgress: nil)
             }
             let translator = makeTranslator(settings: settings)
@@ -1723,7 +1798,8 @@ final class QueueManager: ObservableObject {
         info: VideoInfo,
         id: UUID,
         generation: Int,
-        control: TaskControlToken
+        control: TaskControlToken,
+        asr: ASRRunResources
     ) async throws -> SubtitleSourceResolution {
         guard isRunActive(id: id, generation: generation, control: control) else {
             throw MoongateError.cancelled
@@ -1853,8 +1929,8 @@ final class QueueManager: ObservableObject {
         switch SubtitleSourceDecisionEngine.generationPlan(
             policy: request.subtitleSourcePolicy,
             platform: platformAssessment,
-            localASRAvailable: localASRGenerator != nil,
-            cloudASRAvailable: cloudASRGenerator != nil
+            localASRAvailable: asr.local != nil,
+            cloudASRAvailable: asr.cloud != nil
         ) {
         case .none:
             return SubtitleSourceResolution(
@@ -1880,7 +1956,7 @@ final class QueueManager: ObservableObject {
         }
 
         // Engine planned local ASR generation. Need a generator and a downloaded video file.
-        guard let localASRGenerator,
+        guard let localASRGenerator = asr.local,
               let videoFile = downloadFiles.first(where: {
                   Self.videoExtensions.contains($0.pathExtension.lowercased())
               }) else {
@@ -1918,6 +1994,9 @@ final class QueueManager: ObservableObject {
         guard isRunActive(id: id, generation: generation, control: control) else {
             throw MoongateError.cancelled
         }
+        update(id, generation: generation) {
+            $0.executedModels.transcription = asr.localModelLabel
+        }
         completeProgressPhase(id, generation: generation, phase: .audioExtract)
         completeProgressPhase(id, generation: generation, phase: .speechRecognition)
         completeProgressPhase(id, generation: generation, phase: .subtitleSegment)
@@ -1939,17 +2018,25 @@ final class QueueManager: ObservableObject {
             policy: request.subtitleSourcePolicy,
             localAssessment: generatedLocalAssessment,
             localASRConfidenceIsLowQuality: generated.confidence?.isLowQuality == true,
-            cloudASRAvailable: cloudASRGenerator != nil) {
+            cloudASRAvailable: asr.cloud != nil) {
             if let cloudSRT = try? await generateCloudASRSourceSubtitle(
                 videoFile: videoFile,
                 languageCode: language.isEmpty ? "auto" : language,
                 promptMetadata: Self.localASRPromptMetadata(info: info),
-                control: control
+                control: control,
+                asr: asr
             ) {
                 finalSourceSRT = cloudSRT.url
                 finalConfidence = nil
                 usedCloudEscalation = true
                 if !downloadFiles.contains(cloudSRT.url) { downloadFiles.append(cloudSRT.url) }
+                update(id, generation: generation) {
+                    if let local = asr.localModelLabel, let cloud = asr.cloudModelLabel {
+                        $0.executedModels.transcription = "\(local) → \(cloud)"
+                    } else {
+                        $0.executedModels.transcription = asr.cloudModelLabel
+                    }
+                }
             }
         }
         // 云端识别可能耗时数秒；与本地路径(1636)一致,await 后重查 generation,避免取消后仍按陈旧结果继续。
@@ -2084,7 +2171,8 @@ final class QueueManager: ObservableObject {
         request: DownloadRequest,
         id: UUID,
         generation: Int,
-        control: TaskControlToken
+        control: TaskControlToken,
+        asr: ASRRunResources
     ) async throws -> [URL] {
         guard isRunActive(id: id, generation: generation, control: control) else {
             throw MoongateError.cancelled
@@ -2098,7 +2186,7 @@ final class QueueManager: ObservableObject {
             if !nextFiles.contains(existing) { nextFiles.append(existing) }
             return nextFiles
         }
-        guard let localASRGenerator,
+        guard let localASRGenerator = asr.local,
               let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
             return files
         }
@@ -2143,6 +2231,7 @@ final class QueueManager: ObservableObject {
         let lowConfidenceNote = Self.localASRSourceNote(fallbackReasons: nil, confidence: generated.confidence)
         update(id, generation: generation) {
             $0.resultFiles = nextFiles
+            $0.executedModels.transcription = asr.localModelLabel
             $0.clearProgress()
             $0.statusText = CoreL10n.t(L.Queue.localASRGeneratedSubtitleReady)
             $0.isPostDownloadProcessing = false
@@ -2157,7 +2246,8 @@ final class QueueManager: ObservableObject {
         request: DownloadRequest,
         id: UUID,
         generation: Int,
-        control: TaskControlToken
+        control: TaskControlToken,
+        asr: ASRRunResources
     ) async throws -> [URL] {
         guard isRunActive(id: id, generation: generation, control: control) else {
             throw MoongateError.cancelled
@@ -2166,7 +2256,7 @@ final class QueueManager: ObservableObject {
         guard let videoFile = files.first(where: { Self.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
             return files
         }
-        guard cloudASRGenerator != nil else {
+        guard asr.cloud != nil else {
             throw MoongateError.downloadFailed(CoreL10n.t(L.Ready.cloudASRSetupRequired))
         }
         let languageCode = request.effectivePreferredLanguageCode
@@ -2186,7 +2276,8 @@ final class QueueManager: ObservableObject {
             videoFile: videoFile,
             languageCode: languageCode,
             promptMetadata: promptMetadata,
-            control: control
+            control: control,
+            asr: asr
         )
         guard isRunActive(id: id, generation: generation, control: control) else {
             throw MoongateError.cancelled
@@ -2197,6 +2288,7 @@ final class QueueManager: ObservableObject {
         if !nextFiles.contains(generated.url) { nextFiles.append(generated.url) }
         update(id, generation: generation) {
             $0.resultFiles = nextFiles
+            $0.executedModels.transcription = asr.cloudModelLabel
             $0.clearProgress()
             $0.isPostDownloadProcessing = false
             $0.postDownloadProcessingKind = nil
@@ -2208,9 +2300,10 @@ final class QueueManager: ObservableObject {
         videoFile: URL,
         languageCode: String,
         promptMetadata: ASRPromptMetadata?,
-        control: TaskControlToken
+        control: TaskControlToken,
+        asr: ASRRunResources
     ) async throws -> GeneratedCloudASRSource {
-        guard let cloudASRGenerator else {
+        guard let cloudASRGenerator = asr.cloud else {
             throw MoongateError.downloadFailed(CoreL10n.t(L.Ready.cloudASRSetupRequired))
         }
         return try await cloudASRGenerator.generateSourceSubtitle(

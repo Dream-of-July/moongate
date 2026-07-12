@@ -21,7 +21,9 @@ struct RootNewDownloadSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var urlText = ""
     @State private var configuration: QueuedProcessingConfiguration
-    @State private var processingOptionsExpanded = true
+    @State private var processingOptionsExpanded = false
+    @State private var isSubmitting = false
+    @State private var submissionResult: String?
     @FocusState private var urlFieldFocused: Bool
 
     init(model: ViewModel) {
@@ -47,6 +49,12 @@ struct RootNewDownloadSheet: View {
             Text(localizer.t(L.SplitLayout.addSheetHint))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Text(configurationSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityLabel("当前处理设置：\(configurationSummary)")
 
             DisclosureGroup("处理选项", isExpanded: $processingOptionsExpanded) {
                 VStack(alignment: .leading, spacing: 12) {
@@ -90,7 +98,7 @@ struct RootNewDownloadSheet: View {
                             Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
                         }
 
-                        TextField("转录模型（可选）", text: optionalTextBinding(\.transcriptionModel))
+                        TranscriptionModelPicker(selection: transcriptionModelBinding)
                         TextField("翻译模型（可选）", text: optionalTextBinding(\.translationModel))
                     }
                 }
@@ -102,26 +110,68 @@ struct RootNewDownloadSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if isSubmitting {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(model.batchStatusText ?? "正在解析链接…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(model.batchStatusText ?? "正在解析链接")
+            }
+
+            if let submissionResult {
+                Text(submissionResult)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(submissionResult)
+            }
+
             HStack(spacing: Spacing.md) {
                 Spacer(minLength: 0)
 
                 Button(localizer.t(L.Common.cancel)) {
+                    if isSubmitting { model.cancelParse() }
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("加入待开始队列") {
-                    model.enqueueDeferredDrafts(from: urlText, configuration: configuration)
-                    dismiss()
+                if submissionResult != nil {
+                    Button("完成") { dismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("加入待开始队列") {
+                        if model.enqueueDeferredDrafts(from: urlText, configuration: configuration) {
+                            isSubmitting = true
+                        } else {
+                            submissionResult = model.enqueueNotice ?? "没有找到可用链接。"
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSubmitting || urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(Spacing.xl)
         .frame(width: 500)
+        .interactiveDismissDisabled(isSubmitting)
         .onAppear { urlFieldFocused = true }
+        .onChange(of: model.enqueueNotice) { _, notice in
+            guard isSubmitting, let notice else { return }
+            isSubmitting = false
+            if (model.deferredBatchAddedCount ?? 0) > 0 {
+                dismiss()
+            } else {
+                submissionResult = notice
+            }
+        }
+        .onDisappear {
+            if isSubmitting { model.cancelParse() }
+        }
     }
 
     private var outputFormatBinding: Binding<String> {
@@ -150,6 +200,39 @@ struct RootNewDownloadSheet: View {
             get: { configuration.subtitleStyle.rawValue },
             set: { configuration.subtitleStyle = SubtitleStyle(rawValue: $0) ?? .bilingual }
         )
+    }
+
+    private var transcriptionModelBinding: Binding<String> {
+        Binding(
+            get: { configuration.transcriptionModel ?? "" },
+            set: { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                configuration.transcriptionModel = trimmed.isEmpty ? nil : trimmed
+            }
+        )
+    }
+
+    private var configurationSummary: String {
+        let quality: String
+        switch configuration.quality {
+        case "best": quality = "最佳画质"
+        case "bv*[height<=1080]+ba/b[height<=1080]": quality = "1080p"
+        case "bv*[height<=720]+ba/b[height<=720]": quality = "720p"
+        default: quality = "自定义画质"
+        }
+        let format = switch configuration.outputFormat {
+        case .original: "保持源格式"
+        case .mp4H264: "MP4 · H.264"
+        case .mp4H265: "MP4 · H.265"
+        case .mkv: "MKV"
+        }
+        let subtitles = switch configuration.subtitleMode {
+        case .off: "不处理字幕"
+        case .srtOnly: "生成译文 SRT"
+        case .burnIn: "压制译文字幕"
+        case .burnOriginal: "压制原字幕"
+        }
+        return [quality, format, subtitles].joined(separator: " · ")
     }
 
     private func optionalTextBinding(

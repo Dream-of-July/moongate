@@ -26,4 +26,29 @@ final class ReprocessWorkspaceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: subtitle), "subtitle-v1")
         XCTAssertEqual(try String(contentsOf: copiedSubtitle), "subtitle-v2")
     }
+
+    func testBurnReprocessCopiesCleanVideoInsteadOfRenderedVideo() throws {
+        let rendered = try LibraryArtifact(role: .renderedVideo, relativePath: "v1/Movie (subtitled).mp4")
+        let source = try LibraryArtifact(role: .video, relativePath: "v1/Movie.mp4")
+        let subtitle = try LibraryArtifact(role: .translatedSubtitle, relativePath: "v1/Movie.zh-Hans.srt")
+        let version = LibraryVersion(
+            number: 1,
+            processing: ProcessingSummary(
+                state: .completed,
+                stage: .complete,
+                progress: 1,
+                configuration: .init(subtitleMode: "burnIn")
+            ),
+            artifacts: [rendered, source, subtitle]
+        )
+
+        let copied = ReprocessWorkspace.localReprocessArtifacts(
+            from: version,
+            requiresCleanVideo: true
+        )
+
+        XCTAssertEqual(copied.first?.relativePath, source.relativePath)
+        XCTAssertFalse(copied.contains { $0.id == rendered.id })
+        XCTAssertTrue(copied.contains { $0.id == subtitle.id })
+    }
 }

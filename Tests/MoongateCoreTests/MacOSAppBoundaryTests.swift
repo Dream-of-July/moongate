@@ -41,6 +41,12 @@ final class MacOSAppBoundaryTests: XCTestCase {
                       "⌘N 的新建下载 sheet 必须创建可编辑的待开始任务")
     }
 
+    func testSearchCommandKeepsLegacyFallbackFunctional() throws {
+        let source = try appSource()
+        XCTAssertTrue(source.contains("if useLibraryWorkspace {\n                    Button(\"搜索资料库\")"))
+        XCTAssertTrue(source.contains("} else {\n                    Button(localizer.t(L.Main.urlInputAccessibility))"))
+    }
+
     func testNewDownloadSheetCreatesEditableDeferredDraftsWithoutReadinessGate() throws {
         let rootHost = try appRootHostSource()
         let viewModel = try viewModelSource()
@@ -78,18 +84,60 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("queue.updateQueuedConfiguration("))
     }
 
-    func testReprocessChecksASRReadinessBeforeCreatingAnIsolatedTask() throws {
+    func testNewDownloadSheetKeepsAsyncResolutionFeedbackVisible() throws {
+        let rootHost = try appRootHostSource()
+        let viewModel = try viewModelSource()
+
+        XCTAssertTrue(rootHost.contains("@State private var isSubmitting"))
+        XCTAssertTrue(rootHost.contains("submissionResult"))
+        XCTAssertTrue(rootHost.contains(".onChange(of: model.enqueueNotice)"))
+        XCTAssertTrue(rootHost.contains("正在解析链接…"))
+        XCTAssertTrue(viewModel.contains("func enqueueDeferredDrafts(from text: String, configuration: QueuedProcessingConfiguration) -> Bool"),
+                      "无效链接必须让 Sheet 当场保留并显示结果")
+    }
+
+    func testInterruptedLibraryItemRestartsWithItsStableIdentity() throws {
+        let viewModel = try viewModelSource()
+        let queue = try queueManagerSource()
+
+        let restart = try XCTUnwrap(functionBody(prefix: "func restartInterruptedLibraryItem", in: viewModel))
+        XCTAssertTrue(restart.contains("processBatch("))
+        XCTAssertTrue(restart.contains("libraryItemID: item.id"))
+        XCTAssertTrue(restart.contains("libraryVersionID: version.id"))
+        XCTAssertTrue(queue.contains("libraryItemID: UUID? = nil"))
+        XCTAssertTrue(queue.contains("libraryVersionID: UUID? = nil"))
+    }
+
+    func testReprocessDefersLocalASRReadinessToItsFrozenTaskSettings() throws {
         let source = try viewModelSource()
         let body = try XCTUnwrap(functionBody(prefix: "func enqueueLibraryReprocess", in: source))
 
-        XCTAssertTrue(body.contains("subtitleKind == .localASR, !queue.hasLocalASRGenerator"))
+        // The global generator can still represent the previous selected
+        // model. Let QueueManager inspect this task's validated snapshot so
+        // an unavailable replacement stays queued with a recovery message.
+        XCTAssertFalse(body.contains("subtitleKind == .localASR, !queue.hasLocalASRGenerator"))
         XCTAssertTrue(body.contains("subtitleKind == .cloudASR, !queue.hasCloudASRGenerator"))
-        XCTAssertTrue(body.contains("openLocalASRSettings()"))
         XCTAssertTrue(body.contains("openCloudASRSettings()"))
+        XCTAssertTrue(body.contains("taskConfiguration.applying(to: taskSettings)"))
+    }
+
+    func testReprocessValidatesAChangedLocalASRModelBeforeEnqueueing() throws {
+        let source = try viewModelSource()
+        let body = try XCTUnwrap(functionBody(prefix: "func enqueueLibraryReprocess", in: source))
+
+        // 重新处理不能只改 localASRModelID 而沿用旧路径，否则 UI 会显示新模型、
+        // 实际却静默运行旧模型。必须复用待开始任务的受校验配置路径。
+        XCTAssertTrue(body.contains("let taskConfiguration = QueuedProcessingConfiguration("))
+        XCTAssertTrue(body.contains("transcriptionModel: requiresASR ? configuration.transcriptionModel : nil"))
+        XCTAssertTrue(body.contains("taskConfiguration.applying(to: taskSettings)"))
+        XCTAssertFalse(body.contains("taskSettings.localASRModelID = transcriptionModel"))
+
+        let configuration = try XCTUnwrap(body.range(of: "let taskConfiguration = QueuedProcessingConfiguration("))
+        let enqueue = try XCTUnwrap(body.range(of: "queue.enqueueReprocess("))
         XCTAssertLessThan(
-            try XCTUnwrap(body.range(of: "subtitleKind == .localASR")).lowerBound,
-            try XCTUnwrap(body.range(of: "let subtitleTrack")).lowerBound,
-            "ASR 依赖必须在构建并入队请求前失败"
+            configuration.lowerBound,
+            enqueue.lowerBound,
+            "模型路径必须在重新处理任务入队前解析；未知或未安装模型应保持为无路径的待开始任务"
         )
     }
 
@@ -141,6 +189,13 @@ final class MacOSAppBoundaryTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("ViewModel.swift"))
+    }
+
+    private func queueManagerSource() throws -> String {
+        try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("QueueManager.swift"))
     }
 
     private func packageRoot() -> URL {

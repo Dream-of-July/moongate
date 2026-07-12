@@ -175,7 +175,9 @@ final class HDRSupportTests: XCTestCase {
             .appendingPathComponent("Sources")
             .appendingPathComponent("Moongate")
             .appendingPathComponent("QueueManager.swift"))
-        XCTAssertTrue(queue.contains("requestedHDRFallback = current.request.preferHDR"))
+        XCTAssertTrue(queue.contains("requestedHDRFallback = request.preferHDR"),
+                      "转码回退必须读取已冻结的处理快照，而不是运行中可变的 QueueItem。")
+        XCTAssertTrue(queue.contains("sourceIsHDRFallback: requestedHDRFallback"))
         XCTAssertFalse(queue.contains("sourceIsHDR: current.request.preferHDR"))
     }
 

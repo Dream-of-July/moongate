@@ -12,26 +12,20 @@ import MoongateCore
 
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case general
-    case subtitles
-    case localSpeech
-    case aiServices
-    case videoOutput
-    case siteLogin
-    case components
-    case updates
+    case downloadOutput
+    case subtitlesLanguage
+    case servicesAccounts
+    case storage
 
     var id: String { rawValue }
 
     var systemImage: String {
         switch self {
         case .general: return "gearshape"
-        case .subtitles: return "captions.bubble"
-        case .localSpeech: return "waveform"
-        case .aiServices: return "sparkles"
-        case .videoOutput: return "film"
-        case .siteLogin: return "person.crop.circle.badge.checkmark"
-        case .components: return "externaldrive"
-        case .updates: return "arrow.down.circle"
+        case .downloadOutput: return "arrow.down.to.line.compact"
+        case .subtitlesLanguage: return "captions.bubble"
+        case .servicesAccounts: return "person.crop.circle.badge.checkmark"
+        case .storage: return "externaldrive"
         }
     }
 
@@ -39,13 +33,23 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     func title(_ localizer: Localizer) -> String {
         switch self {
         case .general: return localizer.t(L.Settings.paneGeneral)
-        case .subtitles: return localizer.t(L.Settings.paneSubtitles)
-        case .localSpeech: return localizer.t(L.Settings.paneLocalSpeech)
-        case .aiServices: return localizer.t(L.Settings.paneAIServices)
-        case .videoOutput: return localizer.t(L.Settings.paneVideoOutput)
-        case .siteLogin: return localizer.t(L.Settings.paneSiteLogin)
-        case .components: return localizer.t(L.Settings.paneComponents)
-        case .updates: return localizer.t(L.Settings.paneUpdates)
+        case .downloadOutput: return localizer.t(L.Settings.paneDownloadOutput)
+        case .subtitlesLanguage: return localizer.t(L.Settings.paneSubtitlesLanguage)
+        case .servicesAccounts: return localizer.t(L.Settings.paneServicesAccounts)
+        case .storage: return localizer.t(L.Settings.paneStorage)
+        }
+    }
+
+    /// Preserve old deep-link IDs for one test version while presenting a
+    /// simpler five-destination information architecture.
+    init?(deepLinkID: String) {
+        switch deepLinkID {
+        case "general", "updates": self = .general
+        case "videoOutput", "downloadOutput": self = .downloadOutput
+        case "subtitles", "localSpeech", "subtitlesLanguage": self = .subtitlesLanguage
+        case "aiServices", "siteLogin", "servicesAccounts": self = .servicesAccounts
+        case "components", "storage": self = .storage
+        default: return nil
         }
     }
 }
@@ -64,6 +68,7 @@ struct SettingsView: View {
     @State private var settingsDraftCoordinator = SettingsDraftCoordinator()
     @FocusState private var defaultAIAuthTokenFocused: Bool
     @ObservedObject private var updater: UpdateService
+    @ObservedObject private var preparationCenter: PreparationCenterModel
     @State private var testState: TestState = .idle
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: ModelFetchState = .idle
@@ -86,12 +91,14 @@ struct SettingsView: View {
     @State private var localASRVADCatalogVersion = 0
     @State private var localASRVADInstalling = false
     @State private var localASRVADInstallProgress: Double?
+    @State private var showPreparationCenter = false
 
     private let appleTranslationSourceLanguages = ["en", "ja", "ko", "zh-Hans", "zh-Hant"]
 
     init(model: ViewModel) {
         self.model = model
         self._updater = ObservedObject(wrappedValue: model.updater)
+        self._preparationCenter = ObservedObject(wrappedValue: model.preparationCenter)
     }
 
     var body: some View {
@@ -159,6 +166,26 @@ struct SettingsView: View {
             // 关闭窗口是一个明确的提交动作，也会把被凭证修改暂停的普通保存安全落盘。
             _ = commitDraftImmediately()
         }
+        .sheet(isPresented: $showPreparationCenter) {
+            PreparationCenterView(
+                model: preparationCenter,
+                onOpenDependencySetup: { requestDependencySetup() },
+                onAdoptRuntime: {
+                    adoptLocalASRRuntime()
+                    preparationCenter.refresh()
+                },
+                onOpenSystemSettings: {
+                    openSystemSettings(URL(string: "x-apple.systempreferences:"))
+                },
+                onManageComponent: { _, _ in
+                    // Detailed model actions remain in this pane while their
+                    // cancellable per-item controls move into this center.
+                    showPreparationCenter = false
+                    selectedPane = .subtitlesLanguage
+                }
+            )
+            .frame(minWidth: 620, minHeight: 520)
+        }
     }
 
     private func recordDraftChange(from oldValue: AppSettings, to newValue: AppSettings) {
@@ -204,10 +231,11 @@ struct SettingsView: View {
     }
 
     private func applyPendingSettingsPane() {
-        guard let paneID = model.pendingSettingsPaneID,
-              let pane = SettingsPane(rawValue: paneID) else { return }
-        selectedPane = pane
+        guard let paneID = model.pendingSettingsPaneID else { return }
         model.pendingSettingsPaneID = nil
+        if let pane = SettingsPane(deepLinkID: paneID) {
+            selectedPane = pane
+        }
     }
 
     @ViewBuilder
@@ -217,27 +245,25 @@ struct SettingsView: View {
             case .general:
                 languageSection
                 notificationsSection
-            case .subtitles:
-                translationConfigSection
-                styleSection
-            case .localSpeech:
-                localSpeechSection
-            case .aiServices:
-                translationSection
-                summarySection
-            case .videoOutput:
-                burnQualitySection
-                performanceSection
-            case .siteLogin:
-                loginSection
-            case .components:
-                dependencySection
-                recognitionSetupGuideSection
-                subtitleRecognitionComponentsSection
-                storageSection
-            case .updates:
+                onboardingSection
                 updateSection
                 aboutSection
+            case .downloadOutput:
+                burnQualitySection
+                performanceSection
+            case .subtitlesLanguage:
+                translationConfigSection
+                styleSection
+                localSpeechSection
+                recognitionSetupGuideSection
+                subtitleRecognitionComponentsSection
+            case .servicesAccounts:
+                translationSection
+                summarySection
+                loginSection
+            case .storage:
+                preparationCenterEntrySection
+                storageSection
             }
         }
         .formStyle(.grouped)
@@ -248,13 +274,13 @@ struct SettingsView: View {
         HStack(spacing: 8) {
             Label(pane.title(localizer), systemImage: pane.systemImage)
             Spacer()
-            if pane == .updates && updater.updateAvailable {
+            if pane == .general && updater.updateAvailable {
                 settingsUpdateBadge
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(pane.title(localizer))
-        .accessibilityValue(pane == .updates && updater.updateAvailable ? localizer.t(L.Update.updateAvailableStatus) : "")
+        .accessibilityValue(pane == .general && updater.updateAvailable ? localizer.t(L.Update.updateAvailableStatus) : "")
     }
 
     // 有更新可用：App Store 式红色数字角标（七月明确要求“数字 1 / 类似通知”）。
@@ -291,6 +317,19 @@ struct SettingsView: View {
             Text(localizer.t(L.Settings.languageHelp))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var preparationCenterEntrySection: some View {
+        Section("准备中心") {
+            Text("统一查看下载工具、本地识别运行时、Whisper/VAD 模型和系统语言包的可用性。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("打开准备中心") {
+                showPreparationCenter = true
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -499,7 +538,7 @@ struct SettingsView: View {
     }
 
     private func openComponentsPane() {
-        selectedPane = .components
+        selectedPane = .subtitlesLanguage
     }
 
     @ViewBuilder
@@ -928,8 +967,8 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .disabled(localASRRuntimeSearchURLs.isEmpty)
 
-                Button(localizer.t(L.Settings.localASRSetupRepair)) {
-                    requestDependencySetup()
+                Button(localizer.t(L.Onboarding.configureLocalSpeechOptional)) {
+                    showPreparationCenter = true
                 }
                 .buttonStyle(.borderless)
             }
@@ -978,7 +1017,7 @@ struct SettingsView: View {
     }
 
     private func installRecommendedRecognitionComponents() {
-        selectedPane = .components
+        selectedPane = .subtitlesLanguage
         installNextRecommendedRecognitionComponent()
     }
 
@@ -986,7 +1025,8 @@ struct SettingsView: View {
         guard draft.subtitleRecognitionMode != .platformOnly else { return }
         switch localASRSetupState {
         case .missingRuntime:
-            requestDependencySetup()
+            model.settingsNotice = "本地识别运行时需要单独准备；请在准备中心检查或采用已有运行时。"
+            showPreparationCenter = true
         case .badHash:
             repairSelectedLocalASRModel()
         case .disabled, .missingModel:
@@ -1022,8 +1062,8 @@ struct SettingsView: View {
                 tint: availableLocalASRRuntimePath == nil ? .orange : .green
             ) {
                 if availableLocalASRRuntimePath == nil {
-                    Button(localizer.t(L.Settings.recognitionSetupToolTitle)) {
-                        requestDependencySetup()
+                    Button(localizer.t(L.Onboarding.configureLocalSpeechOptional)) {
+                        showPreparationCenter = true
                     }
                     .buttonStyle(.bordered)
                     Button(localizer.t(L.Settings.localASRFindRuntime)) {
@@ -1547,6 +1587,19 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var onboardingSection: some View {
+        Section("初始设置") {
+            Text("重新查看语言、字幕来源和翻译默认项；不会删除登录、API 凭证或资料库。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("重新运行初始设置") {
+                guard commitDraftImmediately() else { return }
+                model.restartOnboarding()
+            }
         }
     }
 

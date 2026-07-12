@@ -5,6 +5,43 @@ import Foundation
 /// Every reprocess therefore receives a sibling version directory and copies
 /// only the artifacts it needs into that directory before work begins.
 public enum ReprocessWorkspace {
+    /// Selects the artifacts that can safely seed a local-only reprocess.
+    /// `renderedVideo` is deliberately excluded from a new burn: feeding a
+    /// previously caption-burned movie back to ffmpeg would stack subtitles.
+    /// Older v1 records did not distinguish the two video roles; for those,
+    /// a completed burn stores the rendered file first and the clean source
+    /// last, so use the trailing video as the compatibility fallback.
+    public static func localReprocessArtifacts(
+        from version: LibraryVersion,
+        requiresCleanVideo: Bool
+    ) -> [LibraryArtifact] {
+        let videos = version.artifacts.filter {
+            $0.role == .video || $0.role == .renderedVideo
+        }
+        let cleanVideos = version.artifacts.filter { $0.role == .video }
+        let mode = version.processing.configuration.subtitleMode
+        let priorBurnedSubtitles = mode == "burnIn" || mode == "burnOriginal"
+
+        let inputVideo: LibraryArtifact?
+        if let clean = cleanVideos.first, !(requiresCleanVideo && priorBurnedSubtitles && cleanVideos.count > 1) {
+            inputVideo = clean
+        } else if requiresCleanVideo && priorBurnedSubtitles && videos.count > 1 {
+            inputVideo = videos.last
+        } else if !requiresCleanVideo {
+            inputVideo = cleanVideos.first ?? videos.first
+        } else {
+            inputVideo = nil
+        }
+
+        var result = version.artifacts.filter {
+            $0.role != .video && $0.role != .renderedVideo
+        }
+        if let inputVideo {
+            result.insert(inputVideo, at: 0)
+        }
+        return result
+    }
+
     public static func createVersionDirectory(
         beside sourceDirectory: URL,
         versionNumber: Int,

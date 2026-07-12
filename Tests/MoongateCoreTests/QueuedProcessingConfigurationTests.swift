@@ -36,6 +36,37 @@ final class QueuedProcessingConfigurationTests: XCTestCase {
         XCTAssertTrue(defaults.translationFollowsDefault)
     }
 
+    func testChangingToAnUnknownLocalModelNeverReusesThePreviousModelFile() {
+        var defaults = AppSettings()
+        defaults.localASRModelID = "custom:current"
+        defaults.localASRModelPath = "/private/models/current.bin"
+        let configuration = QueuedProcessingConfiguration(
+            subtitleSourcePolicy: .forceLocalASR,
+            transcriptionModel: "whisper.cpp:not-installed"
+        )
+
+        let applied = configuration.applying(to: defaults)
+
+        XCTAssertEqual(applied.localASRModelID, "whisper.cpp:not-installed")
+        XCTAssertEqual(applied.localASRModelPath, "")
+        XCTAssertEqual(defaults.localASRModelPath, "/private/models/current.bin")
+    }
+
+    func testKeepingTheCurrentCustomLocalModelPreservesItsConfiguredFile() {
+        var defaults = AppSettings()
+        defaults.localASRModelID = "custom:current"
+        defaults.localASRModelPath = "/private/models/current.bin"
+        let configuration = QueuedProcessingConfiguration(
+            subtitleSourcePolicy: .forceLocalASR,
+            transcriptionModel: "custom:current"
+        )
+
+        let applied = configuration.applying(to: defaults)
+
+        XCTAssertEqual(applied.localASRModelID, "custom:current")
+        XCTAssertEqual(applied.localASRModelPath, "/private/models/current.bin")
+    }
+
     func testDefaultsAndLibraryProjectionRetainTheQueuedConfiguration() {
         var settings = AppSettings()
         settings.translationModel = "translator"
@@ -53,6 +84,7 @@ final class QueuedProcessingConfigurationTests: XCTestCase {
         XCTAssertEqual(configuration.targetLanguage, "zh-Hant")
         XCTAssertEqual(configuration.translationModel, "translator")
         XCTAssertEqual(configuration.libraryConfiguration.outputFormat, OutputFormat.mkv.rawValue)
+        XCTAssertEqual(configuration.libraryConfiguration.subtitleMode, ChineseSubtitleMode.srtOnly.rawValue)
         XCTAssertEqual(configuration.libraryConfiguration.subtitleStyle, SubtitleStyle.bilingual.rawValue)
 
         let draft = DownloadDraft(sourceURL: "https://example.com/video", configuration: configuration)

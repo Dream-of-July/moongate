@@ -83,4 +83,9 @@ final class LibraryModelsTests: XCTestCase {
 
         XCTAssertEqual(decoded.thumbnail?.urlString, "https://images.example.com/mate.png")
     }
+
+    func testSanitizedYouTubeWatchURLCannotRestart() throws {
+        let source = try XCTUnwrap(LibrarySourceDescriptor(urlString: "https://www.youtube.com/watch?v=id"))
+        XCTAssertFalse(source.supportsRestart)
+    }
 }

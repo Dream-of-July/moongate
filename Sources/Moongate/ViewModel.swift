@@ -172,6 +172,9 @@ final class ViewModel: ObservableObject {
     @Published var enqueueNotice: String?
     /// 批量粘贴多链接时的进度文案（解析中显示，如「批量解析中（2/5）」）
     @Published var batchStatusText: String?
+    /// 仅供“新建下载”Sheet 决定成功后是否可以自动收起。它不持久化，
+    /// 也不把“已排入待开始”伪装成已经下载完成。
+    @Published private(set) var deferredBatchAddedCount: Int?
     /// 触发器：自增时 ContentView 重新聚焦链接输入框（入队后方便继续粘贴）。
     @Published var requestUrlFocus = 0
     /// 队列浮层形态：true=铺满内容区，false=缩成底部小把手。
@@ -196,6 +199,8 @@ final class ViewModel: ObservableObject {
     let queue: QueueManager
     /// 远程更新器贯穿主界面与设置页；发现新版后用于设置按钮红点提示。
     let updater: UpdateService
+    /// Onboarding 和设置共用的真实组件准备状态；只检查可用性，不持有或写入凭证。
+    let preparationCenter = PreparationCenterModel()
 
     private let engine: any DownloadEngine
     private let runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating
@@ -240,6 +245,15 @@ final class ViewModel: ObservableObject {
                 settings: initialSettings,
                 localASRGenerator: initialLocalASRGenerator
             ),
+            localASRRunProvider: { settings in
+                LocalASRGeneratorFactory.make(settings: settings)
+            },
+            cloudASRRunProvider: { settings, localASRGenerator in
+                CloudASRGeneratorFactory.make(
+                    settings: settings,
+                    localASRGenerator: localASRGenerator
+                )
+            },
             completionNotifier: SystemQueueCompletionNotifier(settingsProvider: { AppSettings.load(readCredentials: false) })
         )
         self.updater = updater ?? UpdateService()
@@ -444,15 +458,74 @@ final class ViewModel: ObservableObject {
     /// Resolves links into stable library records without starting their
     /// processing pipelines. The per-task configuration stays editable until
     /// the user explicitly starts this item or the queued batch.
-    func enqueueDeferredDrafts(from text: String, configuration: QueuedProcessingConfiguration) {
+    @discardableResult
+    func enqueueDeferredDrafts(from text: String, configuration: QueuedProcessingConfiguration) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isParsing else { return }
+        guard !trimmed.isEmpty, !isParsing else { return false }
         let urls = Self.extractURLs(from: trimmed)
         guard !urls.isEmpty else {
             enqueueNotice = CoreL10n.t(L.Main.invalidURL)
+            return false
+        }
+        deferredBatchAddedCount = nil
+        processBatch(urls, queuedConfiguration: configuration, startImmediately: false)
+        return true
+    }
+
+    /// Restarts an interrupted library version as a fresh pipeline run. This
+    /// deliberately uses the same durable item/version identity, but does not
+    /// claim to resume an in-memory process from a previous app launch.
+    func restartInterruptedLibraryItem(_ item: MoongateCore.LibraryItem) {
+        guard let version = item.latestVersion,
+              version.processing.state == .interrupted else {
             return
         }
-        processBatch(urls, queuedConfiguration: configuration, startImmediately: false)
+        guard let source = item.source, source.supportsRestart else {
+            enqueueNotice = "此记录未保存可安全重新开始的来源标识。请使用原链接新建下载。"
+            return
+        }
+        let sourceURL = source.urlString
+        guard !sourceURL.isEmpty else {
+            enqueueNotice = "此记录没有可重新开始的来源链接。"
+            return
+        }
+
+        hydrateCredentials()
+        let persisted = version.processing.configuration
+        var configuration = QueuedProcessingConfiguration.defaults(from: settings)
+        if let quality = persisted.quality, !quality.isEmpty {
+            configuration.quality = quality
+        }
+        if let outputFormat = persisted.outputFormat.flatMap(OutputFormat.init(rawValue:)) {
+            configuration.outputFormat = outputFormat
+        }
+        if let subtitleMode = persisted.subtitleMode.flatMap(ChineseSubtitleMode.init(rawValue:)) {
+            configuration.subtitleMode = subtitleMode
+        }
+        configuration.subtitleSourcePolicy = queuedSubtitlePolicy(
+            from: persisted.subtitleSource,
+            fallback: configuration.subtitleSourcePolicy
+        )
+        if let targetLanguage = persisted.targetLanguage, !targetLanguage.isEmpty {
+            configuration.targetLanguage = targetLanguage
+        }
+        if let transcriptionModel = persisted.transcriptionModel, !transcriptionModel.isEmpty {
+            configuration.transcriptionModel = transcriptionModel
+        }
+        if let translationModel = persisted.translationModel, !translationModel.isEmpty {
+            configuration.translationModel = translationModel
+        }
+        if let subtitleStyle = persisted.subtitleStyle.flatMap(SubtitleStyle.init(rawValue:)) {
+            configuration.subtitleStyle = subtitleStyle
+        }
+
+        processBatch(
+            [sourceURL],
+            queuedConfiguration: configuration,
+            libraryItemID: item.id,
+            libraryVersionID: version.id,
+            startImmediately: true
+        )
     }
 
     @discardableResult
@@ -498,7 +571,7 @@ final class ViewModel: ObservableObject {
         let queuedConfiguration = QueuedProcessingConfiguration(
             quality: configuration.quality ?? item.request.formatID,
             outputFormat: OutputFormat(rawValue: configuration.outputFormat ?? "") ?? item.request.outputFormat,
-            subtitleMode: item.chineseMode,
+            subtitleMode: ChineseSubtitleMode(rawValue: configuration.subtitleMode ?? "") ?? item.chineseMode,
             subtitleSourcePolicy: sourcePolicy,
             targetLanguage: configuration.targetLanguage ?? item.settings.translationTargetLanguage,
             transcriptionModel: configuration.transcriptionModel ?? item.settings.localASRModelID,
@@ -618,6 +691,8 @@ final class ViewModel: ObservableObject {
     private func processBatch(
         _ urls: [String],
         queuedConfiguration: QueuedProcessingConfiguration? = nil,
+        libraryItemID: UUID? = nil,
+        libraryVersionID: UUID? = nil,
         startImmediately: Bool = true
     ) {
         let mode = queuedConfiguration?.subtitleMode ?? chineseMode
@@ -747,6 +822,8 @@ final class ViewModel: ObservableObject {
                         request: request,
                         chineseMode: mode,
                         settings: currentSettings,
+                        libraryItemID: libraryItemID,
+                        libraryVersionID: libraryVersionID,
                         startImmediately: startImmediately
                     )
                     added += 1
@@ -774,6 +851,9 @@ final class ViewModel: ObservableObject {
                 parts.append(CoreL10n.t(L.Main.batchFailedCount, failedHosts.count, sample, suffix))
             }
             self.enqueueNotice = parts.joined(separator: "；")
+            if !startImmediately {
+                self.deferredBatchAddedCount = added
+            }
             self.queueExpanded = true
             self.requestUrlFocus += 1
         }
@@ -943,12 +1023,22 @@ final class ViewModel: ObservableObject {
         guard let sourceVersion = item.latestVersion else {
             throw MoongateError.analyzeFailed("找不到可重新处理的版本。")
         }
-        guard let sourceURL = item.source?.urlString else {
-            throw MoongateError.analyzeFailed("已恢复文件没有可重新处理的来源链接。")
+        let refreshesSourceVideo = plan.steps.contains(.refreshVideo)
+        let sourceURL: String
+        if refreshesSourceVideo {
+            guard let source = item.source, source.supportsRestart else {
+                throw MoongateError.analyzeFailed("此变更需要重新下载原视频。请使用可安全重新开始的原链接新建下载。")
+            }
+            sourceURL = source.urlString
+        } else {
+            // QueueManager skips the network for local reprocesses. A
+            // non-HTTP scheme keeps recovered records source-less when their
+            // snapshot is persisted instead of inventing a fake web link.
+            sourceURL = item.source?.urlString ?? "moongate-library://\(item.id.uuidString)"
         }
 
         hydrateCredentials()
-        let existingFiles = sourceVersion.artifacts.compactMap { artifact -> URL? in
+        let existingArtifacts = sourceVersion.artifacts.compactMap { artifact -> (LibraryArtifact, URL)? in
             let root = Self.appDownloadsDirectory.standardizedFileURL
             let candidate = root.appendingPathComponent(artifact.relativePath).standardizedFileURL
             let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
@@ -956,8 +1046,9 @@ final class ViewModel: ObservableObject {
                   FileManager.default.fileExists(atPath: candidate.path) else {
                 return nil
             }
-            return candidate
+            return (artifact, candidate)
         }
+        let existingFiles = existingArtifacts.map(\.1)
         guard existingFiles.contains(where: { QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }) else {
             throw MoongateError.analyzeFailed("找不到原始视频文件，无法创建重新处理任务。")
         }
@@ -978,8 +1069,6 @@ final class ViewModel: ObservableObject {
         let requiresASR = plan.steps.contains(.transcribe)
         let subtitleSourceChanged = sourceVersion.processing.configuration.subtitleSource != configuration.subtitleSource
         let reusesCompletedSubtitle = needsBurn && !needsTranslation && !requiresASR && !subtitleSourceChanged
-        let requiresSubtitleInput = needsBurn || needsTranslation || requiresASR || subtitleSourceChanged
-        let refreshesSourceVideo = plan.steps.contains(.refreshVideo)
         let configuredSubtitleKind: SubtitleSourceKind?
         if let rawSubtitleSource = configuration.subtitleSource?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -992,13 +1081,17 @@ final class ViewModel: ObservableObject {
             configuredSubtitleKind = nil
         }
         let mode: ChineseSubtitleMode
-        if needsBurn {
+        if let configuredMode = ChineseSubtitleMode(rawValue: configuration.subtitleMode ?? "") {
+            mode = configuredMode
+        } else if needsBurn {
             mode = needsTranslation ? .burnIn : .burnOriginal
         } else if needsTranslation {
             mode = .srtOnly
         } else {
             mode = .off
         }
+        let requiresSubtitleInput = mode != .off
+            && (needsBurn || needsTranslation || requiresASR || subtitleSourceChanged)
         guard dependenciesReady(for: mode) else {
             throw MoongateError.analyzeFailed("请先完成所需依赖配置。")
         }
@@ -1020,14 +1113,20 @@ final class ViewModel: ObservableObject {
                 taskSettings.translationModel = translationModel
             }
         }
-        if requiresASR,
-           let transcriptionModel = configuration.transcriptionModel,
-           !transcriptionModel.isEmpty {
-            taskSettings.localASRModelID = transcriptionModel
-        }
-        guard let sourceVideo = existingFiles.first(where: {
-            QueueManager.videoExtensions.contains($0.pathExtension.lowercased())
-        }) else {
+        // Reuse the queued-draft model resolver instead of changing only the
+        // visible model ID. A different local model must also resolve to its
+        // verified managed path; otherwise an unavailable selection would
+        // silently run the previous model file. Keep the other task-scoped
+        // settings unchanged while applying this focused ASR override.
+        let taskConfiguration = QueuedProcessingConfiguration(
+            targetLanguage: taskSettings.translationTargetLanguage,
+            transcriptionModel: requiresASR ? configuration.transcriptionModel : nil,
+            subtitleStyle: taskSettings.subtitleStyle
+        )
+        taskSettings = taskConfiguration.applying(to: taskSettings)
+        guard let sourceVideo = existingArtifacts.first(where: {
+            QueueManager.videoExtensions.contains($0.1.pathExtension.lowercased())
+        })?.1 else {
             throw MoongateError.analyzeFailed("找不到原始视频文件，无法创建重新处理任务。")
         }
         let versionDirectory = try ReprocessWorkspace.createVersionDirectory(
@@ -1037,9 +1136,21 @@ final class ViewModel: ObservableObject {
         // A source-quality refresh downloads a new video into vN. Keep only
         // reusable subtitles there; copying v1's video would create an
         // unindexed duplicate once the fresh download completes.
-        let artifactsToCopy = refreshesSourceVideo
-            ? existingFiles.filter { !QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }
-            : existingFiles
+        let artifactURLsByID = Dictionary(uniqueKeysWithValues: existingArtifacts.map { ($0.0.id, $0.1) })
+        let artifactsToCopy: [URL]
+        if refreshesSourceVideo {
+            artifactsToCopy = existingArtifacts.compactMap { artifact, url in
+                switch artifact.role {
+                case .video, .renderedVideo: nil
+                case .sourceSubtitle, .translatedSubtitle, .thumbnail, .other: url
+                }
+            }
+        } else {
+            artifactsToCopy = ReprocessWorkspace.localReprocessArtifacts(
+                from: sourceVersion,
+                requiresCleanVideo: needsBurn
+            ).compactMap { artifactURLsByID[$0.id] }
+        }
         let isolatedFiles = try ReprocessWorkspace.copyArtifacts(artifactsToCopy, to: versionDirectory)
         if !refreshesSourceVideo,
            !isolatedFiles.contains(where: { QueueManager.videoExtensions.contains($0.pathExtension.lowercased()) }) {
@@ -1091,10 +1202,12 @@ final class ViewModel: ObservableObject {
             subtitleKind = nil
             selectedSubtitle = nil
         }
-        if subtitleKind == .localASR, !queue.hasLocalASRGenerator {
-            openLocalASRSettings()
-            throw MoongateError.analyzeFailed("本地语音识别尚未配置。请先在设置中完成安装。")
-        }
+        // Local ASR is resolved from the immutable per-task snapshot in
+        // QueueManager. Do not preflight the mutable global generator here:
+        // it can still point to the previous model and would either reject a
+        // valid replacement or let an unavailable one inherit that old file.
+        // QueueManager leaves an unavailable selection queued with a
+        // recoverable preparation message instead.
         if subtitleKind == .cloudASR, !queue.hasCloudASRGenerator {
             openCloudASRSettings()
             throw MoongateError.analyzeFailed("云端语音识别尚未配置。请先在设置中完成配置。")
@@ -1908,6 +2021,59 @@ final class ViewModel: ObservableObject {
     private func showOnboardingIfNeeded() {
         guard !settings.onboardingCompleted else { return }
         showOnboarding = true
+    }
+
+    /// Reopens onboarding as a draft-only flow. Existing settings, credentials,
+    /// login state, and the durable video library are deliberately untouched.
+    func restartOnboarding() {
+        settingsNotice = nil
+        showOnboarding = true
+    }
+
+    /// Adopts a runtime that is already installed locally. This is intentionally
+    /// not an installer: without a published, verified project asset the app
+    /// must not pretend it can download or repair the runtime.
+    @discardableResult
+    func adoptExistingLocalASRRuntime() -> Bool {
+        // This action writes settings. The launch-time value deliberately
+        // omits Keychain credentials, so hydrate before copying it into a
+        // draft or save() would interpret empty tokens as removals.
+        hydrateCredentials()
+        let runtimeDirectory = AppSettings.supportDirectory
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+        var searchURLs = [
+            runtimeDirectory,
+            runtimeDirectory.appendingPathComponent("bin", isDirectory: true),
+        ]
+        let configuredPath = settings.localASRRuntimePath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredPath.isEmpty {
+            searchURLs.append(URL(fileURLWithPath: configuredPath))
+        }
+        if let bundledRuntimeURL = Bundle.main.resourceURL?
+            .appendingPathComponent("asr", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true) {
+            searchURLs.append(bundledRuntimeURL)
+            searchURLs.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
+        }
+        guard let runtime = ASRRuntimeLocator(extraSearchURLs: searchURLs).locate() else {
+            settingsNotice = "未发现可验证的本地 Whisper 运行时。请安装后重新检查。"
+            return false
+        }
+
+        var draft = settings
+        draft.localASRRuntimePath = runtime.executableURL.path
+        do {
+            try draft.save()
+            settings = draft
+            settingsNotice = "已采用本地运行时：\(runtime.executableURL.path)"
+            preparationCenter.refresh()
+            return true
+        } catch {
+            settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)
+            return false
+        }
     }
 
     @discardableResult

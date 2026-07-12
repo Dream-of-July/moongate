@@ -50,6 +50,31 @@ final class ReprocessPlannerTests: XCTestCase {
         XCTAssertEqual(ReprocessPlanner.plan(for: request).steps, [.translate, .burn])
     }
 
+    func testSRTOnlyModeDoesNotBurnWhenOnlySubtitleStyleChanges() {
+        let request = ReprocessRequest(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.subtitleStyle],
+            configuration: LibraryProcessingConfiguration(
+                subtitleMode: "srtOnly",
+                subtitleStyle: "bilingual"
+            )
+        )
+
+        XCTAssertFalse(request.needsBurn)
+        XCTAssertEqual(ReprocessPlanner.plan(for: request).steps, [])
+    }
+
+    func testRemovingBurnedSubtitlesRefreshesVideoInsteadOfReusingRenderedOutput() {
+        let request = ReprocessRequest(
+            sourceVersionID: sourceVersionID,
+            changedFields: [.subtitleMode],
+            configuration: LibraryProcessingConfiguration(subtitleMode: "off"),
+            previousConfiguration: LibraryProcessingConfiguration(subtitleMode: "burnIn")
+        )
+
+        XCTAssertEqual(ReprocessPlanner.plan(for: request).steps, [.refreshVideo])
+    }
+
     func testASRModelPlansTranscriptionAndNecessaryDownstreamSteps() {
         let asrPlan = ReprocessPlanner.plan(for: .init(
             sourceVersionID: sourceVersionID,

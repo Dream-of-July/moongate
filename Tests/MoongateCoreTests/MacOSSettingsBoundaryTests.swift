@@ -72,19 +72,25 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("enum SettingsPane: String, CaseIterable, Identifiable"))
         XCTAssertTrue(source.contains("case general"))
-        XCTAssertTrue(source.contains("case subtitles"))
-        XCTAssertTrue(source.contains("case localSpeech"))
-        XCTAssertTrue(source.contains("case aiServices"))
-        XCTAssertTrue(source.contains("case videoOutput"))
-        XCTAssertTrue(source.contains("case siteLogin"))
-        XCTAssertTrue(source.contains("case components"))
-        XCTAssertTrue(source.contains("case updates"))
-        XCTAssertTrue(en.contains("L.Settings.paneComponents: \"Components & Storage\""))
-        XCTAssertTrue(en.contains("L.Settings.paneUpdates: \"Updates & About\""))
-        XCTAssertTrue(zhHans.contains("L.Settings.paneComponents: \"组件与存储\""))
-        XCTAssertTrue(zhHans.contains("L.Settings.paneUpdates: \"更新与关于\""))
-        XCTAssertTrue(zhHant.contains("L.Settings.paneComponents: \"元件與儲存\""))
-        XCTAssertTrue(zhHant.contains("L.Settings.paneUpdates: \"更新與關於\""))
+        XCTAssertTrue(source.contains("case downloadOutput"))
+        XCTAssertTrue(source.contains("case subtitlesLanguage"))
+        XCTAssertTrue(source.contains("case servicesAccounts"))
+        XCTAssertTrue(source.contains("case storage"))
+        XCTAssertTrue(source.contains("init?(deepLinkID: String)"))
+        XCTAssertTrue(source.contains("case \"subtitles\", \"localSpeech\", \"subtitlesLanguage\""))
+        XCTAssertTrue(source.contains("case \"components\", \"storage\""))
+        XCTAssertTrue(en.contains("L.Settings.paneDownloadOutput: \"Downloads & Output\""))
+        XCTAssertTrue(en.contains("L.Settings.paneSubtitlesLanguage: \"Subtitles & Languages\""))
+        XCTAssertTrue(en.contains("L.Settings.paneServicesAccounts: \"Services & Accounts\""))
+        XCTAssertTrue(en.contains("L.Settings.paneStorage: \"Storage\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneDownloadOutput: \"下载与输出\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneSubtitlesLanguage: \"字幕与语言\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneServicesAccounts: \"服务与账户\""))
+        XCTAssertTrue(zhHans.contains("L.Settings.paneStorage: \"存储\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneDownloadOutput: \"下載與輸出\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneSubtitlesLanguage: \"字幕與語言\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneServicesAccounts: \"服務與帳戶\""))
+        XCTAssertTrue(zhHant.contains("L.Settings.paneStorage: \"儲存\""))
         XCTAssertTrue(source.contains("@State private var selectedPane: SettingsPane? = .general"))
         XCTAssertTrue(source.contains("NavigationSplitView"))
         XCTAssertTrue(source.contains("List(SettingsPane.allCases, selection: $selectedPane)"))
@@ -132,23 +138,31 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("$draft.completionSoundEnabled"))
 
         let detailBody = try XCTUnwrap(functionBody(named: "settingsPaneDetail", in: source))
-        XCTAssertTrue(detailBody.contains("case .components:"))
-        XCTAssertTrue(detailBody.contains("dependencySection"))
+        XCTAssertTrue(detailBody.contains("case .downloadOutput:"))
+        XCTAssertTrue(detailBody.contains("case .subtitlesLanguage:"))
+        XCTAssertTrue(detailBody.contains("case .servicesAccounts:"))
+        XCTAssertTrue(detailBody.contains("case .storage:"))
+        XCTAssertTrue(detailBody.contains("preparationCenterEntrySection"))
+        XCTAssertFalse(detailBody.contains("dependencySection"))
         XCTAssertTrue(detailBody.contains("recognitionSetupGuideSection"))
         XCTAssertTrue(detailBody.contains("subtitleRecognitionComponentsSection"))
         XCTAssertTrue(detailBody.contains("storageSection"))
-        XCTAssertTrue(detailBody.contains("case .updates:"))
         XCTAssertTrue(detailBody.contains("updateSection"))
         XCTAssertTrue(detailBody.contains("aboutSection"))
 
-        let generalCase = try XCTUnwrap(caseBody(named: ".general", before: ".subtitles", in: detailBody))
+        let generalCase = try XCTUnwrap(caseBody(named: ".general", before: ".downloadOutput", in: detailBody))
         XCTAssertTrue(generalCase.contains("languageSection"))
         XCTAssertTrue(generalCase.contains("notificationsSection"))
         XCTAssertFalse(generalCase.contains("performanceSection"))
 
-        let videoOutputCase = try XCTUnwrap(caseBody(named: ".videoOutput", before: ".siteLogin", in: detailBody))
-        XCTAssertTrue(videoOutputCase.contains("burnQualitySection"))
-        XCTAssertTrue(videoOutputCase.contains("performanceSection"))
+        let downloadOutputCase = try XCTUnwrap(caseBody(named: ".downloadOutput", before: ".subtitlesLanguage", in: detailBody))
+        XCTAssertTrue(downloadOutputCase.contains("burnQualitySection"))
+        XCTAssertTrue(downloadOutputCase.contains("performanceSection"))
+
+        let subtitlesLanguageCase = try XCTUnwrap(caseBody(named: ".subtitlesLanguage", before: ".servicesAccounts", in: detailBody))
+        XCTAssertTrue(subtitlesLanguageCase.contains("localSpeechSection"))
+        XCTAssertTrue(subtitlesLanguageCase.contains("subtitleRecognitionComponentsSection"))
+
 
         let storageBody = try XCTUnwrap(functionBody(named: "storageSection", in: source))
         // 11i：存储管理页面 — macOS Storage 风格总览条 + 分类行 + 行内清理入口。
@@ -291,7 +305,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(storageBody.contains("deleteLocalASRVADModel()"))
 
         let installRecommendedBody = try XCTUnwrap(functionBody(named: "installRecommendedRecognitionComponents", in: source))
-        XCTAssertTrue(installRecommendedBody.contains("selectedPane = .components"))
+        XCTAssertTrue(installRecommendedBody.contains("selectedPane = .subtitlesLanguage"))
         XCTAssertTrue(installRecommendedBody.contains("installNextRecommendedRecognitionComponent()"))
 
         let statusBody = try XCTUnwrap(functionBody(named: "LocalASRSetupStatusView", in: source))
@@ -513,7 +527,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         let rowBody = try XCTUnwrap(functionBody(named: "settingsPaneRow", in: source))
         let badgeBody = try XCTUnwrap(functionBody(named: "settingsUpdateBadge", in: source))
 
-        XCTAssertTrue(rowBody.contains("if pane == .updates && updater.updateAvailable"))
+        XCTAssertTrue(rowBody.contains("if pane == .general && updater.updateAvailable"))
         XCTAssertTrue(rowBody.contains("settingsUpdateBadge"))
         XCTAssertTrue(rowBody.contains("localizer.t(L.Update.updateAvailableStatus)"))
         XCTAssertTrue(rowBody.contains(".accessibilityValue"))
@@ -1003,6 +1017,27 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         )
         XCTAssertTrue(appleIntelligenceHelpSnippet.contains("localizer.t(L.Settings.appleActionOpenAppleIntelligenceSettingsHelp)"))
         XCTAssertFalse(appleIntelligenceHelpSnippet.contains("Anthropic-compatible"))
+    }
+
+    func testMissingASRRuntimeRoutesToPreparationCenterNotDownloadToolRepair() throws {
+        let source = try String(contentsOf: packageRoot()
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Moongate")
+            .appendingPathComponent("SettingsView.swift"))
+        let body = try XCTUnwrap(functionBody(named: "installNextRecommendedRecognitionComponent", in: source))
+        let missingRange = try XCTUnwrap(body.range(of: "case .missingRuntime:"))
+        let nextRange = try XCTUnwrap(body.range(of: "case .badHash:", range: missingRange.upperBound..<body.endIndex))
+        let missingCase = String(body[missingRange.lowerBound..<nextRange.lowerBound])
+
+        XCTAssertTrue(missingCase.contains("showPreparationCenter = true"))
+        XCTAssertFalse(missingCase.contains("requestDependencySetup()"))
+
+        let actionBody = try XCTUnwrap(functionBody(named: "localASRSetupAction", in: source))
+        let actionMissingRange = try XCTUnwrap(actionBody.range(of: "case .missingRuntime:"))
+        let actionNextRange = try XCTUnwrap(actionBody.range(of: "case .missingModel:", range: actionMissingRange.upperBound..<actionBody.endIndex))
+        let actionMissingCase = String(actionBody[actionMissingRange.lowerBound..<actionNextRange.lowerBound])
+        XCTAssertTrue(actionMissingCase.contains("showPreparationCenter = true"))
+        XCTAssertFalse(actionMissingCase.contains("requestDependencySetup()"))
     }
 
     private func packageRoot() -> URL {
