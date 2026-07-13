@@ -74,6 +74,62 @@ final class LibraryProjectionTests: XCTestCase {
         XCTAssertEqual(counts[.pinned], 1)
     }
 
+    func testMembershipSignaturesIgnoreProgressForLargeLibraryWithFourActiveTasks() {
+        let items = (0 ..< 1_000).map { index in
+            makeItem(
+                title: "Video \(index)",
+                state: .completed,
+                timestamp: TimeInterval(index)
+            )
+        }
+        let envelope = LibraryEnvelope(items: items)
+        let activeIDs = items.prefix(4).map(\.id)
+        let before = Dictionary(uniqueKeysWithValues: activeIDs.enumerated().map { offset, id in
+            (id, ProcessingSummary(state: .downloading, stage: .download, progress: Double(offset) / 10))
+        })
+        let after = Dictionary(uniqueKeysWithValues: activeIDs.enumerated().map { offset, id in
+            (id, ProcessingSummary(state: .downloading, stage: .download, progress: 0.7 + Double(offset) / 100))
+        })
+
+        XCTAssertEqual(
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: before),
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: after),
+            "纯进度变化不能要求重新筛选、排序整库"
+        )
+    }
+
+    func testMembershipSignaturesChangeWhenAnOverlayMovesBetweenListCategories() {
+        let item = makeItem(title: "Status transition", state: .completed, timestamp: 1)
+        let envelope = LibraryEnvelope(items: [item])
+        let completed = [item.id: ProcessingSummary(state: .completed, stage: .complete, progress: 1)]
+        let downloading = [item.id: ProcessingSummary(state: .downloading, stage: .download, progress: 0.1)]
+        let failed = [item.id: ProcessingSummary(state: .failed, stage: .recovery, progress: 0.1)]
+
+        XCTAssertNotEqual(
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: completed),
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: downloading),
+            "完成态进入下载态时，进行中筛选和排序位置必须更新"
+        )
+        XCTAssertNotEqual(
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: downloading),
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: failed),
+            "下载失败进入需处理时，侧栏计数和筛选必须更新"
+        )
+    }
+
+    func testMembershipSignaturesIgnoreStageOnlyChangeWithinActiveWork() {
+        let item = makeItem(title: "Active stage", state: .downloading, timestamp: 1)
+        let envelope = LibraryEnvelope(items: [item])
+        let downloading = [item.id: ProcessingSummary(state: .downloading, stage: .download, progress: 0.4)]
+        let transcribing = [item.id: ProcessingSummary(state: .transcribing, stage: .transcribe, progress: 0.4)]
+
+        XCTAssertEqual(
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: downloading),
+            LibraryProjection.membershipSignatures(in: envelope, liveProcessing: transcribing),
+            "阶段文案由行内覆盖层更新；仍在进行中的任务不该为此重排整个列表"
+        )
+    }
+
     private func makeItem(
         title: String,
         state: LibraryItemState,

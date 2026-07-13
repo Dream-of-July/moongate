@@ -49,10 +49,10 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(receive.contains("guard bootstrapFinished else { return }"),
                       "初始 Queue publisher 事件必须等资料库 load 完成再写入，避免与持久化读取竞争")
-        XCTAssertTrue(schedule.contains("hasUnpersistedItem"),
-                      "新任务必须区别于普通进度刷新")
-        XCTAssertTrue(schedule.contains("if !hasUnpersistedItem"),
-                      "新任务不应等待 300ms 进度防抖才建立稳定资料记录")
+        XCTAssertTrue(schedule.contains("queueSynchronizationGate.shouldSchedule"),
+                      "新任务与阶段变化必须立即建立或替换稳定资料记录")
+        XCTAssertFalse(schedule.contains("Task.sleep(nanoseconds: 300_000_000)"),
+                       "新任务不应等待进度防抖才建立稳定资料记录")
     }
 
     func testWorkspaceInspectorNeverAutoOpensForAWindowBreakpoint() throws {
@@ -145,14 +145,30 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let model = try libraryWorkspaceModelSource()
         let receive = try XCTUnwrap(functionBody(named: "receiveQueue", in: model))
         let rebuild = try XCTUnwrap(functionBody(named: "rebuildProjectionCache", in: model))
+        let overlay = try XCTUnwrap(functionBody(named: "scheduleLiveOverlayRefresh", in: model))
         let synchronize = try XCTUnwrap(functionBody(named: "synchronizeQueue", in: model))
+        let schedule = try XCTUnwrap(functionBody(named: "scheduleQueueSynchronization", in: model))
 
         XCTAssertTrue(receive.contains("scheduleLiveOverlayRefresh"),
                       "高频队列状态必须先进入节流后的活动覆盖层")
         XCTAssertFalse(receive.contains("rebuildProjectionCache()"),
-                       "进度 tick 不能直接触发整库筛选排序")
-        XCTAssertTrue(rebuild.contains("liveProcessing: [:]"),
-                      "稳定列表投影不应因实时覆盖层变化而重排")
+                      "进度 tick 不能直接触发整库筛选排序")
+        XCTAssertTrue(rebuild.contains("liveProcessing: liveProcessing"),
+                      "重建只应在成员资格改变时使用当前覆盖层，以同步筛选、计数与排序")
+        XCTAssertTrue(model.contains("projectedMembershipSignatures"),
+                      "模型必须记录上一次用于列表投影的成员资格，而不是每 tick 重投影")
+        XCTAssertTrue(model.contains("requiresProjectionRefresh"),
+                      "覆盖层发布前必须先区分成员资格变化与纯进度变化")
+        XCTAssertTrue(overlay.contains("affectedItemIDs"),
+                      "8Hz 覆盖层应只检查有实时状态的 ID，不能遍历整库判断纯进度")
+        XCTAssertFalse(overlay.contains("LibraryProjection.membershipSignatures("),
+                       "纯进度刷新不得为 1000 条资料重建成员资格字典")
+        XCTAssertTrue(model.contains("QueueDurableSignature"),
+                      "队列同步应比较结构状态，而不是把每一个进度数值当成一次资料库写入")
+        XCTAssertTrue(schedule.contains("queueSynchronizationGate.shouldSchedule"),
+                      "相同的结构快照不能反复取消正在进行的落库任务")
+        XCTAssertFalse(schedule.contains("Task.sleep(nanoseconds: 300_000_000)"),
+                       "纯进度不再调度时，结构状态不应继续依赖会被进度淹没的 300ms 防抖")
         XCTAssertTrue(synchronize.contains("if stored != original"),
                       "无结构变化的进度同步不能重新赋值资料库并触发列表重建")
     }
@@ -472,7 +488,23 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "本地模型缺失应直达真实的字幕与语言设置")
         XCTAssertTrue(model.contains("case .cloudASR: \"servicesAccounts\""),
                       "云端 ASR 缺失应直达真实的服务与账户设置")
-        XCTAssertTrue(model.contains("appModel.openSettings(paneID: recovery.settingsPaneID)"))
+        XCTAssertTrue(model.contains("appModel.openLocalASRSettings(forQueuedTaskID: queueID)"),
+                      "本地能力恢复必须带着原待开始任务，而不是只修改未来任务的默认设置")
+        XCTAssertTrue(model.contains("appModel.openCloudASRSettings(forQueuedTaskID: queueID)"),
+                      "云端能力恢复必须带着原待开始任务，而不是只打开一个无上下文的设置页")
+    }
+
+    func testMissingFileRecoveryUsesARealPickerAndSafelyRelinksTheArtifact() throws {
+        let model = try libraryWorkspaceModelSource()
+
+        XCTAssertTrue(model.contains("func locateMissingArtifact(for itemID: UUID)"),
+                      "“定位文件”需要真实更新资料库产物，而不是只打开一个文件夹")
+        XCTAssertTrue(model.contains("NSOpenPanel()"))
+        XCTAssertTrue(model.contains("LibraryArtifactRelinker.replacement("),
+                      "选择结果必须经由核心层的受控相对路径校验后再落库")
+        XCTAssertTrue(model.contains("ProcessingAttentionKind.fileMissing"))
+        XCTAssertFalse(model.contains("NSWorkspace.shared.open(ViewModel.appDownloadsDirectory)"),
+                       "缺失文件恢复不能伪装成“打开输出目录”")
     }
 
     func testQueuedContextMenuUsesConfigurationLanguageAndFinderNeedsAnArtifact() throws {

@@ -23,7 +23,36 @@ public struct LibraryProjectedItem: Sendable, Equatable, Identifiable {
     }
 }
 
+/// The only parts of a processing summary that decide a record's sidebar
+/// membership or list sort rank. Progress, ETA, stage detail, and timestamps
+/// intentionally stay out so a live task can redraw its row without causing a
+/// thousand-record projection to filter or sort again.
+public struct LibraryProjectionMembership: Sendable, Equatable {
+    public let isActive: Bool
+    public let needsAttention: Bool
+    public let isCompleted: Bool
+
+    public init(processing: ProcessingSummary?) {
+        isActive = processing?.state.isActive == true
+        needsAttention = processing?.state.needsAttention == true
+        isCompleted = processing?.state == .completed
+    }
+}
+
 public enum LibraryProjection {
+    /// Returns the current filter/sort membership for every durable record.
+    /// Workspace code compares this compact map before deciding whether a live
+    /// overlay requires a full projection refresh.
+    public static func membershipSignatures(
+        in envelope: LibraryEnvelope,
+        liveProcessing: [UUID: ProcessingSummary] = [:]
+    ) -> [UUID: LibraryProjectionMembership] {
+        Dictionary(uniqueKeysWithValues: envelope.items.map { item in
+            let processing = liveProcessing[item.id] ?? item.latestVersion?.processing
+            return (item.id, LibraryProjectionMembership(processing: processing))
+        })
+    }
+
     /// Counts the five fixed sidebar destinations in one linear pass. Unlike
     /// `items`, this deliberately never sorts, so progress updates for a large
     /// library don't repeat list-order work just to redraw badges.

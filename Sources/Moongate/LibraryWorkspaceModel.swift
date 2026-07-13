@@ -4,6 +4,24 @@ import Foundation
 import MoongateCore
 import SwiftUI
 
+/// Keeps durable queue writes keyed to structural state rather than progress.
+/// The same signature may arrive hundreds of times while a downloader reports
+/// progress; preserving the first scheduled write prevents those ticks from
+/// starving the state transition that makes interrupted-task recovery honest.
+struct QueueDurableSynchronizationGate<Signature: Equatable> {
+    private(set) var lastScheduledQueueSignatures: [UUID: Signature] = [:]
+
+    mutating func shouldSchedule(_ signatures: [UUID: Signature]) -> Bool {
+        guard signatures != lastScheduledQueueSignatures else { return false }
+        lastScheduledQueueSignatures = signatures
+        return true
+    }
+
+    mutating func invalidateAfterFailure() {
+        lastScheduledQueueSignatures = [:]
+    }
+}
+
 /// UI-facing coordinator for the durable library. It intentionally persists a
 /// narrow `LibraryItem` projection instead of serialising QueueItem/AppSettings
 /// snapshots, which can contain credentials and runtime-only controls.
@@ -111,6 +129,54 @@ final class LibraryWorkspaceModel: ObservableObject {
         let artifacts: [LibraryArtifact]
     }
 
+    /// The durable subset of a queue snapshot. Queue progress and timestamps
+    /// are deliberately omitted: they are drawn from the live overlay and
+    /// must never keep cancelling a pending state/configuration write.
+    private struct QueueDurableSignature: Equatable {
+        private struct Attention: Equatable {
+            let kind: ProcessingAttentionKind
+            let title: String
+            let summary: String
+            let primaryAction: ProcessingAttentionAction
+            let stage: LibraryProcessingStage
+
+            init?(_ attention: ProcessingAttention?) {
+                guard let attention else { return nil }
+                kind = attention.kind
+                title = attention.title
+                summary = attention.summary
+                primaryAction = attention.primaryAction
+                stage = attention.stage
+            }
+        }
+
+        let libraryItemID: UUID
+        let libraryVersionID: UUID
+        let title: String
+        let source: LibrarySourceDescriptor?
+        let thumbnail: LibrarySourceDescriptor?
+        let state: LibraryItemState
+        let stage: LibraryProcessingStage
+        let actualModels: LibraryActualModels
+        let configuration: LibraryProcessingConfiguration
+        private let attention: Attention?
+        let artifacts: [LibraryArtifact]
+
+        init(snapshot: QueueLibrarySnapshot) {
+            libraryItemID = snapshot.libraryItemID
+            libraryVersionID = snapshot.libraryVersionID
+            title = snapshot.title
+            source = snapshot.source
+            thumbnail = snapshot.thumbnail
+            state = snapshot.processing.state
+            stage = snapshot.processing.stage
+            actualModels = snapshot.processing.actualModels
+            configuration = snapshot.processing.configuration
+            attention = Attention(snapshot.processing.attention)
+            artifacts = snapshot.artifacts
+        }
+    }
+
     @Published private(set) var envelope = LibraryEnvelope() {
         didSet {
             rebuildProjectionCache()
@@ -169,6 +235,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var liveProcessing: [UUID: ProcessingSummary] = [:]
     private var pendingLiveProcessing: [UUID: ProcessingSummary] = [:]
     private var pendingLiveQueueDetails: [UUID: LiveQueueDetails] = [:]
+    /// Membership used by the last full projection. It stays stable while a
+    /// row only receives new progress, speed, ETA, or a stage label.
+    private var projectedMembershipSignatures: [UUID: LibraryProjectionMembership] = [:]
+    /// Durable membership changes only when the library projection rebuilds.
+    /// The live overlay can compare active IDs against this cache without
+    /// repeatedly walking the full saved library.
+    private var durableMembershipSignatures: [UUID: LibraryProjectionMembership] = [:]
+    /// The latest structural queue state that has been scheduled for durable
+    /// synchronization. Equal progress snapshots must leave its task alone.
+    private var queueSynchronizationGate = QueueDurableSynchronizationGate<QueueDurableSignature>()
     private var liveOverlayRefreshTask: Task<Void, Never>?
     private var lastLiveOverlayRefresh = Date.distantPast
     /// The queue publisher emits immediately during init. Do not let that
@@ -273,11 +349,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    /// Opens an existing Settings pane; the action label deliberately matches
-    /// the destination instead of promising an in-place component installer.
+    /// Opens the existing Settings window with the originating queued task
+    /// attached. The capability sheet can then update that exact draft instead
+    /// of silently applying a fallback only to future downloads.
     func openQueuedReadinessRecovery(for itemID: UUID) {
-        guard let recovery = queuedReadinessRecovery(for: itemID) else { return }
-        appModel.openSettings(paneID: recovery.settingsPaneID)
+        guard let recovery = queuedReadinessRecovery(for: itemID),
+              let queueID = queueItem(for: itemID)?.id else { return }
+        switch recovery {
+        case .localSpeech:
+            appModel.openLocalASRSettings(forQueuedTaskID: queueID)
+        case .cloudASR:
+            appModel.openCloudASRSettings(forQueuedTaskID: queueID)
+        }
     }
 
     /// A durable `ProcessingAttention` is intentionally rendered through one
@@ -305,10 +388,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 appModel.openSettings(paneID: "servicesAccounts")
             }
         case .locateFile:
-            // The file is known to be missing, so revealing it would fail.
-            // Open the managed output directory where a replacement can be
-            // selected or copied back without exposing an absolute path in UI.
-            NSWorkspace.shared.open(ViewModel.appDownloadsDirectory)
+            locateMissingArtifact(for: itemID)
         case .prepareLocalRecognition:
             appModel.openSettings(paneID: "subtitlesLanguage")
         case .configureCloudRecognition:
@@ -323,6 +403,104 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         case .review:
             showInformation(for: itemID)
+        }
+    }
+
+    /// Presents a standard Finder picker for the particular artifact reported
+    /// as missing. A repair never persists an arbitrary location: the core
+    /// relinker accepts only a file still inside the managed downloads folder.
+    func locateMissingArtifact(for itemID: UUID) {
+        guard missingArtifactLocation(for: itemID) != nil else {
+            errorMessage = "没有需要重新定位的文件。"
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "定位文件"
+        panel.message = "选择月之门下载文件夹中的替代文件。"
+        panel.prompt = "选择文件"
+        panel.directoryURL = ViewModel.appDownloadsDirectory
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let selectedURL = panel.url else { return }
+            Task { @MainActor [weak self] in
+                self?.relinkMissingArtifact(for: itemID, selectedURL: selectedURL)
+            }
+        }
+    }
+
+    private func missingArtifactLocation(for itemID: UUID) -> (versionIndex: Int, artifactIndex: Int)? {
+        guard let item = libraryItem(id: itemID),
+              let latestVersion = item.latestVersion,
+              let versionIndex = item.versions.firstIndex(where: { $0.id == latestVersion.id }) else {
+            return nil
+        }
+        let artifacts = item.versions[versionIndex].artifacts
+        guard let artifactIndex = artifacts.firstIndex(where: { artifact in
+            guard let url = absoluteURL(for: artifact) else { return true }
+            return !FileManager.default.fileExists(atPath: url.path)
+        }) else {
+            return nil
+        }
+        return (versionIndex, artifactIndex)
+    }
+
+    private func relinkMissingArtifact(for itemID: UUID, selectedURL: URL) {
+        guard FileManager.default.fileExists(atPath: selectedURL.path),
+              var item = libraryItem(id: itemID),
+              let location = missingArtifactLocation(for: itemID) else {
+            errorMessage = "所选文件不可用，请重新选择。"
+            return
+        }
+
+        let original = item.versions[location.versionIndex].artifacts[location.artifactIndex]
+        let attributes = try? FileManager.default.attributesOfItem(atPath: selectedURL.path)
+        let size = (attributes?[.size] as? NSNumber)?.int64Value
+        let modifiedAt = attributes?[.modificationDate] as? Date
+
+        do {
+            let replacement = try LibraryArtifactRelinker.replacement(
+                for: original,
+                selectedURL: selectedURL,
+                managedRootURL: ViewModel.appDownloadsDirectory,
+                size: size,
+                modifiedAt: modifiedAt
+            )
+            item.versions[location.versionIndex].artifacts[location.artifactIndex] = replacement
+
+            // Re-linking a completed output is a resolved recovery. If the
+            // pipeline had not completed, make the remaining work explicit
+            // instead of silently declaring it finished.
+            var processing = item.versions[location.versionIndex].processing
+            if processing.attention?.kind == ProcessingAttentionKind.fileMissing {
+                if processing.stage == .complete || processing.progress >= 1 {
+                    processing.state = .completed
+                    processing.stage = .complete
+                    processing.progress = 1
+                    processing.attention = nil
+                } else {
+                    processing.state = .failed
+                    processing.attention = ProcessingAttention(
+                        kind: .processingFailed,
+                        primaryAction: .retry,
+                        stage: processing.stage
+                    )
+                }
+                processing.updatedAt = Date()
+                item.versions[location.versionIndex].processing = processing
+            }
+            item.updatedAt = Date()
+
+            if let itemIndex = envelope.items.firstIndex(where: { $0.id == itemID }) {
+                envelope.items[itemIndex] = item
+                rebuildProjectionCache()
+                clearSelectionIfHiddenByProjection()
+            }
+            persistItem(item)
+        } catch {
+            errorMessage = "请选择月之门下载文件夹中的文件。"
         }
     }
 
@@ -770,15 +948,20 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func rebuildProjectionCache() {
+        durableMembershipSignatures = LibraryProjection.membershipSignatures(in: envelope)
         projectedItems = LibraryProjection.items(
             in: envelope,
             filter: sidebarDestination.libraryFilter,
             searchQuery: searchText,
-            liveProcessing: [:]
+            liveProcessing: liveProcessing
         )
         sidebarCounts = LibraryProjection.sidebarCounts(
             in: envelope,
-            liveProcessing: [:]
+            liveProcessing: liveProcessing
+        )
+        projectedMembershipSignatures = LibraryProjection.membershipSignatures(
+            in: envelope,
+            liveProcessing: liveProcessing
         )
     }
 
@@ -908,28 +1091,40 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
             guard !Task.isCancelled, let self else { return }
-            self.liveProcessing = self.pendingLiveProcessing
+            let nextProcessing = self.pendingLiveProcessing
+            let affectedItemIDs = Set(self.liveProcessing.keys).union(nextProcessing.keys)
+            let requiresProjectionRefresh = affectedItemIDs.contains { itemID in
+                guard let projectedMembership = self.projectedMembershipSignatures[itemID] else {
+                    // A newly enqueued item becomes visible through the
+                    // immediate durable sync; do not scan every saved record
+                    // while that small write is in flight.
+                    return false
+                }
+                let nextMembership = nextProcessing[itemID]
+                    .map(LibraryProjectionMembership.init)
+                    ?? self.durableMembershipSignatures[itemID]
+                return nextMembership != projectedMembership
+            }
+            self.liveProcessing = nextProcessing
             self.liveQueueDetails = self.pendingLiveQueueDetails
             self.lastLiveOverlayRefresh = Date()
             self.liveOverlayRefreshTask = nil
+            if requiresProjectionRefresh {
+                self.rebuildProjectionCache()
+                self.clearSelectionIfHiddenByProjection()
+            }
         }
     }
 
     private func scheduleQueueSynchronization(_ snapshots: [QueueLibrarySnapshot]) {
+        let signatures = Dictionary(uniqueKeysWithValues: snapshots.map {
+            ($0.queueID, QueueDurableSignature(snapshot: $0))
+        })
+        guard queueSynchronizationGate.shouldSchedule(signatures) else { return }
         queueSyncTask?.cancel()
         queueSyncGeneration &+= 1
         let generation = queueSyncGeneration
-        // A newly enqueued item is the durable identity boundary. Persist it
-        // without the normal UI-progress debounce so switching to legacy or
-        // closing immediately after enqueue cannot leave an orphaned queue
-        // task with no restart/recovery record.
-        let hasUnpersistedItem = snapshots.contains { snapshot in
-            !envelope.items.contains(where: { $0.id == snapshot.libraryItemID })
-        }
         queueSyncTask = Task { [weak self, snapshots] in
-            if !hasUnpersistedItem {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
             guard !Task.isCancelled, let self,
                   self.isCurrentQueueSync(generation) else {
                 return
@@ -1035,6 +1230,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             if isCurrentQueueSync(generation) {
                 errorMessage = error.localizedDescription
+                // A failed write must not make the same durable state look
+                // settled. The next queue update may retry it safely.
+                queueSynchronizationGate.invalidateAfterFailure()
             }
         }
     }

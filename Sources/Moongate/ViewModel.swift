@@ -48,6 +48,28 @@ struct SourceLanguagePreferenceOption: Identifiable, Hashable {
     var id: String { code }
 }
 
+/// The user-facing source of a local subtitle capability request. Keeping a
+/// queued task id here lets the Settings-hosted sheet resolve that one task
+/// instead of silently changing only future-download defaults.
+enum LocalRecognitionCapabilitySetupRequest: Equatable {
+    case defaults
+    case queuedTask(UUID)
+
+    var queuedTaskID: UUID? {
+        guard case .queuedTask(let id) = self else { return nil }
+        return id
+    }
+}
+
+/// A recovery choice made from the local-recognition capability sheet for a
+/// deferred task. These are outcomes a person can understand; model/runtime
+/// details remain in the capability implementation.
+enum QueuedRecognitionFallback: Equatable {
+    case platformSubtitles
+    case cloudRecognition
+    case videoOnly
+}
+
 @MainActor
 final class ViewModel: ObservableObject {
 
@@ -152,6 +174,14 @@ final class ViewModel: ObservableObject {
     }
     @Published var showSettings = false
     @Published var pendingSettingsPaneID: String?
+    /// A transient request from a queue/library recovery action. The Settings
+    /// view consumes it once and presents the user-facing capability sheet.
+    @Published var localRecognitionCapabilitySetupRequest: LocalRecognitionCapabilitySetupRequest?
+    /// A queued cloud-recognition recovery needs the service editor, not the
+    /// local capability sheet. Preserve the originating task until Settings
+    /// saves the service snapshot back into that queued configuration.
+    @Published var cloudRecognitionConfigurationRequestQueueID: UUID?
+    @Published var cloudRecognitionConfigurationRequested = false
     /// 首启引导：选择 App 语言与默认译文目标；不强制配置 API。
     @Published var showOnboarding = false
     /// 非 nil 时弹出站点 Cookie 捕获窗（值为站点 host，如 "youtube.com"）
@@ -199,9 +229,6 @@ final class ViewModel: ObservableObject {
     let queue: QueueManager
     /// 远程更新器贯穿主界面与设置页；发现新版后用于设置按钮红点提示。
     let updater: UpdateService
-    /// Onboarding 和设置共用的真实组件准备状态；只检查可用性，不持有或写入凭证。
-    let preparationCenter = PreparationCenterModel()
-
     private let engine: any DownloadEngine
     private let runtimeReadinessEvaluator: any TranslationRuntimeReadinessEvaluating
     private var runtimeReadinessTask: Task<Void, Never>?
@@ -613,6 +640,98 @@ final class ViewModel: ObservableObject {
             request: request,
             mode: configuration.subtitleMode,
             settings: configuration.applying(to: item.settings)
+        )
+    }
+
+    /// Applies a recovery choice to one deferred task only. It never changes
+    /// the default for future downloads, so a person can safely recover a
+    /// single row from the capability sheet.
+    @discardableResult
+    func applyQueuedRecognitionFallback(
+        id: UUID,
+        fallback: QueuedRecognitionFallback
+    ) -> Bool {
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+
+        var configuration = queuedProcessingConfiguration(for: item)
+        switch fallback {
+        case .platformSubtitles:
+            configuration.subtitleSourcePolicy = .forcePlatform
+            configuration.transcriptionModel = nil
+        case .cloudRecognition:
+            configuration.subtitleSourcePolicy = .cloudASR
+            configuration.transcriptionModel = nil
+        case .videoOnly:
+            configuration.subtitleMode = .off
+            configuration.subtitleSourcePolicy = .autoBest
+            configuration.transcriptionModel = nil
+            configuration.translationModel = nil
+        }
+        return updateQueuedTaskConfiguration(id: id, configuration: configuration)
+    }
+
+    /// The capability itself is global, but a deferred queue snapshot is
+    /// intentionally frozen until an explicit update. Once the person enables
+    /// local recognition, copy the verified settings into the originating task
+    /// so its existing force-local choice can really start.
+    @discardableResult
+    func refreshQueuedLocalRecognitionCapability(id: UUID) -> Bool {
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+        var taskSettings = item.settings
+        taskSettings.localASREnabled = settings.localASREnabled
+        taskSettings.localASRRuntimePath = settings.localASRRuntimePath
+        taskSettings.localASRModelID = settings.localASRModelID
+        taskSettings.localASRModelPath = settings.localASRModelPath
+        taskSettings.localASRVADModelPath = settings.localASRVADModelPath
+        taskSettings.subtitleRecognitionMode = settings.subtitleRecognitionMode
+        return queue.updateQueuedConfiguration(
+            id: id,
+            request: item.request,
+            mode: item.chineseMode,
+            settings: applyingCurrentCredentials(to: taskSettings)
+        )
+    }
+
+    @discardableResult
+    func refreshQueuedCloudRecognitionCapability(id: UUID) -> Bool {
+        guard let item = queue.items.first(where: { $0.id == id }),
+              item.stage == .queued else {
+            return false
+        }
+        var taskSettings = item.settings
+        taskSettings.cloudASREnabled = settings.cloudASREnabled
+        taskSettings.cloudASRConsentAccepted = settings.cloudASRConsentAccepted
+        taskSettings.cloudASRBaseURL = settings.cloudASRBaseURL
+        taskSettings.cloudASRModel = settings.cloudASRModel
+        taskSettings.cloudASRAuthToken = settings.cloudASRAuthToken
+        return queue.updateQueuedConfiguration(
+            id: id,
+            request: item.request,
+            mode: item.chineseMode,
+            settings: applyingCurrentCredentials(to: taskSettings)
+        )
+    }
+
+    private func queuedProcessingConfiguration(
+        for item: QueueManager.QueueItem
+    ) -> QueuedProcessingConfiguration {
+        QueuedProcessingConfiguration(
+            quality: item.request.formatID,
+            outputFormat: item.request.outputFormat,
+            subtitleMode: item.chineseMode,
+            subtitleSourcePolicy: item.request.subtitleSourcePolicy,
+            targetLanguage: item.settings.translationTargetLanguage,
+            transcriptionModel: item.settings.localASRModelID,
+            translationModel: item.settings.translationFollowsDefault
+                ? item.settings.aiModel
+                : item.settings.translationModel,
+            subtitleStyle: item.settings.subtitleStyle
         )
     }
 
@@ -1667,13 +1786,28 @@ final class ViewModel: ObservableObject {
     }
 
     func openLocalASRSettings() {
-        settingsNotice = CoreL10n.t(L.Ready.localASRSetupRequired)
-        openSettings(paneID: "localSpeech")
+        settingsNotice = nil
+        localRecognitionCapabilitySetupRequest = .defaults
+        openSettings(paneID: "subtitlesLanguage")
     }
 
+    func openLocalASRSettings(forQueuedTaskID queueID: UUID) {
+        settingsNotice = nil
+        localRecognitionCapabilitySetupRequest = .queuedTask(queueID)
+        openSettings(paneID: "subtitlesLanguage")
+    }
+
+    /// Keeps the ready-page recovery entry point stable while the queued-task
+    /// variant below carries task context for a draft-specific repair.
     func openCloudASRSettings() {
+        openCloudASRSettings(forQueuedTaskID: nil)
+    }
+
+    func openCloudASRSettings(forQueuedTaskID queueID: UUID?) {
         settingsNotice = CoreL10n.t(L.Ready.cloudASRSetupRequired)
-        openSettings(paneID: "localSpeech")
+        cloudRecognitionConfigurationRequestQueueID = queueID
+        cloudRecognitionConfigurationRequested = true
+        openSettings(paneID: "servicesAccounts")
     }
 
     /// 选档页恢复上次的下载选项：输出格式 / HDR 直接套用；字幕按语言代码在本视频可用字幕里匹配
@@ -2038,8 +2172,13 @@ final class ViewModel: ObservableObject {
             searchURLs.append(bundledRuntimeURL)
             searchURLs.append(bundledRuntimeURL.appendingPathComponent("bin", isDirectory: true))
         }
+        // Finder-launched apps often receive a minimal PATH. This explicit
+        // capability check can still adopt a verified Homebrew installation
+        // without changing the generic locator's deterministic behavior.
+        searchURLs.append(URL(fileURLWithPath: "/opt/homebrew/bin/whisper-cli"))
+        searchURLs.append(URL(fileURLWithPath: "/usr/local/bin/whisper-cli"))
         guard let runtime = ASRRuntimeLocator(extraSearchURLs: searchURLs).locate() else {
-            settingsNotice = "未发现可验证的本地 Whisper 运行时。请安装后重新检查。"
+            settingsNotice = nil
             return false
         }
 
@@ -2048,8 +2187,7 @@ final class ViewModel: ObservableObject {
         do {
             try draft.save()
             settings = draft
-            settingsNotice = "已采用本地运行时：\(runtime.executableURL.path)"
-            preparationCenter.refresh()
+            settingsNotice = nil
             return true
         } catch {
             settingsNotice = CoreL10n.t(L.Settings.saveFailed, error.localizedDescription)

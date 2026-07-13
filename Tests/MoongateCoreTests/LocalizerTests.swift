@@ -276,7 +276,7 @@ final class LocalizerTests: XCTestCase {
             LocalizedStrings.format(L.Settings.localASRModelImportFailed, language: .zhHans, ["权限不足"]),
             "导入失败：权限不足"
         )
-        XCTAssertEqual(LocalizedStrings.string(L.Settings.storageSection, language: .zhHans), "存储与组件管理")
+        XCTAssertEqual(LocalizedStrings.string(L.Settings.storageSection, language: .zhHans), "存储")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.storageVADPackage, language: .zhHans), "减少空白与重复检测包")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.storageDependencyComponents, language: .en), "Dependency components")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.storageUninstallDependency, language: .zhHant), "卸載")

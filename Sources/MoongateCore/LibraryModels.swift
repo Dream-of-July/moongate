@@ -147,6 +147,62 @@ public struct LibraryArtifact: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// A file chosen to repair a missing artifact must remain inside the managed
+/// downloads directory. This keeps the library portable and prevents a Finder
+/// selection from turning a persistent record into an arbitrary absolute path.
+public enum LibraryArtifactRelinkError: LocalizedError, Sendable, Equatable {
+    case outsideManagedDirectory
+
+    public var errorDescription: String? {
+        switch self {
+        case .outsideManagedDirectory:
+            return "Choose a file inside the managed downloads folder."
+        }
+    }
+}
+
+public enum LibraryArtifactRelinker {
+    /// Produces a replacement record without changing the artifact identity or
+    /// role. The selected file must resolve underneath `managedRootURL`.
+    public static func replacement(
+        for original: LibraryArtifact,
+        selectedURL: URL,
+        managedRootURL: URL,
+        size: Int64?,
+        modifiedAt: Date?
+    ) throws -> LibraryArtifact {
+        guard let relativePath = managedRelativePath(
+            for: selectedURL,
+            within: managedRootURL
+        ) else {
+            throw LibraryArtifactRelinkError.outsideManagedDirectory
+        }
+        return try LibraryArtifact(
+            id: original.id,
+            role: original.role,
+            relativePath: relativePath,
+            size: size,
+            modifiedAt: modifiedAt
+        )
+    }
+
+    /// Returns a safe relative path only when both paths resolve to the same
+    /// managed hierarchy. Resolving symlinks closes the common `Downloads/foo`
+    /// -> `/outside` escape before any value is persisted.
+    public static func managedRelativePath(
+        for selectedURL: URL,
+        within managedRootURL: URL
+    ) -> String? {
+        let rootURL = managedRootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let selectedURL = selectedURL.standardizedFileURL.resolvingSymlinksInPath()
+        let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        guard selectedURL.path.hasPrefix(rootPath) else { return nil }
+        let relativePath = String(selectedURL.path.dropFirst(rootPath.count))
+        guard !relativePath.isEmpty else { return nil }
+        return relativePath
+    }
+}
+
 public enum LibraryItemState: String, Codable, Sendable, Equatable, CaseIterable {
     case queued
     case cancelling

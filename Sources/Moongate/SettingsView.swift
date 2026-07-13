@@ -67,8 +67,8 @@ struct SettingsView: View {
     @State private var draft = AppSettings()
     @State private var settingsDraftCoordinator = SettingsDraftCoordinator()
     @FocusState private var defaultAIAuthTokenFocused: Bool
+    @FocusState private var cloudASRAuthTokenFocused: Bool
     @ObservedObject private var updater: UpdateService
-    @ObservedObject private var preparationCenter: PreparationCenterModel
     @State private var testState: TestState = .idle
     @State private var testTask: Task<Void, Never>?
     @State private var modelFetchState: ModelFetchState = .idle
@@ -91,14 +91,20 @@ struct SettingsView: View {
     @State private var localASRVADCatalogVersion = 0
     @State private var localASRVADInstalling = false
     @State private var localASRVADInstallProgress: Double?
-    @State private var showPreparationCenter = false
+    @State private var showLocalRecognitionCapability = false
+    @State private var localRecognitionInstallTask: Task<Void, Never>?
+    @State private var localRecognitionInstallProgress: Double?
+    @State private var localRecognitionInstallFailure = false
+    @State private var localRecognitionInstallCancelling = false
+    @State private var localRecognitionCapabilityRequest: LocalRecognitionCapabilitySetupRequest?
+    @State private var cloudRecognitionConfigurationExpanded = false
+    @State private var pendingCloudRecognitionTaskID: UUID?
 
     private let appleTranslationSourceLanguages = ["en", "ja", "ko", "zh-Hans", "zh-Hant"]
 
     init(model: ViewModel) {
         self.model = model
         self._updater = ObservedObject(wrappedValue: model.updater)
-        self._preparationCenter = ObservedObject(wrappedValue: model.preparationCenter)
     }
 
     var body: some View {
@@ -150,10 +156,20 @@ struct SettingsView: View {
             applyPendingSettingsPane()
             refreshLoginStatus()
             refreshDraftRuntimeReadiness()
+            consumePendingLocalRecognitionCapabilityRequest()
+            consumePendingCloudRecognitionConfigurationRequest()
         }
         .onChange(of: model.pendingSettingsPaneID) { applyPendingSettingsPane() }
-        .task {
-            await refreshDependencies()
+        .onChange(of: model.localRecognitionCapabilitySetupRequest) {
+            consumePendingLocalRecognitionCapabilityRequest()
+        }
+        .onChange(of: model.cloudRecognitionConfigurationRequested) {
+            consumePendingCloudRecognitionConfigurationRequest()
+        }
+        .onChange(of: showLocalRecognitionCapability) { _, isPresented in
+            if !isPresented, localRecognitionInstallTask == nil {
+                localRecognitionCapabilityRequest = nil
+            }
         }
         .task {
             // 后台更新检查由 Sparkle 调度驱动（见 UpdateService / Info.plist）；打开设置不强制立即检查。
@@ -163,28 +179,30 @@ struct SettingsView: View {
             testTask?.cancel()
             modelFetchTask?.cancel()
             draftRuntimeReadinessTask?.cancel()
+            // Settings owns this on-demand capability operation. If its
+            // progress surface goes away (for example at app shutdown), stop
+            // the download instead of letting it continue invisibly.
+            if localRecognitionInstallTask != nil {
+                cancelLocalRecognitionInstall()
+            }
             // 关闭窗口是一个明确的提交动作，也会把被凭证修改暂停的普通保存安全落盘。
-            _ = commitDraftImmediately()
+            if commitDraftImmediately(), let queueID = pendingCloudRecognitionTaskID {
+                _ = model.refreshQueuedCloudRecognitionCapability(id: queueID)
+                pendingCloudRecognitionTaskID = nil
+            }
         }
-        .sheet(isPresented: $showPreparationCenter) {
-            PreparationCenterView(
-                model: preparationCenter,
-                onOpenDependencySetup: { requestDependencySetup() },
-                onAdoptRuntime: {
-                    adoptLocalASRRuntime()
-                    preparationCenter.refresh()
-                },
-                onOpenSystemSettings: {
-                    openSystemSettings(URL(string: "x-apple.systempreferences:"))
-                },
-                onManageComponent: { _, _ in
-                    // Detailed model actions remain in this pane while their
-                    // cancellable per-item controls move into this center.
-                    showPreparationCenter = false
-                    selectedPane = .subtitlesLanguage
-                }
+        .sheet(isPresented: $showLocalRecognitionCapability) {
+            LocalRecognitionCapabilitySheet(
+                presentation: localRecognitionCapabilityPresentation,
+                canDismiss: localRecognitionInstallTask == nil && !localRecognitionInstallCancelling,
+                onRecheck: recheckExistingLocalRecognition,
+                onInstall: installRecommendedLocalRecognitionModel,
+                onCancel: cancelLocalRecognitionInstall,
+                onRetry: retryLocalRecognitionInstall,
+                onUseAutomatic: useAutomaticSubtitles,
+                onUseCloud: openCloudRecognitionSettings,
+                onContinueDownloadOnly: continueWithVideoOnly
             )
-            .frame(minWidth: 620, minHeight: 520)
         }
     }
 
@@ -254,15 +272,14 @@ struct SettingsView: View {
             case .subtitlesLanguage:
                 translationConfigSection
                 styleSection
-                localSpeechSection
-                recognitionSetupGuideSection
-                subtitleRecognitionComponentsSection
+                localRecognitionPreferencesSection
             case .servicesAccounts:
                 translationSection
+                translationServiceOverridesSection
+                cloudRecognitionServiceSection
                 summarySection
                 loginSection
             case .storage:
-                preparationCenterEntrySection
                 storageSection
             }
         }
@@ -320,24 +337,237 @@ struct SettingsView: View {
         }
     }
 
-    private var preparationCenterEntrySection: some View {
-        Section("准备中心") {
-            Text("统一查看下载工具、本地识别运行时、Whisper/VAD 模型和系统语言包的可用性。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("打开准备中心") {
-                showPreparationCenter = true
-            }
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
     private func preferredSourceLanguageLabel(_ code: String) -> String {
         if code == "auto" {
             return localizer.t(L.Ready.sourceLanguageAuto)
         }
         return TranslationLanguage.sourceDisplayName(for: code) ?? code
+    }
+
+    // MARK: - 用户可见的本机字幕识别能力
+
+    /// The ordinary Settings path describes the outcome, not the runtime,
+    /// model catalog, or support files behind it. Detailed component views stay
+    /// internal until a diagnostics surface has a real use for them.
+    private var localRecognitionPreferencesSection: some View {
+        Section(localizer.t(L.Settings.localASRSection)) {
+            Picker(localizer.t(L.Settings.subtitleRecognitionMode), selection: localRecognitionModeBinding) {
+                Text(localizer.t(L.Settings.subtitleRecognitionAutomatic)).tag(SubtitleRecognitionMode.automatic)
+                Text(localizer.t(L.Settings.subtitleRecognitionAlwaysLocal)).tag(SubtitleRecognitionMode.alwaysLocal)
+                Text(localizer.t(L.Settings.subtitleRecognitionPlatformOnly)).tag(SubtitleRecognitionMode.platformOnly)
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: localRecognitionIsEnabled ? "checkmark.circle.fill" : "captions.bubble")
+                    .foregroundStyle(localRecognitionIsEnabled ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(localizer.t(L.Settings.localASRSection))
+                    Text(localizer.t(localRecognitionIsEnabled
+                        ? L.Settings.localRecognitionEnabled
+                        : L.Settings.localRecognitionDisabled))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(localizer.t(L.Settings.localRecognitionEnable)) {
+                    presentLocalRecognitionCapability()
+                }
+                .buttonStyle(.bordered)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(localizer.t(L.Settings.localASRSection))
+            .accessibilityValue(localizer.t(localRecognitionIsEnabled
+                ? L.Settings.localRecognitionEnabled
+                : L.Settings.localRecognitionDisabled))
+        }
+    }
+
+    private var localRecognitionModeBinding: Binding<SubtitleRecognitionMode> {
+        Binding(
+            get: { draft.subtitleRecognitionMode },
+            set: { mode in
+                guard mode == .alwaysLocal else {
+                    draft.subtitleRecognitionMode = mode
+                    draft.localASREnabled = mode != .platformOnly
+                    return
+                }
+                presentLocalRecognitionCapability()
+            }
+        )
+    }
+
+    private var localRecognitionIsEnabled: Bool {
+        guard draft.subtitleRecognitionMode == .alwaysLocal,
+              draft.localASREnabled,
+              availableLocalASRRuntimePath != nil,
+              localASRModelReady else {
+            return false
+        }
+        return true
+    }
+
+    private var localRecognitionCapabilityPresentation: LocalRecognitionCapabilityPresentation {
+        if localRecognitionInstallCancelling {
+            return .cancelling
+        }
+        if localRecognitionInstallTask != nil {
+            return .downloading(progress: localRecognitionInstallProgress)
+        }
+        if localRecognitionInstallFailure {
+            return .failed
+        }
+        guard availableLocalASRRuntimePath != nil else {
+            return LocalRecognitionCapabilityPresentation.runtimeMissing
+        }
+        if localASRModelReady {
+            return LocalRecognitionCapabilityPresentation.enabled
+        }
+        let bytes = recommendedModelForDevice()?.sizeBytes ?? 0
+        return LocalRecognitionCapabilityPresentation.modelRequired(sizeBytes: bytes)
+    }
+
+    private func consumePendingLocalRecognitionCapabilityRequest() {
+        guard let request = model.localRecognitionCapabilitySetupRequest else { return }
+        model.localRecognitionCapabilitySetupRequest = nil
+        presentLocalRecognitionCapability(for: request)
+    }
+
+    private func consumePendingCloudRecognitionConfigurationRequest() {
+        guard model.cloudRecognitionConfigurationRequested else { return }
+        model.cloudRecognitionConfigurationRequested = false
+        let queueID = model.cloudRecognitionConfigurationRequestQueueID
+        model.cloudRecognitionConfigurationRequestQueueID = nil
+        pendingCloudRecognitionTaskID = queueID
+        cloudRecognitionConfigurationExpanded = true
+        selectedPane = .servicesAccounts
+    }
+
+    private var activeQueuedCapabilityTaskID: UUID? {
+        localRecognitionCapabilityRequest?.queuedTaskID
+    }
+
+    private func presentLocalRecognitionCapability(
+        for request: LocalRecognitionCapabilitySetupRequest = .defaults
+    ) {
+        localRecognitionCapabilityRequest = request
+        localRecognitionInstallFailure = false
+        if availableLocalASRRuntimePath == nil {
+            _ = model.adoptExistingLocalASRRuntime()
+            draft = model.settings
+        }
+        enableLocalRecognitionIfReady()
+        showLocalRecognitionCapability = true
+    }
+
+    private func recheckExistingLocalRecognition() {
+        localRecognitionInstallFailure = false
+        _ = model.adoptExistingLocalASRRuntime()
+        draft = model.settings
+        enableLocalRecognitionIfReady()
+    }
+
+    private func enableLocalRecognitionIfReady() {
+        if !localASRModelReady,
+           let recommended = recommendedModelForDevice(),
+           recommended.isInstalled {
+            useLocalASRModel(recommended)
+        }
+        guard availableLocalASRRuntimePath != nil, localASRModelReady else { return }
+        draft.localASREnabled = true
+        draft.subtitleRecognitionMode = .alwaysLocal
+        model.settingsNotice = nil
+        if commitDraftImmediately(), let queueID = activeQueuedCapabilityTaskID {
+            _ = model.refreshQueuedLocalRecognitionCapability(id: queueID)
+        }
+    }
+
+    private func installRecommendedLocalRecognitionModel() {
+        guard localRecognitionInstallTask == nil,
+              let entry = recommendedModelForDevice() else {
+            return
+        }
+        localRecognitionInstallFailure = false
+        localRecognitionInstallCancelling = false
+        localRecognitionInstallProgress = 0
+        localRecognitionInstallTask = Task {
+            do {
+                let store = ASRModelStore(directoryURL: localASRModelStoreURL)
+                let installer = ASRModelInstaller(manifest: .recommendedWhisperCpp, store: store)
+                let status = try await installer.installModel(id: entry.id) { progress in
+                    guard let fraction = progress.fraction else { return }
+                    Task { @MainActor in
+                        localRecognitionInstallProgress = fraction
+                    }
+                }
+                guard !Task.isCancelled else {
+                    finishLocalRecognitionInstall(cancelled: true)
+                    return
+                }
+                draft.localASRModelID = entry.id
+                draft.localASRModelPath = status.installedURL.path
+                draft.localASREnabled = true
+                localASRModelCatalogVersion += 1
+                storageSizes["asrModels"] = nil
+                finishLocalRecognitionInstall(cancelled: false)
+                enableLocalRecognitionIfReady()
+            } catch is CancellationError {
+                finishLocalRecognitionInstall(cancelled: true)
+            } catch {
+                let cancelled = Task.isCancelled
+                finishLocalRecognitionInstall(cancelled: cancelled)
+                if !cancelled {
+                    localRecognitionInstallFailure = true
+                }
+            }
+        }
+    }
+
+    private func cancelLocalRecognitionInstall() {
+        guard let task = localRecognitionInstallTask else { return }
+        localRecognitionInstallCancelling = true
+        task.cancel()
+    }
+
+    private func retryLocalRecognitionInstall() {
+        localRecognitionInstallFailure = false
+        installRecommendedLocalRecognitionModel()
+    }
+
+    private func finishLocalRecognitionInstall(cancelled: Bool) {
+        localRecognitionInstallTask = nil
+        localRecognitionInstallProgress = nil
+        localRecognitionInstallCancelling = false
+        if cancelled {
+            model.settingsNotice = nil
+        }
+    }
+
+    private func useAutomaticSubtitles() {
+        if let queueID = activeQueuedCapabilityTaskID {
+            _ = model.applyQueuedRecognitionFallback(id: queueID, fallback: .platformSubtitles)
+            return
+        }
+        draft.subtitleRecognitionMode = .platformOnly
+        draft.localASREnabled = false
+        _ = commitDraftImmediately()
+    }
+
+    private func openCloudRecognitionSettings() {
+        if let queueID = activeQueuedCapabilityTaskID {
+            _ = model.applyQueuedRecognitionFallback(id: queueID, fallback: .cloudRecognition)
+            pendingCloudRecognitionTaskID = queueID
+        }
+        cloudRecognitionConfigurationExpanded = true
+        selectedPane = .servicesAccounts
+    }
+
+    private func continueWithVideoOnly() {
+        if let queueID = activeQueuedCapabilityTaskID {
+            _ = model.applyQueuedRecognitionFallback(id: queueID, fallback: .videoOnly)
+            return
+        }
+        draft.lastSubtitleMode = ChineseSubtitleMode.off.rawValue
+        _ = commitDraftImmediately()
     }
 
     // MARK: - 字幕识别
@@ -968,7 +1198,7 @@ struct SettingsView: View {
                 .disabled(localASRRuntimeSearchURLs.isEmpty)
 
                 Button(localizer.t(L.Onboarding.configureLocalSpeechOptional)) {
-                    showPreparationCenter = true
+                    presentLocalRecognitionCapability()
                 }
                 .buttonStyle(.borderless)
             }
@@ -1025,8 +1255,7 @@ struct SettingsView: View {
         guard draft.subtitleRecognitionMode != .platformOnly else { return }
         switch localASRSetupState {
         case .missingRuntime:
-            model.settingsNotice = "本地识别运行时需要单独准备；请在准备中心检查或采用已有运行时。"
-            showPreparationCenter = true
+            presentLocalRecognitionCapability()
         case .badHash:
             repairSelectedLocalASRModel()
         case .disabled, .missingModel:
@@ -1063,7 +1292,7 @@ struct SettingsView: View {
             ) {
                 if availableLocalASRRuntimePath == nil {
                     Button(localizer.t(L.Onboarding.configureLocalSpeechOptional)) {
-                        showPreparationCenter = true
+                        presentLocalRecognitionCapability()
                     }
                     .buttonStyle(.bordered)
                     Button(localizer.t(L.Settings.localASRFindRuntime)) {
@@ -1808,49 +2037,77 @@ struct SettingsView: View {
         }
     }
 
+    private var localRecognitionStorageBytes: Int64 {
+        (storageSizes["asrModels"] ?? 0) + (storageSizes["vad"] ?? 0)
+    }
+
+    /// Removes the files behind the user-facing local recognition capability as
+    /// one intentional action. The underlying model and timing helper are an
+    /// implementation detail, so neither is surfaced as a separate setting.
+    private func deleteAllLocalRecognitionAssets() {
+        let fileManager = FileManager.default
+        let modelDirectory = localASRModelStoreURL
+        let helperDirectory = localASRVADStoreURL
+
+        do {
+            if fileManager.fileExists(atPath: modelDirectory.path) {
+                try fileManager.removeItem(at: modelDirectory)
+            }
+            if fileManager.fileExists(atPath: helperDirectory.path) {
+                try fileManager.removeItem(at: helperDirectory)
+            }
+
+            draft.localASRModelID = ""
+            draft.localASRModelPath = ""
+            draft.localASRVADModelPath = ""
+            draft.localASREnabled = false
+            if draft.subtitleRecognitionMode == .alwaysLocal {
+                draft.subtitleRecognitionMode = .automatic
+            }
+            _ = commitDraftImmediately()
+
+            localASRModelCatalogVersion += 1
+            localASRVADCatalogVersion += 1
+            storageSizes["asrModels"] = 0
+            storageSizes["vad"] = 0
+            storageFeedback = localizer.t(L.Settings.storageLocalRecognitionFilesDeleted)
+            model.settingsNotice = nil
+            Task { await calculateStorageSizes() }
+        } catch {
+            // The normal Settings path intentionally stays actionable without
+            // exposing an implementation path or a raw file-system error.
+            storageFeedback = localizer.t(L.Settings.storageLocalRecognitionFilesDeletionFailed)
+        }
+    }
+
     private var storageSection: some View {
         Section(localizer.t(L.Settings.storageSection)) {
             VStack(alignment: .leading, spacing: 14) {
                 storageOverview
                 Divider()
 
-                storageRow(
+                userFacingStorageRow(
                     icon: "folder.fill.badge.gearshape",
                     tint: .secondary,
                     label: localizer.t(L.Settings.storageSupportData),
-                    path: supportDataURL.path,
                     size: storageSizes["support"]
                 )
                 Divider()
-                storageRow(
-                    icon: "waveform",
-                    tint: .green,
-                    label: localizer.t(L.Settings.storageASRModels),
-                    path: localASRModelStoreURL.path,
-                    size: storageSizes["asrModels"],
-                    actionTitle: localizer.t(L.Settings.storageDeleteModels),
+                userFacingStorageRow(
+                    icon: "captions.bubble",
+                    tint: .indigo,
+                    label: localizer.t(L.Settings.storageLocalRecognitionFiles),
+                    size: localRecognitionStorageBytes,
+                    actionTitle: localizer.t(L.Settings.storageDeleteLocalRecognitionFiles),
                     actionSystemImage: "trash",
                     actionRole: .destructive,
                     action: { showDeleteModelsConfirm = true }
                 )
                 Divider()
-                storageRow(
-                    icon: "waveform.path.ecg",
-                    tint: .blue,
-                    label: localizer.t(L.Settings.storageVADPackage),
-                    path: localASRVADStoreURL.path,
-                    size: storageSizes["vad"],
-                    actionTitle: localizer.t(L.Settings.storageDeleteVADPackage),
-                    actionSystemImage: "trash",
-                    actionRole: .destructive,
-                    action: { showDeleteVADConfirm = true }
-                )
-                Divider()
-                storageRow(
+                userFacingStorageRow(
                     icon: "film.stack",
                     tint: .orange,
                     label: localizer.t(L.Settings.storageDownloadedVideos),
-                    path: appDownloadsDirectoryURL.path,
                     size: storageSizes["downloads"],
                     actionTitle: localizer.t(L.Settings.storageDeleteDownloads),
                     actionSystemImage: "trash",
@@ -1859,14 +2116,6 @@ struct SettingsView: View {
                 )
 
                 Divider()
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(localizer.t(L.Settings.storageDependencyComponents))
-                        .font(.callout.weight(.medium))
-                    dependencyStorageRows
-                }
-
-                Divider()
-
                 HStack(spacing: 10) {
                     Button {
                         calculateSizeTask()
@@ -1888,30 +2137,13 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                if let errorText = dependencyStorageErrorText {
-                    Text(errorText)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .confirmationDialog(
-                localizer.t(L.Settings.storageDeleteModelsConfirm),
+                localizer.t(L.Settings.storageDeleteLocalRecognitionFilesConfirm),
                 isPresented: $showDeleteModelsConfirm
             ) {
-                Button(localizer.t(L.Settings.storageDeleteModels), role: .destructive) {
-                    deleteAllASRModels()
-                }
-                Button(localizer.t(L.Common.cancel), role: .cancel) {}
-            }
-            .confirmationDialog(
-                localizer.t(L.Settings.storageDeleteVADPackageConfirm),
-                isPresented: $showDeleteVADConfirm
-            ) {
-                Button(localizer.t(L.Settings.storageDeleteVADPackage), role: .destructive) {
-                    deleteLocalASRVADModel()
-                    Task { await calculateStorageSizes() }
+                Button(localizer.t(L.Settings.storageDeleteLocalRecognitionFiles), role: .destructive) {
+                    deleteAllLocalRecognitionAssets()
                 }
                 Button(localizer.t(L.Common.cancel), role: .cancel) {}
             }
@@ -1924,27 +2156,9 @@ struct SettingsView: View {
                 }
                 Button(localizer.t(L.Common.cancel), role: .cancel) {}
             }
-            .confirmationDialog(
-                pendingDependencyUninstall.map {
-                    localizer.t(L.Settings.storageUninstallDependencyConfirm, $0.id)
-                } ?? localizer.t(L.Settings.storageUninstallDependency),
-                isPresented: $showUninstallDependencyConfirm
-            ) {
-                if let component = pendingDependencyUninstall {
-                    Button(localizer.t(L.Settings.storageUninstallDependency), role: .destructive) {
-                        uninstallDependencyComponent(component)
-                    }
-                }
-                Button(localizer.t(L.Common.cancel), role: .cancel) {}
-            }
         }
         .onAppear {
             if storageSizes.isEmpty { calculateSizeTask() }
-            Task { await dependencyStorageInstaller.refresh() }
-        }
-        .onChange(of: dependencyStorageInstaller.components) { _, components in
-            dependencyComponents = components
-            dependencyChecked = true
         }
     }
 
@@ -2100,8 +2314,7 @@ struct SettingsView: View {
             storageUsageBar
             HStack(spacing: 12) {
                 storageLegendItem(color: .secondary, text: localizer.t(L.Settings.storageSupportData))
-                storageLegendItem(color: .green, text: localizer.t(L.Settings.storageASRModels))
-                storageLegendItem(color: .blue, text: localizer.t(L.Settings.storageVADPackage))
+                storageLegendItem(color: .indigo, text: localizer.t(L.Settings.storageLocalRecognitionFiles))
                 storageLegendItem(color: .orange, text: localizer.t(L.Settings.storageDownloadedVideos))
             }
             .font(.caption)
@@ -2112,8 +2325,7 @@ struct SettingsView: View {
 
     private var storageTotalBytes: Int64 {
         (storageSizes["support"] ?? 0)
-            + (storageSizes["asrModels"] ?? 0)
-            + (storageSizes["vad"] ?? 0)
+            + localRecognitionStorageBytes
             + (storageSizes["downloads"] ?? 0)
     }
 
@@ -2124,10 +2336,9 @@ struct SettingsView: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(.quaternary)
                 HStack(spacing: 2) {
-                    storageBarSegment(key: "support", color: .secondary, total: total, width: proxy.size.width)
-                    storageBarSegment(key: "asrModels", color: .green, total: total, width: proxy.size.width)
-                    storageBarSegment(key: "vad", color: .blue, total: total, width: proxy.size.width)
-                    storageBarSegment(key: "downloads", color: .orange, total: total, width: proxy.size.width)
+                    storageBarSegment(bytes: storageSizes["support"] ?? 0, color: .secondary, total: total, width: proxy.size.width)
+                    storageBarSegment(bytes: localRecognitionStorageBytes, color: .indigo, total: total, width: proxy.size.width)
+                    storageBarSegment(bytes: storageSizes["downloads"] ?? 0, color: .orange, total: total, width: proxy.size.width)
                     Spacer(minLength: 0)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -2136,9 +2347,8 @@ struct SettingsView: View {
         .frame(height: 16)
     }
 
-    private func storageBarSegment(key: String, color: Color, total: Int64, width: CGFloat) -> some View {
-        let size = storageSizes[key] ?? 0
-        let segmentWidth = size > 0 ? max(3, width * CGFloat(size) / CGFloat(total)) : 0
+    private func storageBarSegment(bytes: Int64, color: Color, total: Int64, width: CGFloat) -> some View {
+        let segmentWidth = bytes > 0 ? max(3, width * CGFloat(bytes) / CGFloat(total)) : 0
         return Rectangle()
             .fill(color)
             .frame(width: segmentWidth)
@@ -2151,6 +2361,49 @@ struct SettingsView: View {
                 .frame(width: 8, height: 8)
             Text(text)
         }
+    }
+
+    @ViewBuilder
+    private func userFacingStorageRow(
+        icon: String,
+        tint: Color,
+        label: String,
+        size: Int64?,
+        actionTitle: String? = nil,
+        actionSystemImage: String? = nil,
+        actionRole: ButtonRole? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .frame(width: 28)
+                .foregroundStyle(tint)
+            Text(label)
+                .font(.callout)
+            Spacer()
+            if let size {
+                Text(formattedSize(size))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(localizer.t(L.Settings.storageCalculating))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let action, let actionTitle {
+                Button(role: actionRole, action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -2268,6 +2521,26 @@ struct SettingsView: View {
             }
             .pickerStyle(.menu)
             if !draft.translationFollowsDefault {
+                HStack {
+                    Text(localizer.t(L.Settings.configureSeparately))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(localizer.t(L.Settings.paneServicesAccounts)) {
+                        selectedPane = .servicesAccounts
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    /// Credentials and precise service choices belong with services and
+    /// accounts, not in the default subtitle outcome settings.
+    @ViewBuilder
+    private var translationServiceOverridesSection: some View {
+        if !draft.translationFollowsDefault {
+            Section(localizer.t(L.Settings.aiTranslationSection)) {
                 Picker(localizer.t(L.Settings.translationEngine), selection: $draft.translationEngine) {
                     ForEach(TranslationEngine.allCases, id: \.rawValue) { engine in
                         Text(engine.displayName).tag(engine)
@@ -2295,6 +2568,63 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// Cloud recognition is a service/account capability, so its credentials
+    /// appear only after a person explicitly expands this section (or arrives
+    /// here from a queued recovery). It is never shown in the ordinary
+    /// subtitle-result flow.
+    private var cloudRecognitionServiceSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $cloudRecognitionConfigurationExpanded) {
+                Toggle(localizer.t(L.Settings.cloudASREnabled), isOn: $draft.cloudASREnabled)
+
+                if draft.cloudASREnabled {
+                    Text(localizer.t(L.Settings.cloudASRPrivacyNotice))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Toggle(localizer.t(L.Settings.cloudASRConsentAccepted), isOn: $draft.cloudASRConsentAccepted)
+
+                    if draft.cloudASRConsentAccepted {
+                        TextField(localizer.t(L.Settings.serviceURL), text: $draft.cloudASRBaseURL)
+                            .autocorrectionDisabled()
+                        TextField(localizer.t(L.Settings.cloudASRModel), text: $draft.cloudASRModel)
+                            .autocorrectionDisabled()
+                        SecureField(localizer.t(L.Settings.apiCredential), text: $draft.cloudASRAuthToken)
+                            .focused($cloudASRAuthTokenFocused)
+                            .onChange(of: cloudASRAuthTokenFocused) { wasFocused, isFocused in
+                                guard wasFocused, !isFocused else { return }
+                                _ = commitDraftImmediately()
+                            }
+                        Text(localizer.t(L.Settings.cloudASRCostNotice))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if pendingCloudRecognitionTaskID != nil {
+                            Text(localizer.t(L.Settings.localRecognitionCloudTaskHint))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button(localizer.t(L.Settings.localRecognitionSaveCloudTask)) {
+                                saveCloudRecognitionForPendingTask()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            } label: {
+                Label(localizer.t(L.Settings.cloudASRSection), systemImage: "cloud")
+            }
+        }
+    }
+
+    private func saveCloudRecognitionForPendingTask() {
+        guard commitDraftImmediately(), let queueID = pendingCloudRecognitionTaskID else { return }
+        guard model.refreshQueuedCloudRecognitionCapability(id: queueID) else { return }
+        pendingCloudRecognitionTaskID = nil
+        model.settingsNotice = localizer.t(L.Settings.localRecognitionCloudTaskSaved)
     }
 
     // MARK: - AI 总结（默认跟随，可单独配置）
