@@ -43,9 +43,9 @@ struct LibraryWorkspaceView: View {
                     )
                 } else {
                     ContentUnavailableView(
-                        "没有选中的视频",
+                        localizer.t(L.Library.noSelectedVideo),
                         systemImage: "info.circle",
-                        description: Text("选择一个视频后可以查看文件和备注。")
+                        description: Text(localizer.t(L.Library.noSelectedVideoDetail))
                     )
                 }
             }
@@ -87,43 +87,43 @@ struct LibraryWorkspaceView: View {
             } else {
                 VStack(spacing: 16) {
                     ContentUnavailableView(
-                        "视频已不在资料库中",
+                        localizer.t(L.Library.missingVideoRecord),
                         systemImage: "exclamationmark.triangle",
-                        description: Text("请关闭此窗口后重新选择视频。")
+                        description: Text(localizer.t(L.Library.missingVideoRecordDetail))
                     )
-                    Button("关闭") {
+                    Button(localizer.t(L.Common.close)) {
                         workspace.dismissProcessingSheet()
                     }
                 }
                 .padding(32)
             }
         }
-        .alert("资料库需要处理", isPresented: Binding(
+        .alert(localizer.t(L.Library.needsAttentionAlert), isPresented: Binding(
             get: { workspace.errorMessage != nil },
             set: { if !$0 { workspace.errorMessage = nil } }
         )) {
-            Button("好") { workspace.errorMessage = nil }
+            Button(localizer.t(L.Common.done)) { workspace.errorMessage = nil }
         } message: {
             Text(workspace.errorMessage ?? "")
         }
         .confirmationDialog(
-            "将文件移到废纸篓？",
+            localizer.t(L.Library.moveToTrashConfirmation),
             isPresented: Binding(
                 get: { trashItemID != nil },
                 set: { if !$0 { trashItemID = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("移到废纸篓", role: .destructive) {
+            Button(localizer.t(L.Library.moveToTrash), role: .destructive) {
                 let itemID = trashItemID
                 trashItemID = nil
                 workspace.moveArtifactsToTrash(itemID: itemID)
             }
-            Button("取消", role: .cancel) {
+            Button(localizer.t(L.Common.cancel), role: .cancel) {
                 trashItemID = nil
             }
         } message: {
-            Text("这会将所有版本的本地文件移到废纸篓，并从资料库移除索引。")
+            Text(localizer.t(L.Library.moveToTrashDetail))
         }
     }
 
@@ -134,26 +134,26 @@ struct LibraryWorkspaceView: View {
                 workspace.toggleInspector()
             } label: {
                 Label(
-                    workspace.showInspector ? "隐藏检查器" : "显示检查器",
+                    workspace.showInspector ? localizer.t(L.Library.hideInspector) : localizer.t(L.Library.showInspector),
                     systemImage: "sidebar.right"
                 )
             }
-            .help(workspace.showInspector ? "隐藏信息栏" : "显示信息栏")
+            .help(workspace.showInspector ? localizer.t(L.Library.hideInfo) : localizer.t(L.Library.showInfo))
         }
     }
 
     private var sidebar: some View {
         List(selection: $workspace.sidebarDestination) {
             Section {
-                sidebarRow("全部视频", systemImage: "rectangle.stack", destination: .all, count: workspace.sidebarCount(for: .all))
-                sidebarRow("进行中", systemImage: "arrow.triangle.2.circlepath", destination: .active, count: count(for: .active))
-                sidebarRow("需处理", systemImage: "exclamationmark.triangle", destination: .needsAttention, count: count(for: .needsAttention))
-                sidebarRow("已完成", systemImage: "checkmark.circle", destination: .completed, count: count(for: .completed))
-                sidebarRow("已置顶", systemImage: "pin", destination: .pinned, count: count(for: .pinned))
+                sidebarRow(localizer.t(L.Library.allVideos), systemImage: "rectangle.stack", destination: .all, count: workspace.sidebarCount(for: .all))
+                sidebarRow(localizer.t(L.Library.active), systemImage: "arrow.triangle.2.circlepath", destination: .active, count: count(for: .active))
+                sidebarRow(localizer.t(L.Library.needsAttention), systemImage: "exclamationmark.triangle", destination: .needsAttention, count: count(for: .needsAttention))
+                sidebarRow(localizer.t(L.Library.completed), systemImage: "checkmark.circle", destination: .completed, count: count(for: .completed))
+                sidebarRow(localizer.t(L.Library.pinned), systemImage: "pin", destination: .pinned, count: count(for: .pinned))
             }
 
             if !workspace.availableTags.isEmpty {
-                Section("标签") {
+                Section(localizer.t(L.Library.tags)) {
                     ForEach(workspace.availableTags) { tag in
                         Label(tag.name, systemImage: "tag")
                             .tag(LibraryWorkspaceModel.SidebarDestination.tag(tag.name))
@@ -162,7 +162,7 @@ struct LibraryWorkspaceView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("资料库")
+        .navigationTitle(localizer.t(L.Library.title))
     }
 
     private func sidebarRow(
@@ -192,10 +192,10 @@ struct LibraryWorkspaceView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索视频", text: $workspace.searchText)
+                TextField(localizer.t(L.Library.searchVideos), text: $workspace.searchText)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
-                    .accessibilityLabel("搜索资料库")
+                    .accessibilityLabel(localizer.t(L.Library.searchLibrary))
                 if !workspace.searchText.isEmpty {
                     Button {
                         workspace.searchText = ""
@@ -204,7 +204,7 @@ struct LibraryWorkspaceView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清除搜索")
+                    .accessibilityLabel(localizer.t(L.Library.clearSearch))
                 }
             }
             .padding(.horizontal, 12)
@@ -241,28 +241,28 @@ struct LibraryWorkspaceView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 if workspace.hasQueuedTasks {
-                    Button("开始全部") {
+                    Button(localizer.t(L.Library.startAll)) {
                         workspace.startAllQueuedTasks()
                     }
                 }
                 Button {
                     NotificationCenter.default.post(name: AppWorkspaceCommand.newDownloadRequested, object: nil)
                 } label: {
-                    Label("新建下载", systemImage: "plus")
+                    Label(localizer.t(L.Library.newDownload), systemImage: "plus")
                 }
-                .help("新建下载（⌘N）")
-                .accessibilityLabel("新建下载")
+                .help(localizer.t(L.Library.newDownloadHelp))
+                .accessibilityLabel(localizer.t(L.Library.newDownload))
             }
         }
     }
 
     private var listTitle: String {
         switch workspace.sidebarDestination {
-        case .all: "全部视频"
-        case .active: "进行中"
-        case .needsAttention: "需处理"
-        case .completed: "已完成"
-        case .pinned: "已置顶"
+        case .all: localizer.t(L.Library.allVideos)
+        case .active: localizer.t(L.Library.active)
+        case .needsAttention: localizer.t(L.Library.needsAttention)
+        case .completed: localizer.t(L.Library.completed)
+        case .pinned: localizer.t(L.Library.pinned)
         case .tag(let tag): tag
         }
     }
@@ -273,9 +273,9 @@ struct LibraryWorkspaceView: View {
                 .font(.system(size: 34, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
-            Text(workspace.searchText.isEmpty ? "还没有视频" : "没有匹配的视频")
+            Text(workspace.searchText.isEmpty ? localizer.t(L.Library.noVideos) : localizer.t(L.Library.noMatchingVideos))
                 .font(.headline)
-            Text(workspace.searchText.isEmpty ? "点列表标题中的＋添加链接。" : "换个关键词，或清除搜索试试。")
+            Text(workspace.searchText.isEmpty ? localizer.t(L.Library.addLinkHint) : localizer.t(L.Library.changeSearchHint))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -301,9 +301,9 @@ struct LibraryWorkspaceView: View {
                     .font(.system(size: 44, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
-                Text("选择一个视频或新建下载")
+                Text(localizer.t(L.Library.chooseVideoOrNewDownload))
                     .font(.title3.weight(.semibold))
-                Text("在列表中选择视频即可预览和查看信息。")
+                Text(localizer.t(L.Library.chooseVideoDetail))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -314,9 +314,9 @@ struct LibraryWorkspaceView: View {
 
     private var recoverySheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("发现 \(workspace.recoveryCandidates.count) 个已有视频", systemImage: "arrow.clockwise")
+            Label(localizer.t(L.Library.recoveryFound, workspace.recoveryCandidates.count), systemImage: "arrow.clockwise")
                 .font(.headline)
-            Text("月之门可以只读取 Downloads/Moongate 中的已有文件，创建“已恢复”资料记录；不会移动或删除文件。来源和模型无法确认的项目会标为未知。")
+            Text(localizer.t(L.Library.recoveryDetail))
                 .font(.callout)
                 .foregroundStyle(.secondary)
             ScrollView {
@@ -327,7 +327,7 @@ struct LibraryWorkspaceView: View {
                             .lineLimit(1)
                     }
                     if workspace.recoveryCandidates.count > 12 {
-                        Text("以及另外 \(workspace.recoveryCandidates.count - 12) 个文件")
+                        Text(localizer.t(L.Library.recoveryAdditional, workspace.recoveryCandidates.count - 12))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -337,9 +337,9 @@ struct LibraryWorkspaceView: View {
 
             HStack {
                 Spacer()
-                Button("暂不恢复") { workspace.dismissRecovery() }
+                Button(localizer.t(L.Library.notNow)) { workspace.dismissRecovery() }
                     .keyboardShortcut(.cancelAction)
-                Button("恢复到资料库") { workspace.importRecoveredVideos() }
+                Button(localizer.t(L.Library.recoverToLibrary)) { workspace.importRecoveredVideos() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
@@ -358,12 +358,13 @@ struct LibraryWorkspaceView: View {
 
 private struct LibraryRemovalUndoBar: View {
     @ObservedObject var workspace: LibraryWorkspaceModel
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("已从资料库移除。")
+            Text(localizer.t(L.Library.removed))
                 .foregroundStyle(.secondary)
-            Button("撤销") {
+            Button(localizer.t(L.Library.undo)) {
                 workspace.undoRemoveFromLibrary()
             }
             .buttonStyle(.bordered)
@@ -374,13 +375,14 @@ private struct LibraryRemovalUndoBar: View {
         .background(.bar, in: Capsule())
         .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("已从资料库移除")
+        .accessibilityLabel(localizer.t(L.Library.removedAccessibility))
     }
 }
 
 private struct LibraryEnqueueNoticeBar: View {
     let notice: String
     let dismiss: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         HStack(spacing: 10) {
@@ -395,7 +397,7 @@ private struct LibraryEnqueueNoticeBar: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("关闭提示")
+            .accessibilityLabel(localizer.t(L.Library.dismissNotice))
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -411,6 +413,7 @@ private struct LibraryVideoRow: View {
     let projected: LibraryProjectedItem
     let processing: ProcessingSummary?
     let details: LibraryWorkspaceModel.LiveQueueDetails?
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -434,7 +437,7 @@ private struct LibraryVideoRow: View {
                     }
                 }
 
-                Text(LibraryDisplay.recoveryLabel(processing, details: details))
+                Text(LibraryDisplay.recoveryLabel(processing, details: details, localizer: localizer))
                 .font(.caption)
                 .foregroundStyle(LibraryDisplay.statusColor(processing, details: details))
                 .lineLimit(1)
@@ -458,36 +461,36 @@ private struct LibraryVideoRow: View {
                     ProgressRingView(progress: processing.progress, finished: false)
                     Text("\(Int((processing.progress * 100).rounded()))%")
                         .monospacedDigit()
-                    Text(LibraryDisplay.liveDetail(details))
+                    Text(LibraryDisplay.liveDetail(details, localizer: localizer))
                         .lineLimit(1)
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             } else if processing?.state == .completed {
-                Text(LibraryDisplay.completedDetail(projected.item))
+                Text(LibraryDisplay.completedDetail(projected.item, localizer: localizer))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else if processing?.state == .queued {
-                if let readiness = LibraryDisplay.queuedReadinessDetail(details) {
+                if let readiness = LibraryDisplay.queuedReadinessDetail(details, localizer: localizer) {
                     Label(readiness, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                         .lineLimit(1)
-                        .accessibilityLabel("需要处理，\(readiness)")
+                        .accessibilityLabel(localizer.t(L.Library.needsAttentionAccessibility, readiness))
                 } else {
-                    Text("可在信息栏调整配置")
+                    Text(localizer.t(L.Library.queuedConfigurationHint))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             } else if processing?.state == .cancelled {
-                Text("可重新处理或移出资料库")
+                Text(localizer.t(L.Library.cancelledHint))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
-                Text(LibraryDisplay.recoveryLabel(processing, details: details))
+                Text(LibraryDisplay.recoveryLabel(processing, details: details, localizer: localizer))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -499,13 +502,13 @@ private struct LibraryVideoRow: View {
     private var activeAccessibilityValue: String {
         guard let processing, processing.state.isRunning else {
             if processing?.state == .queued,
-               let readiness = LibraryDisplay.queuedReadinessDetail(details) {
-                return "需要处理，\(readiness)"
+               let readiness = LibraryDisplay.queuedReadinessDetail(details, localizer: localizer) {
+                return localizer.t(L.Library.needsAttentionAccessibility, readiness)
             }
-            return LibraryDisplay.recoveryLabel(processing, details: details)
+            return LibraryDisplay.recoveryLabel(processing, details: details, localizer: localizer)
         }
         let percent = Int((processing.progress * 100).rounded())
-        return "\(LibraryDisplay.stageLabel(processing))，\(percent)%，\(LibraryDisplay.liveDetail(details))"
+        return "\(LibraryDisplay.stageLabel(processing, localizer: localizer)) \(percent)% · \(LibraryDisplay.liveDetail(details, localizer: localizer))"
     }
 }
 
@@ -514,22 +517,23 @@ private struct LibraryRowContextMenu: View {
     let processing: ProcessingSummary?
     @ObservedObject var workspace: LibraryWorkspaceModel
     let requestTrash: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         if workspace.canPlayEmbeddedVideo(itemID: item.id) {
-            Button("播放") {
+            Button(localizer.t(L.Library.play)) {
                 workspace.playEmbeddedVideo(itemID: item.id)
             }
         }
 
         if workspace.canRevealInFinder(itemID: item.id) {
-            Button("在访达中显示") {
+            Button(localizer.t(L.Library.revealInFinder)) {
                 workspace.revealInFinder(itemID: item.id)
             }
         }
 
         if item.source?.urlString != nil {
-            Button("复制来源链接") {
+            Button(localizer.t(L.Library.copySourceLink)) {
                 workspace.copySourceLink(itemID: item.id)
             }
         }
@@ -543,13 +547,13 @@ private struct LibraryRowContextMenu: View {
                             workspace.openQueuedReadinessRecovery(for: item.id)
                         }
                     } else {
-                        Button("开始") {
+                        Button(localizer.t(L.Library.start)) {
                             workspace.recoverQueueTask(for: item.id)
                         }
                     }
                 }
             case .failed:
-                Button(queueItem.needsLogin == nil ? "恢复" : "登录") {
+                Button(queueItem.needsLogin == nil ? localizer.t(L.Library.recover) : localizer.t(L.Library.login)) {
                     workspace.recoverQueueTask(for: item.id)
                 }
             case .cancelling, .downloading, .translating, .burning, .done, .cancelled:
@@ -565,35 +569,35 @@ private struct LibraryRowContextMenu: View {
         }
 
         if processing?.state.isQueued == true {
-            Button("更改选项…") {
+            Button(localizer.t(L.Library.changeOptions)) {
                 workspace.showQueuedOptions(for: item.id)
             }
         } else if processing?.state.isRunning != true {
-            Button("重新处理…") {
+            Button(localizer.t(L.Library.reprocess)) {
                 workspace.showReprocessOptions(for: item.id)
             }
         }
 
         if item.isPinned {
-            Button("取消置顶") {
+            Button(localizer.t(L.Library.unpin)) {
                 workspace.setPinned(false, itemID: item.id)
             }
         } else {
-            Button("置顶") {
+            Button(localizer.t(L.Library.pin)) {
                 workspace.setPinned(true, itemID: item.id)
             }
         }
 
         Divider()
 
-        Button("移出资料库") {
+        Button(localizer.t(L.Library.removeFromLibrary)) {
             workspace.removeFromLibrary(itemID: item.id)
         }
 
         if processing?.state.isActive != true {
             Divider()
 
-            Button("移到废纸篓…", role: .destructive) {
+            Button(localizer.t(L.Library.moveToTrashEllipsis), role: .destructive) {
                 requestTrash()
             }
         }
@@ -629,6 +633,7 @@ private struct LibraryWorkbenchDetail: View {
     @ObservedObject var appModel: ViewModel
     @ObservedObject var workspace: LibraryWorkspaceModel
     let onRequestTrash: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         ScrollView {
@@ -643,10 +648,10 @@ private struct LibraryWorkbenchDetail: View {
                         if item.isPinned {
                             Image(systemName: "pin.fill")
                                 .foregroundStyle(.secondary)
-                                .accessibilityLabel("已置顶")
+                                .accessibilityLabel(localizer.t(L.Library.alreadyPinned))
                         }
                     }
-                    Text(LibraryDisplay.recoveryLabel(processing, details: queueDetails))
+                    Text(LibraryDisplay.recoveryLabel(processing, details: queueDetails, localizer: localizer))
                         .font(.callout)
                         .foregroundStyle(LibraryDisplay.statusColor(processing, details: queueDetails))
 
@@ -656,7 +661,7 @@ private struct LibraryWorkbenchDetail: View {
                             .foregroundStyle(.secondary)
                     } else if let processing, processing.state.isRunning {
                         ProgressView(value: processing.progress)
-                        Text(LibraryDisplay.liveDetail(queueDetails))
+                        Text(LibraryDisplay.liveDetail(queueDetails, localizer: localizer))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -681,6 +686,7 @@ private struct LibraryWorkbenchDetail: View {
 private struct PlayerStageView: View {
     let item: MoongateCore.LibraryItem
     @ObservedObject var workspace: LibraryWorkspaceModel
+    @EnvironmentObject private var localizer: Localizer
 
     private var videoArtifact: LibraryArtifact? {
         item.latestVersion?.artifacts.first {
@@ -752,13 +758,13 @@ private struct PlayerStageView: View {
                 Image(systemName: "film")
                     .font(.system(size: 34, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
-                Text("预览将在视频文件可用后显示")
+                Text(localizer.t(L.Library.previewAvailableLater))
                     .font(.callout)
             }
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.45), radius: 4)
         }
-        .accessibilityLabel("视频预览尚不可用")
+        .accessibilityLabel(localizer.t(L.Library.previewUnavailableAccessibility))
     }
 
     private func missingVideoStage(_ url: URL) -> some View {
@@ -766,18 +772,18 @@ private struct PlayerStageView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 34, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-            Text("视频文件已移动或删除")
+            Text(localizer.t(L.Library.videoMoved))
                 .font(.headline)
-            Text("资料库保留了记录，但原视频不在预期位置。")
+            Text(localizer.t(L.Library.videoMovedDetail))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Button("打开输出文件夹") {
+            Button(localizer.t(L.Library.openOutputFolder)) {
                 NSWorkspace.shared.open(url.deletingLastPathComponent())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("视频文件已移动或删除")
+        .accessibilityLabel(localizer.t(L.Library.videoMoved))
     }
 
     private func unsupportedVideoStage(_ url: URL) -> some View {
@@ -785,18 +791,18 @@ private struct PlayerStageView: View {
             Image(systemName: "play.slash")
                 .font(.system(size: 34, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-            Text("此格式不支持内嵌播放")
+            Text(localizer.t(L.Library.unsupportedPlayback))
                 .font(.headline)
-            Text("\(url.pathExtension.uppercased()) 将使用默认 App 打开。")
+            Text(localizer.t(L.Library.unsupportedPlaybackDetail, url.pathExtension.uppercased()))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Button("使用默认 App 打开") {
+            Button(localizer.t(L.Library.openInDefaultApp)) {
                 NSWorkspace.shared.open(url)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("此格式不支持内嵌播放")
+        .accessibilityLabel(localizer.t(L.Library.unsupportedPlayback))
     }
 }
 
@@ -869,6 +875,7 @@ private struct WorkbenchActionStrip: View {
     @ObservedObject var appModel: ViewModel
     @ObservedObject var workspace: LibraryWorkspaceModel
     let onRequestTrash: () -> Void
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         HStack(spacing: 8) {
@@ -879,7 +886,7 @@ private struct WorkbenchActionStrip: View {
                     workspace.performAttentionAction(for: item.id)
                 }
                 if workspace.canRevealInFinder(itemID: item.id) {
-                    Button("在访达中显示") {
+                    Button(localizer.t(L.Library.revealInFinder)) {
                         workspace.revealInFinder(itemID: item.id)
                     }
                 }
@@ -888,52 +895,52 @@ private struct WorkbenchActionStrip: View {
             }
 
             Menu {
-                Button("查看信息") {
+                Button(localizer.t(L.Library.viewInfo)) {
                     workspace.showInformation(for: item.id)
                 }
                 if item.source?.urlString != nil {
-                    Button("复制来源链接") {
+                    Button(localizer.t(L.Library.copySourceLink)) {
                         workspace.copySourceLink(itemID: item.id)
                     }
                 }
                 if item.isPinned {
-                    Button("取消置顶") { workspace.setPinned(false, itemID: item.id) }
+                    Button(localizer.t(L.Library.unpin)) { workspace.setPinned(false, itemID: item.id) }
                 } else {
-                    Button("置顶") { workspace.setPinned(true, itemID: item.id) }
+                    Button(localizer.t(L.Library.pin)) { workspace.setPinned(true, itemID: item.id) }
                 }
                 Divider()
-                Button("移出资料库") {
+                Button(localizer.t(L.Library.removeFromLibrary)) {
                     workspace.removeFromLibrary(itemID: item.id)
                 }
                 if processing?.state.isActive != true {
                     Divider()
-                    Button("移到废纸篓…", role: .destructive) {
+                    Button(localizer.t(L.Library.moveToTrashEllipsis), role: .destructive) {
                         onRequestTrash()
                     }
                 }
             } label: {
-                Label("更多", systemImage: "ellipsis.circle")
+                Label(localizer.t(L.Library.more), systemImage: "ellipsis.circle")
             }
         }
         .buttonStyle(.bordered)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("视频快捷操作")
+        .accessibilityLabel(localizer.t(L.Library.videoQuickActions))
     }
 
     @ViewBuilder
     private var completedActions: some View {
         if workspace.canPlayEmbeddedVideo(itemID: item.id) {
-            Button("播放") {
+            Button(localizer.t(L.Library.play)) {
                 workspace.playEmbeddedVideo(itemID: item.id)
             }
         }
         if workspace.canRevealInFinder(itemID: item.id) {
-            Button("在访达中显示") {
+            Button(localizer.t(L.Library.revealInFinder)) {
                 workspace.revealInFinder(itemID: item.id)
             }
         }
         if processing?.state.isRunning != true {
-            Button("重新处理…") {
+            Button(localizer.t(L.Library.reprocess)) {
                 workspace.showReprocessOptions(for: item.id)
             }
         }
@@ -948,35 +955,35 @@ private struct WorkbenchActionStrip: View {
                     workspace.openQueuedReadinessRecovery(for: item.id)
                 }
             } else {
-                Button("开始") {
+                Button(localizer.t(L.Library.start)) {
                     workspace.startSelectedQueuedTask()
                 }
             }
-            Button("更改选项…") {
+            Button(localizer.t(L.Library.changeOptions)) {
                 workspace.showQueuedOptions(for: item.id)
             }
         case .cancelling:
-            Label("正在取消…", systemImage: "hourglass")
+            Label(localizer.t(L.Library.cancelling), systemImage: "hourglass")
                 .foregroundStyle(.secondary)
         case .queued, .downloading, .translating, .burning:
             if queueItem.isPaused {
-                Button("继续") {
+                Button(localizer.t(L.Library.continueTask)) {
                     appModel.queue.resume(queueItem.id)
                 }
             } else {
-                Button("暂停") {
+                Button(localizer.t(L.Library.pause)) {
                     appModel.queue.pause(queueItem.id)
                 }
             }
-            Button("取消", role: .destructive) {
+            Button(localizer.t(L.Library.cancel), role: .destructive) {
                 appModel.queue.cancel(queueItem.id)
             }
         case .failed:
-            Button(queueItem.needsLogin == nil ? "恢复" : "登录") {
+            Button(queueItem.needsLogin == nil ? localizer.t(L.Library.recover) : localizer.t(L.Library.login)) {
                 workspace.recoverQueueTask(for: item.id)
             }
             if workspace.canRevealInFinder(itemID: item.id) {
-                Button("在访达中显示") {
+                Button(localizer.t(L.Library.revealInFinder)) {
                     workspace.revealInFinder(itemID: item.id)
                 }
             }
@@ -993,6 +1000,7 @@ private struct LibraryInspector: View {
     let onConfirmTrash: () -> Void
     @State private var note = ""
     @State private var tagInput = ""
+    @EnvironmentObject private var localizer: Localizer
 
     var body: some View {
         ScrollView {
@@ -1006,37 +1014,37 @@ private struct LibraryInspector: View {
             note = item.note ?? ""
             tagInput = ""
         }
-        .accessibilityLabel("视频检查器")
+        .accessibilityLabel(localizer.t(L.Library.inspectorAccessibility))
     }
 
     private var information: some View {
         Group {
-            inspectorSection("文件信息") {
-                InspectorKeyValueRow("标题", value: item.title)
-                InspectorKeyValueRow("状态", value: LibraryDisplay.stageLabel(processing))
-                InspectorKeyValueRow("版本", value: "v\(item.latestVersion?.number ?? 1)")
+            inspectorSection(localizer.t(L.Library.fileInformation)) {
+                InspectorKeyValueRow(localizer.t(L.Library.fieldTitle), value: item.title)
+                InspectorKeyValueRow(localizer.t(L.Library.fieldStatus), value: LibraryDisplay.stageLabel(processing, localizer: localizer))
+                InspectorKeyValueRow(localizer.t(L.Library.fieldVersion), value: "v\(item.latestVersion?.number ?? 1)")
                 if let source = item.source?.urlString {
-                    InspectorKeyValueRow("来源", value: source, lineLimit: 2)
+                    InspectorKeyValueRow(localizer.t(L.Library.fieldSource), value: source, lineLimit: 2)
                 } else {
-                    InspectorKeyValueRow("来源", value: "未知")
+                    InspectorKeyValueRow(localizer.t(L.Library.fieldSource), value: localizer.t(L.Library.unknown))
                 }
                 if workspace.canRevealInFinder(itemID: item.id) {
-                    Button("在访达中显示") {
+                    Button(localizer.t(L.Library.revealInFinder)) {
                         workspace.revealInFinder(itemID: item.id)
                     }
                 }
             }
 
-            inspectorSection("产物") {
+            inspectorSection(localizer.t(L.Library.artifacts)) {
                 let artifacts = item.latestVersion?.artifacts ?? []
                 if artifacts.isEmpty {
-                    Text("文件会在任务完成后显示。")
+                    Text(localizer.t(L.Library.artifactPending))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(artifacts) { artifact in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(LibraryDisplay.artifactLabel(artifact.role))
+                            Text(LibraryDisplay.artifactLabel(artifact.role, localizer: localizer))
                                 .font(.caption.weight(.medium))
                             Text(artifact.relativePath)
                                 .font(.caption2.monospaced())
@@ -1048,9 +1056,9 @@ private struct LibraryInspector: View {
                 }
             }
 
-            inspectorSection("标签") {
+            inspectorSection(localizer.t(L.Library.tags)) {
                 if item.tags.isEmpty {
-                    Text("尚未添加标签")
+                    Text(localizer.t(L.Library.noTags))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1065,19 +1073,19 @@ private struct LibraryInspector: View {
                     }
                 }
                 HStack(spacing: 6) {
-                    TextField("添加标签", text: $tagInput)
+                    TextField(localizer.t(L.Library.addTag), text: $tagInput)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { addTag() }
-                    Button("添加") { addTag() }
+                    Button(localizer.t(L.Library.add)) { addTag() }
                         .disabled(tagInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
 
-            inspectorSection("备注") {
+            inspectorSection(localizer.t(L.Library.note)) {
                 TextEditor(text: $note)
                     .font(.callout)
                     .frame(minHeight: 72)
-                    .accessibilityLabel("备注")
+                    .accessibilityLabel(localizer.t(L.Library.note))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .strokeBorder(.quaternary, lineWidth: 1)
@@ -1087,22 +1095,22 @@ private struct LibraryInspector: View {
                     }
             }
 
-            Toggle("置顶视频", isOn: Binding(
+            Toggle(localizer.t(L.Library.pinVideo), isOn: Binding(
                 get: { item.isPinned },
                 set: { workspace.setPinned($0) }
             ))
 
-            inspectorSection("资料库") {
-                Button("从资料库移除") {
+            inspectorSection(localizer.t(L.Library.title)) {
+                Button(localizer.t(L.Library.removeFromLibrary)) {
                     workspace.removeFromLibrary()
                 }
-                .accessibilityHint("仅移除资料库索引，不会删除本地文件。")
+                .accessibilityHint(localizer.t(L.Library.removeHint))
 
                 if processing?.state.isActive != true {
-                    Button("将文件移到废纸篓", role: .destructive) {
+                    Button(localizer.t(L.Library.moveToTrash), role: .destructive) {
                         onConfirmTrash()
                     }
-                    .accessibilityHint("需要再次确认；会将所有版本的文件移到废纸篓。")
+                    .accessibilityHint(localizer.t(L.Library.trashHint))
                 }
             }
         }
@@ -1159,6 +1167,7 @@ private struct ProcessingOptionsSheet: View {
     let mode: LibraryWorkspaceModel.ProcessingSheet
     @ObservedObject var workspace: LibraryWorkspaceModel
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var localizer: Localizer
     @State private var isCreating = false
     @State private var creationError: String?
 
@@ -1179,72 +1188,72 @@ private struct ProcessingOptionsSheet: View {
             Form {
                 Section {
                     Text(isQueued
-                         ? "更改后会保存在待开始任务中；开始后不会再改动本次处理。"
-                         : "将创建新版本，不会覆盖当前视频。")
+                         ? localizer.t(L.Library.queuedOptionsDetail)
+                         : localizer.t(L.Library.reprocessOptionsDetail))
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
-                    Picker("字幕结果", selection: subtitleMode) {
-                        Text("不处理").tag(ChineseSubtitleMode.off)
-                        Text("保留原字幕").tag(ChineseSubtitleMode.burnOriginal)
-                        Text("翻译字幕").tag(ChineseSubtitleMode.srtOnly)
-                        Text("嵌入字幕").tag(ChineseSubtitleMode.burnIn)
+                    Picker(localizer.t(L.Download.subtitleResult), selection: subtitleMode) {
+                        Text(localizer.t(L.Download.subtitleResultNone)).tag(ChineseSubtitleMode.off)
+                        Text(localizer.t(L.Download.subtitleResultOriginal)).tag(ChineseSubtitleMode.burnOriginal)
+                        Text(localizer.t(L.Download.subtitleResultTranslated)).tag(ChineseSubtitleMode.srtOnly)
+                        Text(localizer.t(L.Download.subtitleResultEmbedded)).tag(ChineseSubtitleMode.burnIn)
                     }
-                    Picker("输出格式", selection: workspace.configurationBinding(\.outputFormat)) {
-                        Text("保持源格式").tag(OutputFormat.original.rawValue)
-                        Text("MP4 · H.264").tag(OutputFormat.mp4H264.rawValue)
-                        Text("MP4 · H.265").tag(OutputFormat.mp4H265.rawValue)
-                        Text("MKV").tag(OutputFormat.mkv.rawValue)
+                    Picker(localizer.t(L.Download.outputFormat), selection: workspace.configurationBinding(\.outputFormat)) {
+                        Text(localizer.t(L.Download.outputOriginal)).tag(OutputFormat.original.rawValue)
+                        Text(localizer.t(L.Download.outputMP4H264)).tag(OutputFormat.mp4H264.rawValue)
+                        Text(localizer.t(L.Download.outputMP4H265)).tag(OutputFormat.mp4H265.rawValue)
+                        Text(localizer.t(L.Download.outputMKV)).tag(OutputFormat.mkv.rawValue)
                     }
-                    Picker("画质", selection: workspace.configurationBinding(\.quality)) {
-                        Text("最佳可用").tag("best")
-                        Text("1080p").tag("bv*[height<=1080]+ba/b[height<=1080]")
-                        Text("720p").tag("bv*[height<=720]+ba/b[height<=720]")
+                    Picker(localizer.t(L.Download.quality), selection: workspace.configurationBinding(\.quality)) {
+                        Text(localizer.t(L.Download.qualityBestAvailable)).tag("best")
+                        Text(localizer.t(L.Download.quality1080p)).tag("bv*[height<=1080]+ba/b[height<=1080]")
+                        Text(localizer.t(L.Download.quality720p)).tag("bv*[height<=720]+ba/b[height<=720]")
                     }
                 }
 
                 if workspace.draftSubtitleMode.requiresTranslation {
-                    Section("翻译字幕") {
-                        Picker("目标语言", selection: workspace.configurationBinding(\.targetLanguage)) {
-                            Text("简体中文").tag("zh-Hans")
-                            Text("繁体中文").tag("zh-Hant")
-                            Text("English").tag("en")
+                    Section(localizer.t(L.Library.translatedSubtitles)) {
+                        Picker(localizer.t(L.Download.targetLanguage), selection: workspace.configurationBinding(\.targetLanguage)) {
+                            Text(localizer.t(L.Download.languageChineseSimplified)).tag("zh-Hans")
+                            Text(localizer.t(L.Download.languageChineseTraditional)).tag("zh-Hant")
+                            Text(localizer.t(L.Download.languageEnglish)).tag("en")
                         }
                         if workspace.draftSubtitleMode.requiresBurner {
-                            Picker("字幕样式", selection: workspace.configurationBinding(\.subtitleStyle)) {
-                                Text("双语").tag(SubtitleStyle.bilingual.rawValue)
-                                Text("仅译文").tag(SubtitleStyle.chineseOnly.rawValue)
+                            Picker(localizer.t(L.Download.subtitleStyle), selection: workspace.configurationBinding(\.subtitleStyle)) {
+                                Text(localizer.t(L.Download.subtitleStyleBilingual)).tag(SubtitleStyle.bilingual.rawValue)
+                                Text(localizer.t(L.Download.subtitleStyleTranslationOnly)).tag(SubtitleStyle.chineseOnly.rawValue)
                             }
                         }
                     }
                 }
 
-                DisclosureGroup("高级选项") {
-                    Picker("字幕来源", selection: workspace.configurationBinding(\.subtitleSource)) {
-                        Text("自动选择").tag("")
-                        Text("使用已有字幕").tag(SubtitleSourceKind.importedFile.rawValue)
-                        Text("沿用当前手动字幕").tag(SubtitleSourceKind.manual.rawValue)
-                        Text("使用平台字幕").tag(SubtitleSourceKind.platformAuto.rawValue)
-                        Text("沿用当前 HLS 字幕").tag(SubtitleSourceKind.hlsManifest.rawValue)
-                        Text("本地识别").tag(SubtitleSourceKind.localASR.rawValue)
-                        Text("云端识别").tag(SubtitleSourceKind.cloudASR.rawValue)
+                DisclosureGroup(localizer.t(L.Download.advancedOptions)) {
+                    Picker(localizer.t(L.Ready.subtitleSourceSection), selection: workspace.configurationBinding(\.subtitleSource)) {
+                        Text(localizer.t(L.Download.recognitionAutomatic)).tag("")
+                        Text(localizer.t(L.Library.useExistingSubtitles)).tag(SubtitleSourceKind.importedFile.rawValue)
+                        Text(localizer.t(L.Library.useCurrentManualSubtitles)).tag(SubtitleSourceKind.manual.rawValue)
+                        Text(localizer.t(L.Ready.platformSubtitle)).tag(SubtitleSourceKind.platformAuto.rawValue)
+                        Text(localizer.t(L.Library.useCurrentHLSSubtitles)).tag(SubtitleSourceKind.hlsManifest.rawValue)
+                        Text(localizer.t(L.Library.localRecognition)).tag(SubtitleSourceKind.localASR.rawValue)
+                        Text(localizer.t(L.Library.cloudRecognition)).tag(SubtitleSourceKind.cloudASR.rawValue)
                     }
                     if workspace.draftSubtitleMode != .off {
                         TranscriptionModelPicker(selection: workspace.configurationBinding(\.transcriptionModel))
                     }
                     if workspace.draftSubtitleMode.requiresTranslation {
-                        TextField("翻译服务（可选）", text: workspace.configurationBinding(\.translationModel))
+                        TextField(localizer.t(L.Library.translationServiceOptional), text: workspace.configurationBinding(\.translationModel))
                     }
                 }
 
                 if !isQueued {
-                    Section("重新处理影响") {
-                        Text("将创建 v\((item.latestVersion?.number ?? 0) + 1)")
+                    Section(localizer.t(L.Library.reprocessImpact)) {
+                        Text(localizer.t(L.Library.reprocessWillCreateVersion, (item.latestVersion?.number ?? 0) + 1))
                         if let plan = workspace.reprocessPlan {
-                            Text(LibraryDisplay.reprocessDescription(plan))
+                            Text(LibraryDisplay.reprocessDescription(plan, localizer: localizer))
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("修改选项后会在这里显示需要执行的步骤。")
+                            Text(localizer.t(L.Library.reprocessNoPlan))
                                 .foregroundStyle(.secondary)
                         }
                         if let reason = workspace.reprocessBlockerReason {
@@ -1262,10 +1271,10 @@ private struct ProcessingOptionsSheet: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle(isQueued ? "更改选项" : "重新处理")
+            .navigationTitle(isQueued ? localizer.t(L.Library.changeOptionsTitle) : localizer.t(L.Library.reprocessTitle))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(isQueued ? "完成" : "取消") {
+                    Button(isQueued ? localizer.t(L.Common.done) : localizer.t(L.Common.cancel)) {
                         if !isQueued {
                             workspace.discardProcessingDraft()
                         }
@@ -1275,7 +1284,7 @@ private struct ProcessingOptionsSheet: View {
                 }
                 if !isQueued {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button(isCreating ? "正在创建…" : "创建任务") {
+                        Button(isCreating ? localizer.t(L.Library.creatingTask) : localizer.t(L.Library.createTask)) {
                             guard !isCreating else { return }
                             isCreating = true
                             creationError = nil
@@ -1341,40 +1350,63 @@ private struct FlowLayout: SwiftUI.Layout {
     }
 }
 
+@MainActor
 private enum LibraryDisplay {
-    static func stageLabel(_ processing: ProcessingSummary?) -> String {
+    static func stageLabel(_ processing: ProcessingSummary?, localizer: Localizer) -> String {
         switch processing?.state {
-        case .queued: "等待中"
-        case .cancelling: "正在取消…"
-        case .downloading: "下载中"
-        case .transcribing: "转录中"
-        case .translating: "翻译中"
-        case .transcoding: "转码中"
-        case .burning: "压制字幕"
-        case .completed: "已完成"
-        case .partialSuccess: "部分完成"
-        case .needsAttention: "需要处理"
-        case .interrupted: "上次任务已中断"
-        case .failed: "处理失败"
-        case .cancelled: "已取消"
-        case .none: "未处理"
+        case .queued: localizer.t(L.Library.queued)
+        case .cancelling: localizer.t(L.Library.cancelling)
+        case .downloading: localizer.t(L.Library.downloading)
+        case .transcribing: localizer.t(L.Library.transcribing)
+        case .translating: localizer.t(L.Library.translating)
+        case .transcoding: localizer.t(L.Library.transcoding)
+        case .burning: localizer.t(L.Library.burning)
+        case .completed: localizer.t(L.Library.completed)
+        case .partialSuccess: localizer.t(L.Library.partialSuccess)
+        case .needsAttention: localizer.t(L.Library.needsAttention)
+        case .interrupted: localizer.t(L.Library.interrupted)
+        case .failed: localizer.t(L.Library.processingFailed)
+        case .cancelled: localizer.t(L.Library.cancelled)
+        case .none: localizer.t(L.Library.unprocessed)
         }
     }
 
     static func recoveryLabel(
         _ processing: ProcessingSummary?,
-        details: LibraryWorkspaceModel.LiveQueueDetails?
+        details: LibraryWorkspaceModel.LiveQueueDetails?,
+        localizer: Localizer
     ) -> String {
         if let attention = processing?.attention {
-            return attention.title
+            return attentionLabel(attention, localizer: localizer)
         }
         switch processing?.state {
-        case .queued where queuedReadinessDetail(details) != nil:
-            return queuedReadinessDetail(details) ?? "待开始"
+        case .queued where queuedReadinessDetail(details, localizer: localizer) != nil:
+            return queuedReadinessDetail(details, localizer: localizer) ?? localizer.t(L.Library.waitingToStart)
         case .partialSuccess, .needsAttention, .interrupted, .failed:
-            return stageLabel(processing)
+            return stageLabel(processing, localizer: localizer)
         default:
-            return stageLabel(processing)
+            return stageLabel(processing, localizer: localizer)
+        }
+    }
+
+    private static func attentionLabel(_ attention: ProcessingAttention, localizer: Localizer) -> String {
+        switch (attention.kind, attention.primaryAction) {
+        case (.loginRequired, _):
+            return localizer.t(L.Library.loginRequired)
+        case (.fileMissing, _):
+            return localizer.t(L.Library.videoMoved)
+        case (.capabilityUnavailable, .prepareLocalRecognition):
+            return localizer.t(L.Library.localRecognitionUnavailable)
+        case (.capabilityUnavailable, .configureCloudRecognition):
+            return localizer.t(L.Library.cloudRecognitionUnavailable)
+        case (.interrupted, _):
+            return localizer.t(L.Library.interrupted)
+        case (.processingFailed, _):
+            return localizer.t(L.Library.processingFailed)
+        case (.needsReview, _):
+            return localizer.t(L.Library.needsAttention)
+        default:
+            return stageLabel(nil, localizer: localizer)
         }
     }
 
@@ -1382,7 +1414,7 @@ private enum LibraryDisplay {
         _ processing: ProcessingSummary?,
         details: LibraryWorkspaceModel.LiveQueueDetails? = nil
     ) -> Color {
-        if processing?.state == .queued, queuedReadinessDetail(details) != nil {
+        if processing?.state == .queued, details?.queuedReadiness != nil {
             return .orange
         }
         return switch processing?.state {
@@ -1395,69 +1427,67 @@ private enum LibraryDisplay {
     }
 
     static func queuedReadinessDetail(
-        _ details: LibraryWorkspaceModel.LiveQueueDetails?
+        _ details: LibraryWorkspaceModel.LiveQueueDetails?,
+        localizer: Localizer
     ) -> String? {
-        guard let detail = details?.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !detail.isEmpty else {
+        switch details?.queuedReadiness {
+        case .localSpeech:
+            return localizer.t(L.Library.localRecognitionUnavailable)
+        case .cloudASR:
+            return localizer.t(L.Library.cloudRecognitionUnavailable)
+        case .none:
             return nil
         }
-        let normalized = detail.lowercased()
-        if normalized.contains("cloud") || detail.contains("云端") {
-            return "云端字幕识别尚未准备好"
-        }
-        if normalized.contains("local") || normalized.contains("whisper") || detail.contains("本地") {
-            return "本地字幕识别尚未准备好"
-        }
-        if normalized.contains("login") || detail.contains("登录") {
-            return "需要登录后开始"
-        }
-        return "开始前需要处理一项设置"
     }
 
-    static func completedDetail(_ item: MoongateCore.LibraryItem) -> String {
+    static func completedDetail(_ item: MoongateCore.LibraryItem, localizer: Localizer) -> String {
         guard let artifact = item.latestVersion?.artifacts.first(where: {
             $0.role == .renderedVideo || $0.role == .video
         }) else {
-            return "已保存"
+            return localizer.t(L.Library.saved)
         }
         let format = URL(fileURLWithPath: artifact.relativePath).pathExtension.uppercased()
-        return format.isEmpty ? "已保存" : "已保存 · \(format)"
+        return format.isEmpty
+            ? localizer.t(L.Library.saved)
+            : localizer.t(L.Library.savedWithFormat, format)
     }
 
-    static func liveDetail(_ details: LibraryWorkspaceModel.LiveQueueDetails?) -> String {
-        guard let details else { return "正在估算…" }
+    static func liveDetail(_ details: LibraryWorkspaceModel.LiveQueueDetails?, localizer: Localizer) -> String {
+        guard let details else { return localizer.t(L.Library.estimating) }
         var parts: [String] = []
         if let speed = details.speedText, !speed.isEmpty { parts.append(speed) }
         if let seconds = details.remainingSeconds {
             let minutes = max(1, Int((seconds / 60).rounded(.up)))
-            parts.append(details.remainingIsApproximate ? "约 \(minutes) 分钟" : "剩余 \(minutes) 分钟")
+            parts.append(details.remainingIsApproximate
+                ? localizer.t(L.Library.approximateMinutes, minutes)
+                : localizer.t(L.Library.remainingMinutes, minutes))
         } else if details.isEstimatingRemaining {
-            parts.append("正在估算…")
+            parts.append(localizer.t(L.Library.estimating))
         }
-        return parts.isEmpty ? (details.statusText ?? "处理中") : parts.joined(separator: " · ")
+        return parts.isEmpty ? localizer.t(L.Library.processing) : parts.joined(separator: " · ")
     }
 
-    static func artifactLabel(_ role: LibraryArtifactRole) -> String {
+    static func artifactLabel(_ role: LibraryArtifactRole, localizer: Localizer) -> String {
         switch role {
-        case .video: "视频"
-        case .sourceSubtitle: "源字幕"
-        case .translatedSubtitle: "译文字幕"
-        case .renderedVideo: "压制成片"
-        case .thumbnail: "缩略图"
-        case .other: "其他文件"
+        case .video: localizer.t(L.Library.artifactVideo)
+        case .sourceSubtitle: localizer.t(L.Library.artifactSourceSubtitle)
+        case .translatedSubtitle: localizer.t(L.Library.artifactTranslatedSubtitle)
+        case .renderedVideo: localizer.t(L.Library.artifactRenderedVideo)
+        case .thumbnail: localizer.t(L.Library.artifactThumbnail)
+        case .other: localizer.t(L.Library.artifactOther)
         }
     }
 
-    static func reprocessDescription(_ plan: ReprocessPlan) -> String {
+    static func reprocessDescription(_ plan: ReprocessPlan, localizer: Localizer) -> String {
         let names = plan.steps.map {
             switch $0 {
-            case .refreshVideo: "重新获取源视频"
-            case .transcribe: "重新转录"
-            case .translate: "重新翻译"
-            case .transcode: "重新转码"
-            case .burn: "重新压制"
+            case .refreshVideo: localizer.t(L.Library.reprocessRefreshVideo)
+            case .transcribe: localizer.t(L.Library.reprocessTranscribe)
+            case .translate: localizer.t(L.Library.reprocessTranslate)
+            case .transcode: localizer.t(L.Library.reprocessTranscode)
+            case .burn: localizer.t(L.Library.reprocessBurn)
             }
         }
-        return names.isEmpty ? "不会覆盖已有产物。" : names.joined(separator: " → ")
+        return names.isEmpty ? localizer.t(L.Library.reprocessNoOverwrite) : names.joined(separator: " → ")
     }
 }

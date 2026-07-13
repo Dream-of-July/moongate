@@ -89,6 +89,56 @@ final class LocalizerTests: XCTestCase {
         )
     }
 
+    func testLibraryWorkspaceCoreStringsAreLocalizedForEnglishAndTraditionalChinese() {
+        let keys = [
+            L.Library.title,
+            L.Library.allVideos,
+            L.Library.active,
+            L.Library.needsAttention,
+            L.Library.completed,
+            L.Library.pinned,
+            L.Library.searchVideos,
+            L.Library.startAll,
+            L.Library.newDownload,
+            L.Library.noVideos,
+            L.Library.chooseVideoOrNewDownload,
+            L.Library.previewAvailableLater,
+            L.Library.videoMoved,
+            L.Library.unsupportedPlayback,
+            L.Library.revealInFinder,
+            L.Library.changeOptions,
+            L.Library.reprocess,
+            L.Library.fileInformation,
+            L.Library.artifacts,
+            L.Library.localRecognitionUnavailable,
+            L.Library.cloudRecognitionUnavailable,
+            L.Library.queued,
+            L.Library.transcribing,
+            L.Library.interrupted,
+            L.Library.savedWithFormat,
+            L.Library.reprocessNoOverwrite,
+            L.Library.locateFileTitle,
+            L.Library.updateFailed,
+        ]
+
+        for key in keys {
+            let english = LocalizedStrings.string(key, language: .en)
+            let traditional = LocalizedStrings.string(key, language: .zhHant)
+            XCTAssertNotEqual(english, key, "\(key) must have an English workspace string")
+            XCTAssertNotEqual(traditional, key, "\(key) must have a Traditional Chinese workspace string")
+            XCTAssertFalse(
+                english.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) },
+                "English workspace copy must not fall back to a hard-coded Chinese literal: \(key)"
+            )
+        }
+
+        XCTAssertEqual(LocalizedStrings.string(L.Library.allVideos, language: .en), "All Videos")
+        XCTAssertEqual(LocalizedStrings.string(L.Library.allVideos, language: .zhHant), "全部影片")
+        XCTAssertEqual(LocalizedStrings.string(L.Library.localRecognitionUnavailable, language: .zhHant), "本機字幕辨識尚未準備好")
+        XCTAssertEqual(LocalizedStrings.format(L.Library.savedWithFormat, language: .en, ["MP4"]), "Saved · MP4")
+        XCTAssertEqual(LocalizedStrings.format(L.Library.recoveryFound, language: .zhHant, [2]), "發現 2 支已有影片")
+    }
+
     func testReadyPageFormatAndSubtitleStringsAreLocalized() {
         XCTAssertEqual(LocalizedStrings.string(L.Ready.formatSection, language: .en), "Format")
         XCTAssertEqual(LocalizedStrings.string(L.Ready.outputOptionsSection, language: .zhHans), "输出选项")
@@ -205,6 +255,24 @@ final class LocalizerTests: XCTestCase {
         XCTAssertEqual(LocalizedStrings.string(L.Settings.sourceLanguage, language: .zhHant), "來源語言")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.currentEngine, language: .en), "Current engine")
         XCTAssertEqual(LocalizedStrings.string(L.Settings.appleActionOpenLanguageSettingsHelp, language: .zhHans), "打开系统设置，由你在系统里下载语言包；App 不会自动下载")
+    }
+
+    func testRestartOnboardingSettingsCopyIsLocalized() {
+        let keys = [
+            "L.Settings.InitialSetupSection",
+            "L.Settings.InitialSetupDetail",
+            "L.Settings.RestartInitialSetup",
+        ]
+
+        for language in ResolvedLanguage.allCases {
+            for key in keys {
+                XCTAssertNotEqual(
+                    LocalizedStrings.string(key, language: language),
+                    key,
+                    "\(key) must be translated for \(language.rawValue)"
+                )
+            }
+        }
     }
 
     func testSettingsSecondarySectionsAreLocalized() {

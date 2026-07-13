@@ -77,7 +77,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// A deferred task can remain editable when its selected local or cloud
     /// recognizer is unavailable. Keep the recovery destination typed here so
     /// the workspace never presents a button that merely looks actionable.
-    enum QueuedReadinessRecovery: Equatable {
+    enum QueuedReadinessRecovery: Equatable, Sendable {
         case localSpeech
         case cloudASR
 
@@ -90,8 +90,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         var actionTitle: String {
             switch self {
-            case .localSpeech: "打开字幕与语言设置"
-            case .cloudASR: "打开服务与账户设置"
+            case .localSpeech: CoreL10n.t(L.Library.openSubtitlesSettings)
+            case .cloudASR: CoreL10n.t(L.Library.openServicesSettings)
             }
         }
     }
@@ -103,6 +103,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         let remainingIsApproximate: Bool
         let isEstimatingRemaining: Bool
         let statusText: String?
+        /// Queue diagnostics remain private to the queue implementation. The
+        /// workspace only needs this typed recovery state to show a stable,
+        /// localized explanation for a queued item that cannot start yet.
+        let queuedReadiness: QueuedReadinessRecovery?
     }
 
     struct PlaybackRequest: Equatable {
@@ -328,8 +332,18 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// already failed its recognizer preflight. Ordinary queued work continues
     /// to use the normal Start action.
     func queuedReadinessRecovery(for itemID: UUID) -> QueuedReadinessRecovery? {
-        guard let queueItem = queueItem(for: itemID),
-              queueItem.isDeferredDraft,
+        if let typedReadiness = liveQueueDetails[itemID]?.queuedReadiness {
+            return typedReadiness
+        }
+        guard let queueItem = queueItem(for: itemID) else { return nil }
+        return Self.queuedReadiness(for: queueItem)
+    }
+
+    /// Determines whether a deferred queue item is blocked by an unavailable
+    /// recognition capability. It deliberately examines the task's typed
+    /// policy, not translated wording in `statusText`.
+    static func queuedReadiness(for queueItem: QueueManager.QueueItem) -> QueuedReadinessRecovery? {
+        guard queueItem.isDeferredDraft,
               let status = queueItem.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !status.isEmpty else {
             return nil
@@ -368,13 +382,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     func attentionActionTitle(for itemID: UUID) -> String? {
         guard let action = processing(for: itemID)?.attention?.primaryAction else { return nil }
         return switch action {
-        case .login: "登录"
-        case .locateFile: "定位文件"
-        case .prepareLocalRecognition: "启用本地字幕识别"
-        case .configureCloudRecognition: "设置云端识别"
-        case .restart: "重新开始"
-        case .retry: "重新下载"
-        case .review: "查看详情"
+        case .login: CoreL10n.t(L.Library.login)
+        case .locateFile: CoreL10n.t(L.Library.locateFileTitle)
+        case .prepareLocalRecognition: CoreL10n.t(L.Library.enableLocalRecognition)
+        case .configureCloudRecognition: CoreL10n.t(L.Library.configureCloudRecognition)
+        case .restart: CoreL10n.t(L.Library.restart)
+        case .retry: CoreL10n.t(L.Library.retryDownload)
+        case .review: CoreL10n.t(L.Library.reviewDetails)
         }
     }
 
@@ -390,9 +404,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .locateFile:
             locateMissingArtifact(for: itemID)
         case .prepareLocalRecognition:
-            appModel.openSettings(paneID: "subtitlesLanguage")
+            appModel.openLocalASRSettings()
         case .configureCloudRecognition:
-            appModel.openSettings(paneID: "servicesAccounts")
+            appModel.openCloudASRSettings()
         case .restart:
             restartInterruptedTask(for: itemID)
         case .retry:
@@ -411,14 +425,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// relinker accepts only a file still inside the managed downloads folder.
     func locateMissingArtifact(for itemID: UUID) {
         guard missingArtifactLocation(for: itemID) != nil else {
-            errorMessage = "没有需要重新定位的文件。"
+            errorMessage = CoreL10n.t(L.Library.noMissingArtifact)
             return
         }
 
         let panel = NSOpenPanel()
-        panel.title = "定位文件"
-        panel.message = "选择月之门下载文件夹中的替代文件。"
-        panel.prompt = "选择文件"
+        panel.title = CoreL10n.t(L.Library.locateFileTitle)
+        panel.message = CoreL10n.t(L.Library.locateFileDetail)
+        panel.prompt = CoreL10n.t(L.Library.chooseFile)
         panel.directoryURL = ViewModel.appDownloadsDirectory
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -451,7 +465,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard FileManager.default.fileExists(atPath: selectedURL.path),
               var item = libraryItem(id: itemID),
               let location = missingArtifactLocation(for: itemID) else {
-            errorMessage = "所选文件不可用，请重新选择。"
+            errorMessage = CoreL10n.t(L.Library.selectedFileUnavailable)
             return
         }
 
@@ -500,7 +514,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             persistItem(item)
         } catch {
-            errorMessage = "请选择月之门下载文件夹中的文件。"
+            errorMessage = CoreL10n.t(L.Library.selectedFileOutsideManagedFolder)
         }
     }
 
@@ -579,7 +593,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func revealInFinder(itemID: UUID) {
         guard let url = revealableArtifactURL(itemID: itemID) else {
-            errorMessage = "找不到可在访达中显示的本地文件。"
+            errorMessage = CoreL10n.t(L.Library.revealFileUnavailable)
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -600,7 +614,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func copySourceLink(itemID: UUID) {
         guard let source = libraryItem(id: itemID)?.source?.urlString,
               !source.isEmpty else {
-            errorMessage = "这个项目没有可复制的来源链接。"
+            errorMessage = CoreL10n.t(L.Library.sourceLinkUnavailable)
             return
         }
         NSPasteboard.general.clearContents()
@@ -620,7 +634,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func playEmbeddedVideo(itemID: UUID) {
         guard canPlayEmbeddedVideo(itemID: itemID) else {
-            errorMessage = "该视频暂时不能在月之门内播放。"
+            errorMessage = CoreL10n.t(L.Library.embeddedPlaybackUnavailable)
             return
         }
         selectedItemID = itemID
@@ -696,11 +710,11 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func reprocessBlockerReason(for plan: ReprocessPlan) -> String? {
         guard !plan.steps.isEmpty else {
-            return "此修改不会改变当前输出。"
+            return CoreL10n.t(L.Library.reprocessNoChange)
         }
         guard plan.steps.contains(.refreshVideo) else { return nil }
         guard let source = selectedItem?.source, source.supportsRestart else {
-            return "此变更需要重新下载原视频。请使用可安全重新开始的原链接新建下载。"
+            return CoreL10n.t(L.Library.reprocessRequiresOriginal)
         }
         return nil
     }
@@ -741,7 +755,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 envelope = try await store.load()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
             }
         }
     }
@@ -763,7 +777,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     self.selectedItemID = nil
                 }
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
             }
         }
     }
@@ -780,7 +794,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 self.removedItemForUndo = nil
                 undoRemovalAvailable = false
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
             }
         }
     }
@@ -796,7 +810,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 showRecoverySheet = false
                 UserDefaults.standard.set(true, forKey: Self.recoveryScanDefaultsKey)
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
             }
         }
     }
@@ -820,7 +834,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func moveArtifactsToTrash(itemID: UUID? = nil) {
         guard let item = libraryItem(id: itemID ?? selectedItemID) else { return }
         guard processing(for: item.id)?.state.isActive != true else {
-            errorMessage = "请先等待任务完成或取消，再将文件移到废纸篓。"
+            errorMessage = CoreL10n.t(L.Library.waitBeforeTrash)
             return
         }
         let urls = Array(Set(
@@ -829,13 +843,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                 .compactMap(absoluteURL(for:))
         ))
         guard !urls.isEmpty else {
-            errorMessage = "找不到可移到废纸篓的本地文件。"
+            errorMessage = CoreL10n.t(L.Library.noFileToTrash)
             return
         }
 
         let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !existingURLs.isEmpty else {
-            errorMessage = "本地文件已不在原位置。若只想隐藏这条记录，请使用“从资料库移除”。"
+            errorMessage = CoreL10n.t(L.Library.fileMissingRemoveOnly)
             return
         }
 
@@ -859,11 +873,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                         selectedItemID = nil
                     }
                 } catch {
-                    errorMessage = "文件已移到废纸篓，但未能从资料库移除：\(error.localizedDescription)"
+                    errorMessage = CoreL10n.t(L.Library.movedToTrashRemoveFailed)
                 }
             }
         } catch {
-            errorMessage = "部分文件没有移到废纸篓：\(error.localizedDescription)"
+            errorMessage = CoreL10n.t(L.Library.partialTrashFailed)
         }
     }
 
@@ -875,7 +889,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard let item = selectedItem,
               let plan = reprocessPlan,
               reprocessBlockerReason(for: plan) == nil else {
-            return .failure(reprocessBlockerReason ?? "当前配置无法创建重新处理任务。")
+            return .failure(reprocessBlockerReason ?? CoreL10n.t(L.Library.cannotCreateReprocess))
         }
         let configuration = processingDraft
         do {
@@ -887,7 +901,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             processingDraft = item.latestVersion?.processing.configuration ?? .init()
             return .success
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(CoreL10n.t(L.Library.cannotCreateReprocess))
         }
     }
 
@@ -912,7 +926,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             bootstrapFinished = true
             receiveQueue(appModel.queue.items)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = CoreL10n.t(L.Library.updateFailed)
         }
     }
 
@@ -931,7 +945,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             // A read-only scan is helpful but must never prevent the app shell
             // from opening.
-            errorMessage = error.localizedDescription
+            errorMessage = CoreL10n.t(L.Library.updateFailed)
         }
     }
 
@@ -942,7 +956,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try await store.upsert(item)
                 envelope = try await store.load()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
             }
         }
     }
@@ -1047,7 +1061,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                     remainingSeconds: snapshot.remainingSeconds,
                     remainingIsApproximate: snapshot.remainingIsApproximate,
                     isEstimatingRemaining: snapshot.isEstimatingRemaining,
-                    statusText: snapshot.statusText
+                    statusText: snapshot.statusText,
+                    queuedReadiness: snapshot.queuedReadiness
                 )
             }
         }
@@ -1229,7 +1244,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         } catch {
             if isCurrentQueueSync(generation) {
-                errorMessage = error.localizedDescription
+                errorMessage = CoreL10n.t(L.Library.updateFailed)
                 // A failed write must not make the same durable state look
                 // settled. The next queue update may retry it safely.
                 queueSynchronizationGate.invalidateAfterFailure()
@@ -1256,6 +1271,7 @@ private struct QueueLibrarySnapshot: Sendable {
     let remainingIsApproximate: Bool
     let isEstimatingRemaining: Bool
     let statusText: String?
+    let queuedReadiness: LibraryWorkspaceModel.QueuedReadinessRecovery?
     let createdAt: Date
     let updatedAt: Date
 
@@ -1275,12 +1291,9 @@ private struct QueueLibrarySnapshot: Sendable {
         remainingIsApproximate = item.remainingIsApproximate
         isEstimatingRemaining = item.isEstimatingRemaining
         statusText = item.needsLogin.map {
-            CoreL10n.text(
-                en: "Login required · \($0.site)",
-                zhHans: "需要登录 · \($0.site)",
-                zhHant: "需要登入 · \($0.site)"
-            )
+            CoreL10n.t(L.Library.loginRequired, $0.site)
         } ?? item.statusText
+        queuedReadiness = LibraryWorkspaceModel.queuedReadiness(for: item)
         createdAt = now
         updatedAt = now
     }

@@ -50,7 +50,7 @@ struct MoongateApp: App {
                 .keyboardShortcut("n", modifiers: .command)
 
                 if useLibraryWorkspace {
-                    Button("开始全部") {
+                    Button(localizer.t(L.Library.startAll)) {
                         NotificationCenter.default.post(name: AppWorkspaceCommand.startAllRequested, object: nil)
                     }
                     .disabled(!model.queue.items.contains(where: { $0.isDeferredDraft }))
@@ -68,7 +68,7 @@ struct MoongateApp: App {
                 .keyboardShortcut("l", modifiers: .command)
 
                 if useLibraryWorkspace {
-                    Button("搜索资料库") {
+                    Button(localizer.t(L.Library.searchLibrary)) {
                         NotificationCenter.default.post(name: AppWorkspaceCommand.searchRequested, object: nil)
                     }
                     .keyboardShortcut("f", modifiers: .command)
@@ -88,7 +88,7 @@ struct MoongateApp: App {
             InspectorCommands()
 
             CommandGroup(after: .toolbar) {
-                Toggle("资料库工作台", isOn: $useLibraryWorkspace)
+                Toggle(localizer.t(L.Library.workspaceToggle), isOn: $useLibraryWorkspace)
             }
         }
 

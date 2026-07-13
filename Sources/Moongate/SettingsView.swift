@@ -1820,12 +1820,12 @@ struct SettingsView: View {
     }
 
     private var onboardingSection: some View {
-        Section("初始设置") {
-            Text("重新查看语言、字幕来源和翻译默认项；不会删除登录、API 凭证或资料库。")
+        Section(localizer.t(L.Settings.initialSetupSection)) {
+            Text(localizer.t(L.Settings.initialSetupDetail))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("重新运行初始设置") {
+            Button(localizer.t(L.Settings.restartInitialSetup)) {
                 guard commitDraftImmediately() else { return }
                 model.restartOnboarding()
             }

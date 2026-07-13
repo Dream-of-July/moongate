@@ -105,9 +105,48 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                        "中栏标题只能由原生 navigation title 呈现，不能重复手写一个“全部视频”")
         XCTAssertTrue(list.contains("ToolbarItemGroup(placement: .primaryAction)"),
                       "新建下载和开始全部应归属中栏原生 toolbar")
-        XCTAssertTrue(list.contains("Label(\"新建下载\", systemImage: \"plus\")"))
+        XCTAssertTrue(list.contains("Label(localizer.t(L.Library.newDownload), systemImage: \"plus\")"))
         XCTAssertTrue(list.contains("if workspace.hasQueuedTasks"),
                       "开始全部只在确有待开始任务时出现")
+    }
+
+    func testWorkspaceVisibleCopyComesFromTheLibraryLocalizationNamespace() throws {
+        let view = try libraryWorkspaceViewSource()
+        let app = try appSource()
+        let libraryKeyMarkers = [
+            "L.Library.allVideos",
+            "L.Library.searchVideos",
+            "L.Library.newDownload",
+            "L.Library.chooseVideoOrNewDownload",
+            "L.Library.videoMoved",
+            "L.Library.fileInformation",
+            "L.Library.changeOptions",
+            "L.Library.localRecognitionUnavailable",
+        ]
+
+        for marker in libraryKeyMarkers {
+            XCTAssertTrue(view.contains(marker), "核心资料库文案应经 Localizer：\(marker)")
+        }
+        XCTAssertTrue(app.contains("L.Library.startAll"))
+        XCTAssertTrue(app.contains("L.Library.searchLibrary"))
+        XCTAssertTrue(app.contains("L.Library.workspaceToggle"))
+        XCTAssertNil(
+            view.range(of: "\\\"[^\\\"\\n]*[\\p{Han}][^\\\"\\n]*\\\"", options: .regularExpression),
+            "工作台视图不应再直接写入中文可见文案；英文和繁体界面必须由本地化表提供"
+        )
+    }
+
+    func testWorkspaceDoesNotRenderPersistedAttentionOrQueueDiagnosticsVerbatim() throws {
+        let view = try libraryWorkspaceViewSource()
+
+        XCTAssertFalse(
+            view.contains("return attention.title"),
+            "持久化的异常标题可能来自旧语言环境；工作台应按当前语言和异常类型重新渲染。"
+        )
+        XCTAssertFalse(
+            view.contains("details.statusText ??"),
+            "实时队列诊断不应作为普通工作台文案直接显示，避免泄露技术细节或不稳定的底层输出。"
+        )
     }
 
     func testInspectorMenuUsesSystemCommandsRatherThanASecondNotificationBridge() throws {
@@ -133,8 +172,8 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(model.contains("enum ProcessingSheet"))
         XCTAssertTrue(view.contains("ProcessingOptionsSheet"))
-        XCTAssertTrue(view.contains("更改选项…"))
-        XCTAssertTrue(view.contains("重新处理…"))
+        XCTAssertTrue(view.contains("L.Library.changeOptions"))
+        XCTAssertTrue(view.contains("L.Library.reprocess"))
         XCTAssertFalse(inspector.contains("Picker(\"检查器\""),
                        "信息栏不得再混入“信息 / 处理”分段和完整配置表单")
         XCTAssertFalse(inspector.contains("TranscriptionModelPicker"),
@@ -234,16 +273,24 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
     func testQueuedReadinessCopyNeverEchoesRawQueueDiagnostics() throws {
         let source = try libraryWorkspaceViewSource()
+        let model = try libraryWorkspaceModelSource()
         let display = try XCTUnwrap(slice(
             source,
             from: "private enum LibraryDisplay",
             to: "static func completedDetail"
         ))
 
-        XCTAssertTrue(display.contains("本地字幕识别尚未准备好"))
-        XCTAssertTrue(display.contains("开始前需要处理一项设置"))
+        XCTAssertTrue(display.contains("switch details?.queuedReadiness"))
+        XCTAssertTrue(display.contains("L.Library.localRecognitionUnavailable"))
+        XCTAssertTrue(display.contains("L.Library.cloudRecognitionUnavailable"))
+        XCTAssertTrue(model.contains("static func queuedReadiness(for queueItem:"))
+        XCTAssertTrue(model.contains("queueItem.request.subtitleSourcePolicy"))
         XCTAssertFalse(display.contains("return detail"),
-                       "普通资料库路径不得直接展示 QueueManager 的技术诊断原文")
+                      "普通资料库路径不得直接展示 QueueManager 的技术诊断原文")
+        XCTAssertFalse(display.contains(".lowercased()"),
+                       "待开始恢复原因必须来自类型化状态，不能解析本地化后的状态文本")
+        XCTAssertFalse(display.contains("normalized.contains"),
+                       "待开始恢复原因不得根据 cloud/local/whisper 等文本猜测")
     }
 
     func testWorkspaceToolbarKeepsOnlyInspectorAndListOwnsNewDownload() throws {
@@ -257,7 +304,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                        "新建下载不应继续挤在右侧工具栏")
         XCTAssertFalse(toolbar.contains("systemImage: \"sidebar.left\""),
                        "NavigationSplitView 已提供系统侧栏控制，不能再在右侧复制一个")
-        XCTAssertTrue(list.contains("Label(\"新建下载\", systemImage: \"plus\")"),
+        XCTAssertTrue(list.contains("Label(localizer.t(L.Library.newDownload), systemImage: \"plus\")"),
                       "新建下载应属于当前资料列表的标题区")
         XCTAssertTrue(list.contains("AppWorkspaceCommand.newDownloadRequested"),
                       "列表标题区的新增动作必须接入同一真实 Sheet 命令")
@@ -271,7 +318,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(commands.contains("startAllRequested"))
         XCTAssertTrue(app.contains("AppWorkspaceCommand.startAllRequested"))
-        XCTAssertTrue(app.contains("Button(\"开始全部\")"))
+        XCTAssertTrue(app.contains("Button(localizer.t(L.Library.startAll))"))
         XCTAssertTrue(workspace.contains("AppWorkspaceCommand.startAllRequested"))
         XCTAssertTrue(workspace.contains("workspace.startAllQueuedTasks()"))
     }
@@ -319,7 +366,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
             to: "private struct FlowLayout"
         ))
 
-        XCTAssertTrue(sheet.contains("DisclosureGroup(\"高级选项\")"),
+        XCTAssertTrue(sheet.contains("DisclosureGroup(localizer.t(L.Download.advancedOptions))"),
                       "底层字幕来源只能在用户主动展开高级选项后出现")
         for kind in ["importedFile", "manual", "platformAuto", "hlsManifest", "localASR", "cloudASR"] {
             XCTAssertTrue(sheet.contains("SubtitleSourceKind.\(kind).rawValue"))
@@ -367,12 +414,19 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains(".contextMenu"),
                       "列表行应提供 macOS 原生右键菜单")
-        for label in ["播放", "在访达中显示", "复制来源链接", "重新处理", "移出资料库", "移到废纸篓…"] {
+        for label in [
+            "L.Library.play",
+            "L.Library.revealInFinder",
+            "L.Library.copySourceLink",
+            "L.Library.reprocess",
+            "L.Library.removeFromLibrary",
+            "L.Library.moveToTrashEllipsis",
+        ] {
             XCTAssertTrue(source.contains(label), "右键菜单缺少 \(label) 操作")
         }
         XCTAssertTrue(source.contains("LibraryRowContextMenu"),
                       "右键操作应从列表行抽成可审查的独立组件")
-        XCTAssertTrue(source.contains("case .queued:") && source.contains("Button(\"开始\")"),
+        XCTAssertTrue(source.contains("case .queued:") && source.contains("Button(localizer.t(L.Library.start))"),
                       "待开始任务在右键菜单中必须显示“开始”，不能被误称为恢复")
     }
 
@@ -393,7 +447,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let view = try libraryWorkspaceViewSource()
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(view.contains("点列表标题中的＋添加链接。"))
+        XCTAssertTrue(view.contains("L.Library.addLinkHint"))
         XCTAssertFalse(view.contains("点右上角“新建下载”添加链接。"))
         XCTAssertTrue(model.contains("$0.role == .video || $0.role == .renderedVideo"))
     }
@@ -403,7 +457,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("LibraryDisplay.recoveryLabel("),
                       "异常项目应优先显示具体恢复原因，而不是笼统的“需要登录或处理”")
-        XCTAssertTrue(source.contains("LibraryDisplay.completedDetail(projected.item)"),
+        XCTAssertTrue(source.contains("LibraryDisplay.completedDetail(projected.item, localizer: localizer)"),
                       "完成项的第三行应显示保存结果，不能重复“已完成”")
         XCTAssertFalse(source.contains("Image(systemName: \"checkmark.circle.fill\").foregroundStyle(.green)"),
                       "完成项不应再额外显示绿色成功徽章")
@@ -429,7 +483,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let view = try libraryWorkspaceViewSource()
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(view.contains("Picker(\"字幕结果\""))
+        XCTAssertTrue(view.contains("Picker(localizer.t(L.Download.subtitleResult)"))
         XCTAssertTrue(model.contains("changes.insert(.subtitleMode)"))
         XCTAssertTrue(model.contains("previousConfiguration: version.processing.configuration"))
     }
@@ -448,7 +502,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "重新处理必须等待真实入队结果，而不是立即关闭 Sheet。")
         XCTAssertTrue(sheet.contains("case .success"))
         XCTAssertTrue(sheet.contains("case .failure(let message)"))
-        XCTAssertTrue(sheet.contains("Button(isQueued ? \"完成\" : \"取消\")"))
+        XCTAssertTrue(sheet.contains("Button(isQueued ? localizer.t(L.Common.done) : localizer.t(L.Common.cancel))"))
         XCTAssertTrue(sheet.contains("workspace.discardProcessingDraft()"),
                       "取消重处理应放弃未应用的草稿，而不是把隐形修改留给下次打开。")
     }
@@ -477,9 +531,9 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let view = try libraryWorkspaceViewSource()
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(view.contains("LibraryDisplay.queuedReadinessDetail(details)"),
+        XCTAssertTrue(view.contains("LibraryDisplay.queuedReadinessDetail(details, localizer: localizer)"),
                       "待开始预检失败时，列表第三行必须优先显示具体的可恢复原因")
-        XCTAssertTrue(view.contains("需要处理，\\(readiness)"),
+        XCTAssertTrue(view.contains("L.Library.needsAttentionAccessibility"),
                       "VoiceOver 必须读出待开始任务的具体阻塞原因，而不是笼统的等待中")
         XCTAssertTrue(view.contains("workspace.openQueuedReadinessRecovery"),
                       "待开始的本地/云端预检失败必须提供真实恢复入口")
@@ -492,6 +546,25 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
                       "本地能力恢复必须带着原待开始任务，而不是只修改未来任务的默认设置")
         XCTAssertTrue(model.contains("appModel.openCloudASRSettings(forQueuedTaskID: queueID)"),
                       "云端能力恢复必须带着原待开始任务，而不是只打开一个无上下文的设置页")
+    }
+
+    func testAttentionActionOpensTheCapabilityFlowRatherThanADeadSettingsPage() throws {
+        let model = try libraryWorkspaceModelSource()
+        let action = try XCTUnwrap(functionBody(named: "performAttentionAction", in: model))
+
+        XCTAssertTrue(action.contains("case .prepareLocalRecognition:"))
+        XCTAssertTrue(action.contains("appModel.openLocalASRSettings()"),
+                      "本地识别缺失必须打开真实能力 Sheet，而不是只跳到一个普通设置页")
+        XCTAssertTrue(action.contains("case .configureCloudRecognition:"))
+        XCTAssertTrue(action.contains("appModel.openCloudASRSettings()"),
+                      "云端识别缺失必须打开真实的服务配置流程")
+        let localBranch = try XCTUnwrap(slice(
+            action,
+            from: "case .prepareLocalRecognition:",
+            to: "case .configureCloudRecognition:"
+        ))
+        XCTAssertFalse(localBranch.contains("openSettings(paneID:"),
+                       "本地能力恢复不能退回无上下文的 settings pane 跳转")
     }
 
     func testMissingFileRecoveryUsesARealPickerAndSafelyRelinksTheArtifact() throws {
@@ -515,13 +588,13 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
             to: "private struct LibraryStatusGlyph"
         ))
 
-        XCTAssertTrue(source.contains("Button(\"更改选项…\")"),
+        XCTAssertTrue(source.contains("Button(localizer.t(L.Library.changeOptions))"),
                       "待开始任务应使用“更改选项”，不能误称为“重新处理”")
         XCTAssertTrue(source.contains("if processing?.state.isQueued == true"),
                       "普通重新处理不应与待开始任务的配置动作并存")
         XCTAssertTrue(contextMenu.contains("if let recovery = workspace.queuedReadinessRecovery(for: item.id)"),
                       "预检阻塞时，右键菜单应改给恢复入口而不是继续提供无效的开始动作")
-        XCTAssertTrue(contextMenu.contains("} else {\n                        Button(\"开始\")"),
+        XCTAssertTrue(contextMenu.contains("Button(localizer.t(L.Library.start))"),
                       "仅无阻塞的待开始任务才显示开始动作")
         XCTAssertTrue(source.contains("if workspace.canRevealInFinder(itemID: item.id)"),
                       "没有本地产物的完成或异常项不应显示必然失败的访达按钮")
@@ -557,14 +630,14 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
         let source = try libraryWorkspaceViewSource()
 
         XCTAssertTrue(source.contains("activeAccessibilityValue"))
-        XCTAssertTrue(source.contains("LibraryDisplay.liveDetail(details)"),
+        XCTAssertTrue(source.contains("LibraryDisplay.liveDetail(details, localizer: localizer)"),
                       "活跃任务的 VoiceOver 值必须包含 ETA 或估算状态")
     }
 
     func testInterruptedLibraryItemsExposeARealRestartAction() throws {
         let model = try libraryWorkspaceModelSource()
 
-        XCTAssertTrue(model.contains("case .restart: \"重新开始\""))
+        XCTAssertTrue(model.contains("case .restart: CoreL10n.t(L.Library.restart)"))
         XCTAssertTrue(model.contains("func restartInterruptedTask"))
         XCTAssertTrue(model.contains("restartInterruptedLibraryItem"))
     }
@@ -581,7 +654,7 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
 
         XCTAssertTrue(source.contains("missingVideoStage"),
                       "文件已移动时必须给明确恢复态，不能误报格式不支持")
-        XCTAssertTrue(source.contains("视频文件已移动或删除"),
+        XCTAssertTrue(source.contains("L.Library.videoMoved"),
                       "缺失文件状态应使用可行动的中文文案")
         XCTAssertTrue(source.contains("func dismantleNSView"),
                       "离开详情时系统播放器必须停止，避免后台继续播放")

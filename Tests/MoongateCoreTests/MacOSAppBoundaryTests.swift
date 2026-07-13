@@ -35,7 +35,7 @@ final class MacOSAppBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains(".keyboardShortcut(\"n\", modifiers: .command)"))
         XCTAssertTrue(source.contains("AppWorkspaceCommand.searchRequested"))
         XCTAssertTrue(source.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
-        XCTAssertTrue(source.contains("Toggle(\"资料库工作台\""),
+        XCTAssertTrue(source.contains("Toggle(localizer.t(L.Library.workspaceToggle)"),
                       "新布局必须保留菜单级 legacy fallback")
         XCTAssertTrue(rootHost.contains("model.enqueueDeferredDrafts(from: urlText, configuration: draft.queuedConfiguration())"),
                       "⌘N 的新建下载 sheet 必须创建可编辑的待开始任务")
@@ -43,7 +43,7 @@ final class MacOSAppBoundaryTests: XCTestCase {
 
     func testSearchCommandKeepsLegacyFallbackFunctional() throws {
         let source = try appSource()
-        XCTAssertTrue(source.contains("if useLibraryWorkspace {\n                    Button(\"搜索资料库\")"))
+        XCTAssertTrue(source.contains("if useLibraryWorkspace {\n                    Button(localizer.t(L.Library.searchLibrary))"))
         XCTAssertTrue(source.contains("} else {\n                    Button(localizer.t(L.Main.urlInputAccessibility))"))
     }
 

@@ -161,8 +161,8 @@ final class LocalRecognitionCapabilityBoundaryTests: XCTestCase {
         XCTAssertFalse(capabilitySheet.contains("下载运行时"))
 
         let queuedReadiness = try XCTUnwrap(functionBody(named: "queuedReadinessDetail", in: workspace))
-        XCTAssertTrue(queuedReadiness.contains("本地字幕识别尚未准备好"))
-        XCTAssertTrue(queuedReadiness.contains("云端字幕识别尚未准备好"))
+        XCTAssertTrue(queuedReadiness.contains("L.Library.localRecognitionUnavailable"))
+        XCTAssertTrue(queuedReadiness.contains("L.Library.cloudRecognitionUnavailable"))
         XCTAssertFalse(queuedReadiness.contains("return detail"), "底层队列诊断不可原样显示在工作台")
 
         XCTAssertFalse(ordinarySettings.contains("path:"), "存储和设置路径不得展示绝对路径")
