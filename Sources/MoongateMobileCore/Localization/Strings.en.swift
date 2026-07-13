@@ -983,6 +983,13 @@ extension LocalizationTables {
         L.Library.cannotCreateReprocess: "The current configuration cannot create a reprocessing task.",
         L.Library.updateFailed: "Could not update the library. Try again.",
         L.Library.loginRequired: "Login required · %@",
+        L.Library.loginRequiredGeneric: "Login required",
+        L.Library.loginRequiredDetail: "Sign in, then try again.",
+        L.Library.localRecognitionUnavailableDetail: "Set up local subtitle recognition, then try again.",
+        L.Library.cloudRecognitionUnavailableDetail: "Set up cloud subtitle recognition, then try again.",
+        L.Library.interruptedDetail: "The previous task stopped before it finished.",
+        L.Library.processingFailedDetail: "The task did not finish. Try again.",
+        L.Library.needsReviewDetail: "Review this task before continuing.",
 
         L.Core.errorBinaryNotFound: "Cannot find %1$@. Confirm it was installed with Homebrew (brew install %2$@).",
         L.Core.errorSniffFailed: "No downloadable video was found on this page. %@",

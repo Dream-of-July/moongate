@@ -656,7 +656,7 @@ private struct LibraryWorkbenchDetail: View {
                         .foregroundStyle(LibraryDisplay.statusColor(processing, details: queueDetails))
 
                     if let attention = processing?.attention {
-                        Text(attention.summary)
+                        Text(LibraryDisplay.attentionDetail(attention, localizer: localizer))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else if let processing, processing.state.isRunning {
@@ -1392,7 +1392,7 @@ private enum LibraryDisplay {
     private static func attentionLabel(_ attention: ProcessingAttention, localizer: Localizer) -> String {
         switch (attention.kind, attention.primaryAction) {
         case (.loginRequired, _):
-            return localizer.t(L.Library.loginRequired)
+            return localizer.t(L.Library.loginRequiredGeneric)
         case (.fileMissing, _):
             return localizer.t(L.Library.videoMoved)
         case (.capabilityUnavailable, .prepareLocalRecognition):
@@ -1407,6 +1407,27 @@ private enum LibraryDisplay {
             return localizer.t(L.Library.needsAttention)
         default:
             return stageLabel(nil, localizer: localizer)
+        }
+    }
+
+    static func attentionDetail(_ attention: ProcessingAttention, localizer: Localizer) -> String {
+        switch (attention.kind, attention.primaryAction) {
+        case (.loginRequired, _):
+            return localizer.t(L.Library.loginRequiredDetail)
+        case (.fileMissing, _):
+            return localizer.t(L.Library.videoMovedDetail)
+        case (.capabilityUnavailable, .prepareLocalRecognition):
+            return localizer.t(L.Library.localRecognitionUnavailableDetail)
+        case (.capabilityUnavailable, .configureCloudRecognition):
+            return localizer.t(L.Library.cloudRecognitionUnavailableDetail)
+        case (.interrupted, _):
+            return localizer.t(L.Library.interruptedDetail)
+        case (.processingFailed, _):
+            return localizer.t(L.Library.processingFailedDetail)
+        case (.needsReview, _):
+            return localizer.t(L.Library.needsReviewDetail)
+        default:
+            return localizer.t(L.Library.needsReviewDetail)
         }
     }
 

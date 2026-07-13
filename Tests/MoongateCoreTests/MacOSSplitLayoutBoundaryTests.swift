@@ -144,6 +144,10 @@ final class MacOSSplitLayoutBoundaryTests: XCTestCase {
             "持久化的异常标题可能来自旧语言环境；工作台应按当前语言和异常类型重新渲染。"
         )
         XCTAssertFalse(
+            view.contains("Text(attention.summary)"),
+            "持久化的异常摘要同样可能来自旧语言环境；工作台应按当前语言和异常类型重新渲染。"
+        )
+        XCTAssertFalse(
             view.contains("details.statusText ??"),
             "实时队列诊断不应作为普通工作台文案直接显示，避免泄露技术细节或不稳定的底层输出。"
         )

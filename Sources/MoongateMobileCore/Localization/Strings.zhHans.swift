@@ -983,6 +983,13 @@ extension LocalizationTables {
         L.Library.cannotCreateReprocess: "当前配置无法创建重新处理任务。",
         L.Library.updateFailed: "无法更新资料库，请重试。",
         L.Library.loginRequired: "需要登录 · %@",
+        L.Library.loginRequiredGeneric: "需要登录",
+        L.Library.loginRequiredDetail: "登录后重试。",
+        L.Library.localRecognitionUnavailableDetail: "启用本地字幕识别后重试。",
+        L.Library.cloudRecognitionUnavailableDetail: "设置云端字幕识别后重试。",
+        L.Library.interruptedDetail: "上次任务尚未完成。",
+        L.Library.processingFailedDetail: "任务未完成，请重试。",
+        L.Library.needsReviewDetail: "继续前请检查此任务。",
 
         L.Core.errorBinaryNotFound: "找不到 %1$@。请确认已通过 Homebrew 安装（brew install %2$@）。",
         L.Core.errorSniffFailed: "没有在这个页面里找到可下载的视频。%@",

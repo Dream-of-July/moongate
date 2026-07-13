@@ -1030,6 +1030,13 @@ public enum L {
         public static let cannotCreateReprocess = "L.Library.CannotCreateReprocess"
         public static let updateFailed = "L.Library.UpdateFailed"
         public static let loginRequired = "L.Library.LoginRequired"
+        public static let loginRequiredGeneric = "L.Library.LoginRequiredGeneric"
+        public static let loginRequiredDetail = "L.Library.LoginRequiredDetail"
+        public static let localRecognitionUnavailableDetail = "L.Library.LocalRecognitionUnavailableDetail"
+        public static let cloudRecognitionUnavailableDetail = "L.Library.CloudRecognitionUnavailableDetail"
+        public static let interruptedDetail = "L.Library.InterruptedDetail"
+        public static let processingFailedDetail = "L.Library.ProcessingFailedDetail"
+        public static let needsReviewDetail = "L.Library.NeedsReviewDetail"
     }
 
     public enum Core {
