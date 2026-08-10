@@ -56,6 +56,7 @@ final class ViewModel: ObservableObject {
         case idle
         case resolving
         case choosing([VideoCandidate])
+        case choosingParts([VideoCandidate], parent: [VideoCandidate])
         case analyzing
         case ready(VideoInfo)
         case failed(String)
@@ -264,7 +265,10 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    var canReturnToList: Bool { candidates.count > 1 }
+    var canReturnToList: Bool {
+        if case .choosingParts = stage { return true }
+        return candidates.count > 1
+    }
 
     // MARK: - 行为
 
@@ -372,17 +376,18 @@ final class ViewModel: ObservableObject {
         }
     }
 
-    /// App 管理的下载根目录。设置页的存储清理只允许操作这个目录，不能扫描整个 Downloads。
-    static var appDownloadsDirectory: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Moongate", isDirectory: true)
+    /// App 管理的下载根目录（设置-通用选择根目录，产物落在 <根目录>/Moongate）。
+    /// 设置页的存储清理只允许操作这个目录，不能扫描整个 Downloads。
+    var appDownloadsDirectory: URL {
+        let root = URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)
+        return root.appendingPathComponent("Moongate", isDirectory: true)
     }
 
-    /// 下载目的地：所有 v0.8 产物都放在 Downloads/Moongate 下；多文件任务再按视频标题建子文件夹。
-    static func destinationDirectory(forTitle title: String, multiFile: Bool) -> URL {
+    /// 下载目的地：所有 v0.8 产物都放在 <下载目录>/Moongate 下；多文件任务再按视频标题建子文件夹。
+    func destinationDirectory(forTitle title: String, multiFile: Bool) -> URL {
         let downloads = appDownloadsDirectory
         guard multiFile else { return downloads }
-        return downloads.appendingPathComponent(sanitizedFolderName(title), isDirectory: true)
+        return downloads.appendingPathComponent(Self.sanitizedFolderName(title), isDirectory: true)
     }
 
     /// 标题转安全文件夹名：去路径分隔/控制字符、截长、去结尾点号（兼容 Windows）。
@@ -526,7 +531,7 @@ final class ViewModel: ObservableObject {
                         preferredSubtitleLanguageCode: primarySubtitleTrackID.map(normalizedLang),
                         sourceLanguageIntent: self.readySourceLanguageIntent,
                         subtitleSourcePolicy: self.subtitleSourcePolicy,
-                        destinationDirectory: Self.destinationDirectory(
+                        destinationDirectory: destinationDirectory(
                             forTitle: info.title, multiFile: multiFile
                         ),
                         preferredTitle: (candidate.kind == .pageMain || candidate.kind == .directFile)
@@ -591,9 +596,28 @@ final class ViewModel: ObservableObject {
         failedNeedsLogin = nil
         failedNeedsDependency = false
         chosenCandidate = candidate
-        stage = .analyzing
         parseTask?.cancel()
         parseTask = Task {
+            // 分 P 候选（已 ?p=N 定位）不再展开，直接分析
+            if candidate.url.contains("?p=") {
+                // 直接落到原 analyze 逻辑
+            } else {
+                // 先捕获父列表：stage 马上会被改为 .resolving
+                let parent: [VideoCandidate]
+                if case .choosing(let current) = stage { parent = current } else { parent = [candidate] }
+                stage = .resolving
+                do {
+                    let parts = try await self.engine.expandParts(for: candidate.url)
+                    guard token == self.session else { return }
+                    if parts.count > 1 {
+                        self.stage = .choosingParts(parts, parent: parent)
+                        return
+                    }
+                } catch {
+                    guard token == self.session else { return }
+                }
+            }
+            self.stage = .analyzing
             do {
                 var info = try await self.engine.analyze(url: candidate.url)
                 // 直链/页面主视频的 yt-dlp 标题往往是 CDN 文件名，换成嗅探到的页面标题
@@ -684,7 +708,7 @@ final class ViewModel: ObservableObject {
             sourceLanguageIntent: readySourceLanguageIntent,
             subtitleSourcePolicy: subtitleSourcePolicySnapshot,
             importedSubtitleFileURL: importedSubtitleFileURLSnapshot,
-            destinationDirectory: Self.destinationDirectory(forTitle: info.title, multiFile: multiFile),
+            destinationDirectory: destinationDirectory(forTitle: info.title, multiFile: multiFile),
             preferredTitle: {
                 guard let kind = selectedCandidate?.kind, kind == .pageMain || kind == .directFile else { return nil }
                 return info.title
@@ -1210,6 +1234,7 @@ final class ViewModel: ObservableObject {
     }
 
     func backToList() {
+        if case .choosingParts(_, let parent) = stage { stage = .choosing(parent); return }
         guard candidates.count > 1 else { return }
         session += 1
         parseTask?.cancel()

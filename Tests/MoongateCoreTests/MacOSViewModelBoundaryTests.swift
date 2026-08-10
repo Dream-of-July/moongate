@@ -382,13 +382,15 @@ final class MacOSViewModelBoundaryTests: XCTestCase {
 
     func testDownloadsUseAppOwnedDirectoryForStorageSafety() throws {
         let source = try viewModelSource()
-        let destinationBody = try XCTUnwrap(functionBody(prefix: "static func destinationDirectory", in: source))
+        let destinationBody = try XCTUnwrap(functionBody(prefix: "func destinationDirectory(forTitle title: String, multiFile: Bool)", in: source))
 
-        XCTAssertTrue(source.contains("static var appDownloadsDirectory"))
+        XCTAssertTrue(source.contains("var appDownloadsDirectory: URL"))
+        XCTAssertFalse(source.contains("static var appDownloadsDirectory"))
+        XCTAssertTrue(source.contains("URL(fileURLWithPath: settings.downloadDirectory, isDirectory: true)"))
         XCTAssertTrue(source.contains("appendingPathComponent(\"Moongate\", isDirectory: true)"))
         XCTAssertTrue(destinationBody.contains("let downloads = appDownloadsDirectory"))
         XCTAssertTrue(destinationBody.contains("guard multiFile else { return downloads }"))
-        XCTAssertTrue(destinationBody.contains("downloads.appendingPathComponent(sanitizedFolderName(title), isDirectory: true)"))
+        XCTAssertTrue(destinationBody.contains("downloads.appendingPathComponent(Self.sanitizedFolderName(title), isDirectory: true)"))
     }
 
     private func viewModelSource() throws -> String {

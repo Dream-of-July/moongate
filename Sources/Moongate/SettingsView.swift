@@ -189,6 +189,7 @@ struct SettingsView: View {
             case .general:
                 languageSection
                 notificationsSection
+                downloadDirectorySection
             case .subtitles:
                 translationConfigSection
                 styleSection
@@ -1528,6 +1529,59 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 下载目录
+
+    private var downloadDirectorySection: some View {
+        Section(localizer.t(L.Settings.downloadDirectorySection)) {
+            HStack(spacing: 12) {
+                Label(localizer.t(L.Settings.downloadDirectoryLabel), systemImage: "folder")
+                Spacer(minLength: 12)
+                Text((draft.downloadDirectory as NSString).expandingTildeInPath)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(localizer.t(L.Settings.downloadDirectoryLabel))
+            .accessibilityValue((draft.downloadDirectory as NSString).expandingTildeInPath)
+
+            HStack(spacing: 10) {
+                Button(localizer.t(L.Settings.downloadDirectoryChoose)) {
+                    chooseDownloadDirectory()
+                }
+                .buttonStyle(.bordered)
+
+                Button(localizer.t(L.Settings.downloadDirectoryReset)) {
+                    draft.downloadDirectory = Self.systemDownloadDirectoryPath
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private static var systemDownloadDirectoryPath: String {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory() + "/Downloads"
+    }
+
+    private func chooseDownloadDirectory() {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = localizer.t(L.Settings.downloadDirectoryLabel)
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = localizer.t(L.Settings.downloadDirectoryChoose)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        draft.downloadDirectory = url.path
+        #endif
+    }
+
     // MARK: - 依赖组件
 
     private var dependencySection: some View {
@@ -1647,7 +1701,7 @@ struct SettingsView: View {
     @StateObject private var dependencyStorageInstaller = DependencyInstaller()
 
     private var supportDataURL: URL { AppSettings.supportDirectory }
-    private var appDownloadsDirectoryURL: URL { ViewModel.appDownloadsDirectory }
+    private var appDownloadsDirectoryURL: URL { model.appDownloadsDirectory }
 
     private func calculateStorageSizes() async {
         storageCalculating = true

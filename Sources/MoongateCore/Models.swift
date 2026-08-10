@@ -69,12 +69,330 @@ public struct VideoCandidate: Identifiable, Hashable, Sendable {
     public var title: String
     /// 补充说明，例如 "assets.nintendo.com · mp4 直链" 或 "YouTube"
     public var detail: String?
+    /// B站合集分集序号（从 1 开始）；nil 表示非分集候选。
+    public var partIndex: Int?
+    /// B站合集总集数；nil 表示非分集候选。
+    public var partCount: Int?
+    /// B站合集子合集标题（如「国内」/「国外」）；nil 表示不属于子合集或未知。
+    public var subcollectionTitle: String?
 
-    public init(url: String, kind: Kind, title: String, detail: String? = nil) {
+    public init(
+        url: String,
+        kind: Kind,
+        title: String,
+        detail: String? = nil,
+        partIndex: Int? = nil,
+        partCount: Int? = nil,
+        subcollectionTitle: String? = nil
+    ) {
         self.url = url
         self.kind = kind
         self.title = title
         self.detail = detail
+        self.partIndex = partIndex
+        self.partCount = partCount
+        self.subcollectionTitle = subcollectionTitle
+    }
+
+    /// 从 yt-dlp 返回的 B站 playlist JSON 生成分集候选。
+    /// 契约：仅当 `_type == "playlist"` 且 entries ≥ 2 时返回候选数组；
+    /// 单条 entry、非 playlist、缺 entries 字段一律返回 nil，调用方走原有单候选路径。
+    public static func bilibiliPlaylistCandidates(
+        from json: [String: Any],
+        subcollectionTitleByBV: [String: String] = [:]
+    ) -> [VideoCandidate]? {
+        guard json["_type"] as? String == "playlist",
+              let entries = json["entries"] as? [[String: Any]],
+              entries.count >= 2 else {
+            return nil
+        }
+        let playlistID = json["id"] as? String
+        let playlistTitle = json["title"] as? String
+        let partCount = entries.count
+        var candidates: [VideoCandidate] = []
+        for (offset, entry) in entries.enumerated() {
+            let partIndex = offset + 1
+            guard let url = Self.partURL(from: entry, playlistID: playlistID, partIndex: partIndex) else {
+                continue
+            }
+            let title = partTitle(from: entry["title"] as? String, playlistTitle: playlistTitle)
+            let duration = (entry["duration"] as? NSNumber)?.doubleValue
+            let formatted = formattedDuration(duration)
+            candidates.append(VideoCandidate(
+                url: url,
+                kind: .supported,
+                title: title,
+                detail: formatted.isEmpty ? nil : formatted,
+                partIndex: partIndex,
+                partCount: partCount,
+                subcollectionTitle: subcollectionTitleByBV[Self.bvid(from: entry) ?? ""]
+            ))
+        }
+        return candidates.isEmpty ? nil : candidates
+    }
+
+    /// 从 yt-dlp 的 playlist 包装 dict 提取第一个 entry 的 dict（video 语义）。
+    /// 契约：仅当 `_type == "playlist"` 且 entries 非空时返回 entries.first，否则 nil。
+    /// 用于把 1 分P 合集等 playlist 包装在解析阶段提纯为单条 video dict，
+    /// 避免 playlist 包装 dict 进入缓存导致 analyze 拿不到 formats/subtitles/正确标题。
+    public static func firstEntryDict(from playlistDict: [String: Any]) -> [String: Any]? {
+        guard playlistDict["_type"] as? String == "playlist",
+              let entries = playlistDict["entries"] as? [[String: Any]],
+              let first = entries.first else {
+            return nil
+        }
+        return first
+    }
+
+    /// B站分集 URL 构造：优先 entry.webpage_url；缺省用顶层 playlist id + ?p=N；
+    /// 再缺省用 entry id 构造；三者皆无返回 nil。
+    private static func partURL(from entry: [String: Any], playlistID: String?, partIndex: Int) -> String? {
+        if let webpageURL = entry["webpage_url"] as? String, !webpageURL.isEmpty {
+            return webpageURL
+        }
+        if let playlistID, !playlistID.isEmpty {
+            return "https://www.bilibili.com/video/\(playlistID)?p=\(partIndex)"
+        }
+        if let entryID = entry["id"] as? String, !entryID.isEmpty {
+            return "https://www.bilibili.com/video/\(entryID)"
+        }
+        return nil
+    }
+
+    /// 从 playlist entry 提取 BVID（用于子合集归属查询）。
+    /// 优先取 entry.bvid 字段，其次从 webpage_url / id 里匹配 BV 号。
+    private static func bvid(from entry: [String: Any]) -> String? {
+        if let bvid = entry["bvid"] as? String, !bvid.isEmpty { return bvid }
+        let sources = [entry["webpage_url"] as? String, entry["id"] as? String].compactMap { $0 }
+        for source in sources {
+            if let range = source.range(of: #"BV[0-9A-Za-z]{10}"#, options: .regularExpression) {
+                return String(source[range])
+            }
+        }
+        return nil
+    }
+
+    /// 把 B站分集 entry 标题（如 "合集标题 p01 曙光"）提纯为纯分集名（"曙光"）。
+    /// 先去掉前缀中的 playlistTitle（含紧跟的分隔符/空白），再尝试剥离 "pNN"/"P NN" 序号前缀并 trim；
+    /// 任一步失败（playlistTitle 为 nil、不在前缀、无序号）或结果为空时返回原 entryTitle（非空时）。
+    public static func partTitle(from entryTitle: String?, playlistTitle: String?) -> String {
+        guard let entry = entryTitle,
+              !entry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+        let trimmedEntry = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = trimmedEntry
+        // 第一步：去掉前缀中的 playlistTitle（含紧跟的分隔符/空白）。
+        if let playlistTitle, !playlistTitle.isEmpty {
+            guard let range = name.range(of: playlistTitle),
+                  range.lowerBound == name.startIndex else {
+                return trimmedEntry
+            }
+            name.removeSubrange(name.startIndex..<range.upperBound)
+            let separators = CharacterSet(charactersIn: " ：:·-_|/\\（）()【】[]")
+                .union(.whitespacesAndNewlines)
+            while let first = name.unicodeScalars.first, separators.contains(first) {
+                name = String(name.unicodeScalars.dropFirst())
+            }
+        } else {
+            return trimmedEntry
+        }
+        // 第二步：剥离 "pNN"/"P NN" 之类的序号前缀并 trim 空白。
+        let result = stripPartNumberPrefix(name).trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? trimmedEntry : result
+    }
+
+    /// 剥离 "pNN"/"P NN" 前缀；没有该前缀时原样返回。
+    private static func stripPartNumberPrefix(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first, first == "p" || first == "P" else {
+            return trimmed
+        }
+        var rest = trimmed.dropFirst()
+        while let c = rest.first, c.isWhitespace {
+            rest = rest.dropFirst()
+        }
+        var digitCount = 0
+        for c in rest {
+            guard c.isNumber else { break }
+            digitCount += 1
+        }
+        guard digitCount > 0 else { return trimmed }
+        return String(rest.dropFirst(digitCount)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 时长上限：约 1000 年。真实视频时长不可能达到；用于挡掉超大有限值——
+    /// 1e18 级会让 String(format:) 输出天文数字垃圾串，1e19 级会触发 Int 转换 fatal trap。
+    private static let maxDurationSeconds: Double = 31_536_000_000
+
+    /// 时长格式化为 "3:29"（分:秒），>1 小时用 "H:MM:SS"；nil/非法值返回空字符串。
+    /// 取整规则：`seconds.rounded()`（如 59.6 → "1:00"）。
+    public static func formattedDuration(_ seconds: Double?) -> String {
+        guard let seconds,
+              seconds.isFinite,
+              seconds >= 0,
+              seconds <= Double(Int.max),
+              seconds <= Self.maxDurationSeconds else { return "" }
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - B站合集（ugc_season）信息
+
+/// B站合集（大合集）信息，来自 view 接口的 `data.ugc_season`。
+public struct BilibiliSeasonInfo: Sendable, Equatable {
+    public let seasonID: Int
+    public let seasonTitle: String
+    public let sections: [BilibiliSection]
+
+    public init(seasonID: Int, seasonTitle: String, sections: [BilibiliSection]) {
+        self.seasonID = seasonID
+        self.seasonTitle = seasonTitle
+        self.sections = sections
+    }
+}
+
+/// B站合集的一个子合集（section），如「国内」/「国外」。
+public struct BilibiliSection: Sendable, Equatable {
+    public let title: String
+    public let episodes: [BilibiliEpisode]
+
+    public init(title: String, episodes: [BilibiliEpisode]) {
+        self.title = title
+        self.episodes = episodes
+    }
+}
+
+/// 子合集内的一集。
+public struct BilibiliEpisode: Sendable, Equatable {
+    public let bvid: String
+    public let title: String
+    public let duration: Double
+
+    public init(bvid: String, title: String, duration: Double) {
+        self.bvid = bvid
+        self.title = title
+        self.duration = duration
+    }
+}
+
+public extension VideoCandidate {
+
+    /// 从 B站 view 接口 JSON 解析 `data.ugc_season`。字段缺失/类型异常时：
+    /// - 顶层 data 或 ugc_season 缺失/损坏 → nil（调用方降级到旧路径）
+    /// - ugc_season 在但 sections 缺失/为空 → 返回空 sections 的 info（不返回 nil）
+    static func parseBilibiliSeasonInfo(from json: [String: Any]) -> BilibiliSeasonInfo? {
+        guard let data = json["data"] as? [String: Any],
+              let ugc = data["ugc_season"] as? [String: Any],
+              let seasonID = ugc["id"] as? Int else {
+            return nil
+        }
+        let seasonTitle = (ugc["title"] as? String) ?? ""
+        var sections: [BilibiliSection] = []
+        if let rawSections = ugc["sections"] as? [[String: Any]] {
+            for raw in rawSections {
+                let sectionTitle = (raw["title"] as? String) ?? ""
+                var episodes: [BilibiliEpisode] = []
+                if let rawEpisodes = raw["episodes"] as? [[String: Any]] {
+                    for rawEpisode in rawEpisodes {
+                        guard let bvid = rawEpisode["bvid"] as? String, !bvid.isEmpty else { continue }
+                        let episodeTitle = (rawEpisode["title"] as? String) ?? ""
+                        let duration: Double
+                        if let arc = rawEpisode["arc"] as? [String: Any] {
+                            // 真实 B 站 API 的时长在 arc.duration。
+                            duration = (arc["duration"] as? NSNumber)?.doubleValue
+                                ?? (rawEpisode["duration"] as? NSNumber)?.doubleValue
+                                ?? 0
+                        } else {
+                            duration = (rawEpisode["duration"] as? NSNumber)?.doubleValue ?? 0
+                        }
+                        episodes.append(BilibiliEpisode(bvid: bvid, title: episodeTitle, duration: duration))
+                    }
+                }
+                sections.append(BilibiliSection(title: sectionTitle, episodes: episodes))
+            }
+        }
+        return BilibiliSeasonInfo(seasonID: seasonID, seasonTitle: seasonTitle, sections: sections)
+    }
+
+    /// 查 bvid 所在的子合集标题；bvid 不在任何 section 或 info 为 nil 时返回 nil。
+    static func sectionTitle(forBV bvid: String, in info: BilibiliSeasonInfo?) -> String? {
+        guard let info else { return nil }
+        for section in info.sections where section.episodes.contains(where: { $0.bvid == bvid }) {
+            return section.title
+        }
+        return nil
+    }
+
+    /// 把 BilibiliSeasonInfo 的 episodes 展平成候选数组。
+    /// partIndex 按合集全局顺序、partCount = 总集数、title = episode.title、detail = 时长、
+    /// url = https://www.bilibili.com/video/<bvid>、subcollectionTitle = section.title。
+    /// 不调用 partTitle（episode.title 已是最终标题）。
+    static func bilibiliSeasonCandidates(from info: BilibiliSeasonInfo) -> [VideoCandidate] {
+        let partCount = info.sections.reduce(0) { $0 + $1.episodes.count }
+        var candidates: [VideoCandidate] = []
+        var partIndex = 0
+        for section in info.sections {
+            for episode in section.episodes {
+                partIndex += 1
+                let formatted = formattedDuration(episode.duration)
+                candidates.append(VideoCandidate(
+                    url: "https://www.bilibili.com/video/\(episode.bvid)",
+                    kind: .supported,
+                    title: episode.title,
+                    detail: formatted.isEmpty ? nil : formatted,
+                    partIndex: partIndex,
+                    partCount: partCount,
+                    subcollectionTitle: section.title
+                ))
+            }
+        }
+        return candidates
+    }
+}
+
+// MARK: - 候选按子合集分组
+
+/// B站大合集候选按子合集分组后的结果，供 UI 做「目录式」浏览：
+/// 第一层子合集列表 → 点开看组内视频。
+/// title = nil 表示无分组的普通候选（subcollectionTitle 为 nil）。
+public struct CandidateGroup: Sendable, Equatable {
+    public let title: String?
+    public let candidates: [VideoCandidate]
+
+    public init(title: String?, candidates: [VideoCandidate]) {
+        self.title = title
+        self.candidates = candidates
+    }
+
+    /// 保序分组：按 subcollectionTitle 分组（保持候选原顺序），组顺序 = 首次出现顺序；
+    /// 无 subcollectionTitle 的候选归为一组（title = nil），放在最后。
+    /// 空 candidates 返回 []。
+    public static func groupedCandidates(_ candidates: [VideoCandidate]) -> [CandidateGroup] {
+        var order: [String] = []
+        var grouped: [String: [VideoCandidate]] = [:]
+        var ungrouped: [VideoCandidate] = []
+        for candidate in candidates {
+            if let title = candidate.subcollectionTitle {
+                if grouped[title] == nil {
+                    grouped[title] = []
+                    order.append(title)
+                }
+                grouped[title]?.append(candidate)
+            } else {
+                ungrouped.append(candidate)
+            }
+        }
+        var result = order.map { CandidateGroup(title: $0, candidates: grouped[$0] ?? []) }
+        if !ungrouped.isEmpty {
+            result.append(CandidateGroup(title: nil, candidates: ungrouped))
+        }
+        return result
     }
 }
 
@@ -775,6 +1093,9 @@ public protocol DownloadEngine: Sendable {
         preferredLanguages: [String],
         control: TaskControlToken?
     ) async throws -> String?
+
+    /// 可选：展开单视频的全部分 P（B 站等）。单分 P / 合集 / 失败抛错，调用方回退原 URL 走 analyze。
+    func expandParts(for url: String) async throws -> [VideoCandidate]
 }
 
 public extension DownloadEngine {
@@ -793,4 +1114,12 @@ public extension DownloadEngine {
     ) async throws -> String? {
         nil
     }
+
+    /// 默认不支持展开分 P（mock/iOS 引擎）；抛错让调用方回退原 URL 走 analyze。
+    func expandParts(for url: String) async throws -> [VideoCandidate] {
+        throw ExpandPartsUnavailableError()
+    }
 }
+
+/// 引擎不提供分 P 展开能力时抛出的默认错误。
+public struct ExpandPartsUnavailableError: Error, Sendable {}

@@ -1611,6 +1611,30 @@ final class TranslationSettingsTests: XCTestCase {
         XCTAssertFalse(settings.burnAlwaysH264)
     }
 
+    func testAppSettingsDownloadDirectoryDefaultsToDownloads() {
+        let expected = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
+            ?? NSHomeDirectory() + "/Downloads"
+        XCTAssertEqual(AppSettings().downloadDirectory, expected)
+    }
+
+    func testAppSettingsDownloadDirectorySurvivesCodableRoundTrip() throws {
+        var settings = AppSettings()
+        settings.downloadDirectory = "/tmp/custom-downloads"
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+        XCTAssertEqual(decoded.downloadDirectory, "/tmp/custom-downloads")
+    }
+
+    func testAppSettingsDecodesOldJSONWithoutDownloadDirectory() throws {
+        // 旧 settings.json 没有 downloadDirectory 键：解析回退到系统下载目录。
+        let settings = try decodeSettings("""
+        { "translationBaseURL": "https://api.anthropic.com", "translationModel": "claude" }
+        """)
+        let expected = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
+            ?? NSHomeDirectory() + "/Downloads"
+        XCTAssertEqual(settings.downloadDirectory, expected)
+    }
+
     func testEffectiveMaxConcurrentBurnsBumpsForHardwareBackend() {
         var s = AppSettings(maxConcurrentBurns: 2, encodeBackend: .auto)
         XCTAssertEqual(s.effectiveMaxConcurrentBurns, 3, "硬件后端编码不占 CPU，可多放一路")

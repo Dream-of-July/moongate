@@ -65,6 +65,18 @@ public enum L {
         public static let batchFailedSuffix = "L.Main.BatchFailedSuffix"
         public static let videoAlreadyQueued = "L.Main.VideoAlreadyQueued"
         public static let enqueuedTitle = "L.Main.EnqueuedTitle"
+        /// B站合集分集候选的集数文案（如 "第 1 集 / 共 14 集"）。
+        public static let playlistPart = "L.Main.PlaylistPart"
+        /// B站子合集分集候选的文案（如 "国内 · 第 1 集 / 共 5 集"）。
+        public static let subcollectionPart = "L.Main.SubcollectionPart"
+        /// 子合集目录页返回上一级的按钮文案。
+        public static let backToGroups = "L.Main.BackToGroups"
+        /// 单视频展开分 P 后返回上一级的按钮文案。
+        public static let backToVideos = "L.Main.BackToVideos"
+        /// 子合集目录行右侧的集数（如 "5 集"）。
+        public static let groupEpisodeCount = "L.Main.GroupEpisodeCount"
+        /// 无子合集标题的分组显示名（如 "其他"）。
+        public static let ungroupedTitle = "L.Main.UngroupedTitle"
     }
 
     public enum Ready {
@@ -426,6 +438,10 @@ public enum L {
         public static let completionNotifications = "L.Settings.CompletionNotifications"
         public static let completionSound = "L.Settings.CompletionSound"
         public static let notificationsHelp = "L.Settings.NotificationsHelp"
+        public static let downloadDirectorySection = "L.Settings.DownloadDirectorySection"
+        public static let downloadDirectoryLabel = "L.Settings.DownloadDirectoryLabel"
+        public static let downloadDirectoryChoose = "L.Settings.DownloadDirectoryChoose"
+        public static let downloadDirectoryReset = "L.Settings.DownloadDirectoryReset"
         public static let localASRSection = "L.Settings.LocalASRSection"
         public static let localASREnabled = "L.Settings.LocalASREnabled"
         public static let localASRHelp = "L.Settings.LocalASRHelp"

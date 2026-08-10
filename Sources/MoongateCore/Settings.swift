@@ -53,6 +53,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var maxConcurrentDownloads: Int
     /// 同时进行的压制（烧录）任务数（1...3，默认 2）。兼容路径并行多了会互相拖慢。
     public var maxConcurrentBurns: Int
+    /// 下载文件保存根目录（设置-通用）。实际产物写入 <downloadDirectory>/Moongate 子目录。
+    /// 默认系统下载目录；旧 JSON 缺键时回退到系统下载目录。
+    public var downloadDirectory: String
 
     // MARK: 编码后端
     /// 烧录 / 转码的视频编码后端：auto（硬件优先）/ hardware / software。默认 auto。
@@ -160,6 +163,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxBurnHeight: Int? = nil,
         maxConcurrentDownloads: Int = 3,
         maxConcurrentBurns: Int = 2,
+        downloadDirectory: String = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory() + "/Downloads",
         encodeBackend: EncodeBackend = .auto,
         burnAlwaysH264: Bool = false,
         lastSubtitleMode: String? = nil,
@@ -215,6 +219,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.maxBurnHeight = maxBurnHeight
         self.maxConcurrentDownloads = maxConcurrentDownloads
         self.maxConcurrentBurns = maxConcurrentBurns
+        self.downloadDirectory = downloadDirectory
         self.encodeBackend = encodeBackend
         self.burnAlwaysH264 = burnAlwaysH264
         self.lastSubtitleMode = lastSubtitleMode
@@ -281,7 +286,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case translationProvider, translationEngine, translationBaseURL, translationModel, translationAuthToken, subtitleStyle, maxBurnHeight
-        case maxConcurrentDownloads, maxConcurrentBurns
+        case maxConcurrentDownloads, maxConcurrentBurns, downloadDirectory
         case aiEngine, aiBaseURL, aiModel, aiAuthToken, translationFollowsDefault
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
         case encodeBackend, burnAlwaysH264
@@ -348,6 +353,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxConcurrentDownloads = min(max(downloads, 1), 5)
         let burns = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentBurns) ?? 2
         maxConcurrentBurns = min(max(burns, 1), 3)
+        // 下载目录：旧版本无键时回退到系统下载目录。
+        downloadDirectory = try c.decodeIfPresent(String.self, forKey: .downloadDirectory)
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
+            ?? NSHomeDirectory() + "/Downloads"
 
         // 编码后端：旧版本缺键时默认 auto（硬件优先）；烧录始终 H.264 默认关（自动保持画质）。
         let rawBackend = try c.decodeIfPresent(String.self, forKey: .encodeBackend)
@@ -440,6 +449,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         }
         try c.encode(maxConcurrentDownloads, forKey: .maxConcurrentDownloads)
         try c.encode(maxConcurrentBurns, forKey: .maxConcurrentBurns)
+        try c.encode(downloadDirectory, forKey: .downloadDirectory)
         try c.encode(encodeBackend.rawValue, forKey: .encodeBackend)
         try c.encode(burnAlwaysH264, forKey: .burnAlwaysH264)
         try c.encodeIfPresent(lastSubtitleMode, forKey: .lastSubtitleMode)

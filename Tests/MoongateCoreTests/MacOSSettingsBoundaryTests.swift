@@ -131,7 +131,7 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.shared.open"))
         XCTAssertTrue(source.contains("ByteCountFormatter"))
         XCTAssertTrue(source.contains("private static nonisolated func directorySize"))
-        XCTAssertTrue(source.contains("private var appDownloadsDirectoryURL: URL { ViewModel.appDownloadsDirectory }"))
+        XCTAssertTrue(source.contains("private var appDownloadsDirectoryURL: URL { model.appDownloadsDirectory }"))
         XCTAssertTrue(source.contains("let vadSize = Self.directorySize(vadDir)"))
         XCTAssertTrue(source.contains("sizes[\"vad\"] = vadSize"))
         XCTAssertTrue(source.contains("let asrAssetsSize = modelsSize + vadSize"))

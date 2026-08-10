@@ -299,6 +299,13 @@ do {
         print("共找到 \(candidates.count) 个视频：")
         for (index, candidate) in candidates.enumerated() {
             print("[\(index + 1)] (\(candidate.kind.rawValue)) \(candidate.title)")
+            if let subcollection = candidate.subcollectionTitle, !subcollection.isEmpty {
+                if let partIndex = candidate.partIndex, let partCount = candidate.partCount {
+                    print("  子合集：\(subcollection)（第 \(partIndex) 集 /共 \(partCount) 集）")
+                } else {
+                    print("  子合集：\(subcollection)")
+                }
+            }
             print("    \(candidate.url)")
             if let detail = candidate.detail { print("    \(detail)") }
         }

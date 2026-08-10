@@ -16,6 +16,10 @@ struct ContentView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
     @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
+    /// B站子合集目录浏览：当前打开的组下标；nil 表示停在目录层（或未分组平铺）。
+    @State private var selectedGroupIndex: Int?
+    /// 链接输入框高度：随内容 1~4 行自适应（34~84pt），由隐藏测量层驱动。
+    @State private var linkEditorHeight: CGFloat = 34
 
     init(model: ViewModel) {
         self.model = model
@@ -94,17 +98,55 @@ struct ContentView: View {
 
     // MARK: - 顶部输入区
 
+    /// 输入框高度公式：测量文本高度 + TextEditor 内边距补偿，夹在 1 行（34）与 4 行（84）之间。
+    private static func clampedEditorHeight(_ textHeight: CGFloat) -> CGFloat {
+        let content = textHeight + 12
+        return min(max(content, 34), 84)
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             // 解析栏放大：输入框可多行（一次粘贴多条链接逐行可见），按钮与输入框中心对齐。
             HStack(alignment: .center, spacing: 8) {
-                TextField(localizer.t(L.Main.urlPlaceholderMultiline), text: $model.urlText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.large)
-                    .lineLimit(1...4)
-                    .focused($urlFieldFocused)
-                    .onSubmit { model.parse() }
-                    .accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))
+                // 多行输入：高度随内容 1~4 行自适应，超过 4 行内部滚动查看/编辑（长链接不会被截断）。
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $model.urlText)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        )
+                        .focused($urlFieldFocused)
+                        .accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))
+                        .padding(.top, 5)
+                        .frame(height: linkEditorHeight)
+                    if model.urlText.isEmpty {
+                        Text(localizer.t(L.Main.urlPlaceholderMultiline))
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 10)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                    // 隐藏测量层：按文本真实高度驱动输入框高度。
+                    // .frame(height: 0, alignment: .top) 截断测量层自身的撑高，避免 ZStack 被拉大。
+                    Text(model.urlText.isEmpty ? " " : model.urlText)
+                        .font(.body)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .background(GeometryReader { geo in
+                            Color.clear
+                                .onAppear { linkEditorHeight = Self.clampedEditorHeight(geo.size.height) }
+                                .onChange(of: geo.size.height) { _, h in
+                                    linkEditorHeight = Self.clampedEditorHeight(h)
+                                }
+                        })
+                        .frame(height: 0, alignment: .top)
+                        .accessibilityHidden(true)
+                }
                 Button {
                     model.pasteAndParse()
                 } label: {
@@ -208,6 +250,8 @@ struct ContentView: View {
             loadingState
         case .choosing(let candidates):
             choosingState(candidates)
+        case .choosingParts(let parts, parent: _):
+            choosingPartsState(parts)
         case .ready(let info):
             readyState(info)
         case .failed(let message):
@@ -251,24 +295,20 @@ struct ContentView: View {
     }
 
     private func choosingState(_ candidates: [VideoCandidate]) -> some View {
-        ScrollView {
+        let groups = CandidateGroup.groupedCandidates(candidates)
+        return ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text(localizer.t(L.Main.videoCount, candidates.count))
                     .font(.headline)
-                VStack(spacing: 0) {
-                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                        Button {
-                            model.choose(candidate)
-                        } label: {
-                            candidateRow(candidate)
-                        }
-                        .buttonStyle(.plain)
-                        if index < candidates.count - 1 {
-                            Divider().padding(.leading, 44)
-                        }
+                if groups.count > 1 {
+                    if let selectedGroupIndex, groups.indices.contains(selectedGroupIndex) {
+                        groupDetailView(groups[selectedGroupIndex])
+                    } else {
+                        groupDirectoryView(groups)
                     }
+                } else {
+                    candidateList(candidates)
                 }
-                .background(cardBackground)
             }
             .frame(maxWidth: 500)
             .padding(.horizontal, 20)
@@ -277,7 +317,121 @@ struct ContentView: View {
         }
     }
 
-    private func candidateRow(_ candidate: VideoCandidate) -> some View {
+    /// 单视频展开分 P 后的候选列表：顶部返回按钮 + 分 P 平铺（复用 candidateList）。
+    private func choosingPartsState(_ parts: [VideoCandidate]) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    model.backToList()
+                } label: {
+                    Text("← " + localizer.t(L.Main.backToVideos))
+                        .font(.callout)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityHint(localizer.t(L.Main.backToVideos))
+                Text(localizer.t(L.Main.videoCount, parts.count))
+                    .font(.headline)
+                candidateList(parts)
+            }
+            .frame(maxWidth: 500)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// 子合集目录层：每个子合集（或「其他」）一行，点开进入组内。
+    private func groupDirectoryView(_ groups: [CandidateGroup]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(groups.enumerated()), id: \.element.title) { index, group in
+                Button {
+                    selectedGroupIndex = index
+                } label: {
+                    candidateGroupRow(group)
+                }
+                .buttonStyle(.plain)
+                if index < groups.count - 1 {
+                    Divider().padding(.leading, 44)
+                }
+            }
+        }
+        .background(cardBackground)
+    }
+
+    /// 子合集目录行：文件夹图标 + 标题 + 组内集数 + chevron。
+    private func candidateGroupRow(_ group: CandidateGroup) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "folder")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            Text(group.title ?? localizer.t(L.Main.ungroupedTitle))
+                .lineLimit(2)
+                .help(group.title ?? localizer.t(L.Main.ungroupedTitle))
+            Spacer(minLength: 8)
+            Text(localizer.t(L.Main.groupEpisodeCount, group.candidates.count))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(group.title ?? localizer.t(L.Main.ungroupedTitle))
+        .accessibilityHint(localizer.t(L.Main.chooseVideoHint))
+    }
+
+    /// 组内视频平铺：顶部返回按钮 + 组内序号（i+1 / 组大小）。
+    private func groupDetailView(_ group: CandidateGroup) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                selectedGroupIndex = nil
+            } label: {
+                Text("← " + localizer.t(L.Main.backToGroups))
+                    .font(.callout)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityHint(localizer.t(L.Main.backToGroups))
+            candidateList(group.candidates, partOverride: true) {
+                selectedGroupIndex = nil
+            }
+        }
+    }
+
+    /// 候选平铺列表：单组（无分组）时保持原有样式与全局集数；
+    /// `partOverride` 为 true 时序号取组内位置（i+1 / 组大小），并触发 `onChoose` 清理目录状态。
+    private func candidateList(
+        _ candidates: [VideoCandidate],
+        partOverride: Bool = false,
+        onChoose: (() -> Void)? = nil
+    ) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                Button {
+                    onChoose?()
+                    model.choose(candidate)
+                } label: {
+                    if partOverride {
+                        candidateRow(candidate, partIndex: index + 1, partCount: candidates.count)
+                    } else {
+                        candidateRow(candidate)
+                    }
+                }
+                .buttonStyle(.plain)
+                if index < candidates.count - 1 {
+                    Divider().padding(.leading, 44)
+                }
+            }
+        }
+        .background(cardBackground)
+    }
+
+    private func candidateRow(_ candidate: VideoCandidate, partIndex: Int? = nil, partCount: Int? = nil) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon(for: candidate.kind))
                 .font(.system(size: 16))
@@ -287,7 +441,15 @@ struct ContentView: View {
                 Text(candidate.title)
                     .lineLimit(2)
                     .help(candidate.title)
-                if let detail = candidate.detail {
+                if let partIndex, let partCount {
+                    Text(candidatePartDetail(candidate, partIndex: partIndex, partCount: partCount))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if candidate.partIndex != nil, candidate.partCount != nil {
+                    Text(candidatePartDetail(candidate))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let detail = candidate.detail {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -313,6 +475,39 @@ struct ContentView: View {
         case .youtube, .vimeo, .supported:
             return "play.rectangle"
         }
+    }
+
+    /// B站分集候选的补充文案：如 "第 1 集 / 共 14 集 · 3:29"（无时长时只显示集数）。
+    /// 属于子合集（如「国内」「国外」）时前缀子合集标题："国内 · 第 1 集 / 共 5 集 · 3:29"。
+    private func candidatePartDetail(_ candidate: VideoCandidate) -> String {
+        let partText: String
+        if let subcollection = candidate.subcollectionTitle, !subcollection.isEmpty {
+            partText = localizer.t(
+                L.Main.subcollectionPart,
+                subcollection,
+                candidate.partIndex ?? 0,
+                candidate.partCount ?? 0
+            )
+        } else {
+            partText = localizer.t(
+                L.Main.playlistPart,
+                candidate.partIndex ?? 0,
+                candidate.partCount ?? 0
+            )
+        }
+        if let duration = candidate.detail, !duration.isEmpty {
+            return "\(partText) · \(duration)"
+        }
+        return partText
+    }
+
+    /// 组内分集候选的补充文案：组内序号（i+1 / 组大小），不带子合集前缀。
+    private func candidatePartDetail(_ candidate: VideoCandidate, partIndex: Int, partCount: Int) -> String {
+        let partText = localizer.t(L.Main.playlistPart, partIndex, partCount)
+        if let duration = candidate.detail, !duration.isEmpty {
+            return "\(partText) · \(duration)"
+        }
+        return partText
     }
 
     private func readyState(_ info: VideoInfo) -> some View {

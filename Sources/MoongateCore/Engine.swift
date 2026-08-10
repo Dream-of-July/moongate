@@ -267,6 +267,9 @@ private struct ProcessOutput {
     let timedOut: Bool
 }
 
+/// 展开分 P 失败 / 单分 P / 命中合集（多个不同 BV）时抛出；调用方回退原 URL 走 analyze。
+private struct ExpandPartsUnavailable: Error {}
+
 // MARK: - YtDlpEngine
 
 public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
@@ -690,9 +693,35 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             ))
         }
 
-        switch try await runYtDlpJSON(for: trimmed) {
-        case .success(let json):
+        let isBilibili = Self.isBilibiliHost(url.host ?? "")
+
+        // B站大合集（含子合集）优先走 view 接口的 ugc_season：779 集大合集用 -J 全量拉取会超时。
+        // 单视频 / 分P / 普通合集没有 ugc_season，拿到 nil 时自动降级到下方旧路径。
+        let seasonInfo: BilibiliSeasonInfo? = isBilibili
+            ? await bilibiliSeasonInfo(for: trimmed)
+            : nil
+        if let season = seasonInfo, !season.sections.isEmpty {
+            return VideoCandidate.bilibiliSeasonCandidates(from: season)
+        }
+
+        switch try await runYtDlpJSON(for: trimmed, expandPlaylist: isBilibili) {
+        case .success(var json):
             setCachedInfo(json, for: trimmed)
+            // 仅 B站合集（playlist ≥ 2 条）展开为分集候选；其余保持单个候选。
+            if isBilibili,
+               let playlistCandidates = VideoCandidate.bilibiliPlaylistCandidates(
+                   from: json,
+                   subcollectionTitleByBV: bilibiliSubcollectionTitleByBV(seasonInfo)
+               ) {
+                return playlistCandidates
+            }
+            // 防御：B站 playlist 展开失败（entries ≥ 2 但全部条目无 URL）时，
+            // 提纯为第一个 entry 的 video dict 再走单候选路径，与 1 分P 合集语义一致。
+            if isBilibili,
+               json["_type"] as? String == "playlist",
+               let first = VideoCandidate.firstEntryDict(from: json) {
+                json = first
+            }
             let title = (json["title"] as? String) ?? trimmed
             let detail = json["extractor_key"] as? String
             return [VideoCandidate(url: trimmed, kind: .supported, title: title, detail: detail)]
@@ -758,21 +787,210 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         return await buildVideoInfo(sourceURL: trimmed, json: json)
     }
 
+    /// 展开单视频的全部分 P（完整 yt-dlp 模式）。
+    ///
+    /// 输入 URL 先去 `?p=N` 参数得到裸 BV，再用完整模式（不带 --flat-playlist / --no-playlist）
+    /// 请求，拿到该视频全部分 P（title / duration / url 齐全）。
+    ///
+    /// 判别合集 vs 分 P：entries 属于同一 BV 的多个分 P → 返回候选数组；
+    /// 单分 P / 失败 / 合集（entries 是多个不同 BV）→ 抛错，调用方回退原 URL 走 analyze。
+    public func expandParts(for url: String) async throws -> [VideoCandidate] {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bareURL = Self.bilibiliBareVideoURL(trimmed)
+
+        let json: [String: Any]
+        switch try await runYtDlpJSON(for: bareURL, expandPlaylist: true) {
+        case .success(let dict):
+            json = dict
+        case .failure(let stderr):
+            if let loginError = Self.detectLoginRequired(stderr: stderr, url: trimmed) {
+                throw loginError
+            }
+            if let riskMessage = Self.riskControlMessage(stderr: stderr, host: URL(string: trimmed)?.host ?? "") {
+                throw MoongateError.analyzeFailed(riskMessage)
+            }
+            throw MoongateError.analyzeFailed(Self.friendlyAnalyzeMessage(stderr))
+        }
+
+        // 单分 P / 非 playlist：没有可展开的分 P。
+        guard json["_type"] as? String == "playlist",
+              let entries = json["entries"] as? [[String: Any]],
+              entries.count >= 2 else {
+            throw ExpandPartsUnavailable()
+        }
+
+        // 判别合集 vs 分 P：同一 BV 的多个分 P 才展开；entries 是多个不同 BV（合集）时抛错。
+        let bvids = entries.compactMap { Self.bvid(from: $0) }
+        if bvids.count == entries.count, Set(bvids).count > 1 {
+            throw ExpandPartsUnavailable()
+        }
+
+        let playlistID = json["id"] as? String
+        let partCount = entries.count
+        var candidates: [VideoCandidate] = []
+        for (offset, entry) in entries.enumerated() {
+            let partIndex = (entry["playlist_index"] as? NSNumber)?.intValue ?? (offset + 1)
+            guard let partURL = Self.partURL(from: entry, playlistID: playlistID, partIndex: partIndex) else {
+                continue
+            }
+            let title = (entry["title"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let duration = (entry["duration"] as? NSNumber)?.doubleValue
+            let formatted = VideoCandidate.formattedDuration(duration)
+            candidates.append(VideoCandidate(
+                url: partURL,
+                kind: .supported,
+                title: title,
+                detail: formatted.isEmpty ? nil : formatted,
+                partIndex: partIndex,
+                partCount: partCount
+            ))
+        }
+        guard candidates.count >= 2 else { throw ExpandPartsUnavailable() }
+        return candidates
+    }
+
+    /// 去掉 B站视频 URL 的 `?p=N` 参数得到裸 BV 页面；非 B站 URL 原样返回。
+    private static func bilibiliBareVideoURL(_ url: String) -> String {
+        guard let components = URLComponents(string: url),
+              let host = components.host?.lowercased(),
+              host == "bilibili.com" || host.hasSuffix(".bilibili.com") || host == "b23.tv" else {
+            return url
+        }
+        var copy = components
+        copy.queryItems = copy.queryItems?.filter { $0.name.lowercased() != "p" }
+        return copy.url?.absoluteString ?? url
+    }
+
+    /// 从 playlist entry 提取 BV（优先 bvid 字段，其次 webpage_url / id 里的 BV 号）。
+    private static func bvid(from entry: [String: Any]) -> String? {
+        if let bvid = entry["bvid"] as? String, !bvid.isEmpty { return bvid }
+        let sources = [entry["webpage_url"] as? String, entry["id"] as? String].compactMap { $0 }
+        for source in sources {
+            if let range = source.range(of: #"BV[0-9A-Za-z]{10}"#, options: .regularExpression) {
+                return String(source[range])
+            }
+        }
+        return nil
+    }
+
+    /// B站分 P URL 构造（与 Models.partURL 一致）：优先 entry.webpage_url；
+    /// 缺省用顶层 playlist id + ?p=N；再缺省用 entry id 构造。
+    private static func partURL(from entry: [String: Any], playlistID: String?, partIndex: Int) -> String? {
+        if let webpageURL = entry["webpage_url"] as? String, !webpageURL.isEmpty {
+            return webpageURL
+        }
+        if let playlistID, !playlistID.isEmpty {
+            return "https://www.bilibili.com/video/\(playlistID)?p=\(partIndex)"
+        }
+        if let entryID = entry["id"] as? String, !entryID.isEmpty {
+            return "https://www.bilibili.com/video/\(entryID)"
+        }
+        return nil
+    }
+
     private enum YtDlpJSONResult {
         case success([String: Any])
         case failure(stderr: String)
     }
 
-    private func runYtDlpJSON(for url: String) async throws -> YtDlpJSONResult {
+    // MARK: B站大合集（ugc_season）识别
+
+    /// 提取字符串里的第一个 BV 号（形如 `BVxxxxxxxxxx`）。
+    private static func bvid(in text: String) -> String? {
+        guard let range = text.range(of: #"BV[0-9A-Za-z]{10}"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(text[range])
+    }
+
+    /// 按 BV 调 B站 view 接口拉 `data.ugc_season`；任何失败（网络/非 200/无 ugc_season）返回 nil（降级）。
+    /// 参考文件内 `fetchText(url:)` 的 async URLSession 用法，不阻塞主线程。
+    private func fetchBilibiliSeasonInfo(forBV bvid: String) async -> BilibiliSeasonInfo? {
+        guard let url = URL(string: "https://api.bilibili.com/x/web-interface/view?bvid=\(bvid)") else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let json = object as? [String: Any] else {
+            return nil
+        }
+        return VideoCandidate.parseBilibiliSeasonInfo(from: json)
+    }
+
+    /// 用户输入是 B站合集页 URL（space.bilibili.com/.../lists/...）时，先用 yt-dlp flat-playlist
+    /// 秒回第一个 entry 的 id（即 BV），再据此拉 view 接口。视频页 URL（直接含 BV）则直接拉。
+    private func bilibiliSeasonInfo(for input: String) async -> BilibiliSeasonInfo? {
+        if let bvid = Self.bvid(in: input) {
+            return await fetchBilibiliSeasonInfo(forBV: bvid)
+        }
+        // 合集页 URL 没有 BV：flat-playlist 拿第一个 entry 的 id（BV）。
+        guard let firstBV = await firstBVIDFromFlatPlaylist(for: input) else { return nil }
+        return await fetchBilibiliSeasonInfo(forBV: firstBV)
+    }
+
+    /// yt-dlp `-J --flat-playlist` 只取播放列表结构，秒回；取第一个 entry 的 id（BV）。
+    /// 失败返回 nil（合集页解析失败则整体降级到旧路径）。
+    private func firstBVIDFromFlatPlaylist(for url: String) async -> String? {
+        guard let ytdlp = try? ytDlpPath(),
+              let ffmpegDir = try? ffmpegDirectory() else { return nil }
+        let cookie = Self.makeCookieArguments(for: url)
+        defer { cookie.cleanup() }
+        let output = try? await Self.runProcess(
+            executable: ytdlp,
+            arguments: ["-J", "--flat-playlist", "--ffmpeg-location", ffmpegDir]
+                + Self.systemProxyArguments() + cookie.args + [url],
+            timeout: 30
+        )
+        guard let output, output.status == 0,
+              let object = try? JSONSerialization.jsonObject(with: output.stdout),
+              let dict = object as? [String: Any],
+              let first = VideoCandidate.firstEntryDict(from: dict) else {
+            return nil
+        }
+        let sources = [first["id"] as? String, first["webpage_url"] as? String, first["url"] as? String]
+            .compactMap { $0 }
+        for source in sources {
+            if let bvid = Self.bvid(in: source) { return bvid }
+        }
+        return nil
+    }
+
+    /// 降级路径用：把之前拿到的 seasonInfo 展平成 bvid → 子合集标题映射；
+    /// 没有 seasonInfo 时返回空表（保持旧行为：不传子合集标题）。
+    private func bilibiliSubcollectionTitleByBV(_ info: BilibiliSeasonInfo?) -> [String: String] {
+        guard let info else { return [:] }
+        var map: [String: String] = [:]
+        for section in info.sections {
+            for episode in section.episodes {
+                map[episode.bvid] = section.title
+            }
+        }
+        return map
+    }
+
+    private func runYtDlpJSON(for url: String, expandPlaylist: Bool = false) async throws -> YtDlpJSONResult {
         let ytdlp = try ytDlpPath()
         let ffmpegDir = try ffmpegDirectory()
         let cookie = Self.makeCookieArguments(for: url)
         defer { cookie.cleanup() }
         var lastStderr = ""
         for attempt in 0..<2 {
+            // expandPlaylist：仅 B站合集解析用，去掉 --no-playlist 以拿回完整 playlist。
+            let playlistArgs = expandPlaylist
+                ? ["-J", "--ffmpeg-location", ffmpegDir]
+                : ["-J", "--no-playlist", "--ffmpeg-location", ffmpegDir]
             let output = try await Self.runProcess(
                 executable: ytdlp,
-                arguments: ["-J", "--no-playlist", "--ffmpeg-location", ffmpegDir]
+                arguments: playlistArgs
                     + Self.systemProxyArguments() + cookie.args + [url],
                 // 90s 而非 60s：中国大陆经代理/VPN 访问时握手+TLS+deno 冷启动延迟更高。
                 timeout: 90
@@ -788,9 +1006,17 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                let object = try? JSONSerialization.jsonObject(with: output.stdout),
                var dict = object as? [String: Any] {
                 // --no-playlist 之下仍可能拿到 playlist 包装，取第一个条目兜底。
-                if dict["_type"] as? String == "playlist",
-                   let entries = dict["entries"] as? [[String: Any]],
-                   let first = entries.first {
+                // expandPlaylist 时保留完整 playlist 交给调用方展开；但若条目不足 2 条
+                // （如 B站 1 分P 合集），同样提纯为第一个条目——保证缓存的是 video 语义 dict，
+                // analyze 命中缓存时能正常拿到 formats/subtitles/正确标题。
+                if !expandPlaylist,
+                   let first = VideoCandidate.firstEntryDict(from: dict) {
+                    dict = first
+                } else if expandPlaylist,
+                          dict["_type"] as? String == "playlist",
+                          let entries = dict["entries"] as? [[String: Any]],
+                          entries.count < 2,
+                          let first = VideoCandidate.firstEntryDict(from: dict) {
                     dict = first
                 }
                 return .success(dict)

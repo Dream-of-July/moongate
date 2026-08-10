@@ -105,7 +105,8 @@ final class MacOSContentBoundaryTests: XCTestCase {
     func testPrimaryMainWindowFlowUsesLocalizer() throws {
         let source = try contentViewSource()
 
-        XCTAssertTrue(source.contains("TextField(localizer.t(L.Main.urlPlaceholderMultiline)"))
+        XCTAssertTrue(source.contains("TextEditor(text: $model.urlText)"))
+        XCTAssertTrue(source.contains("Text(localizer.t(L.Main.urlPlaceholderMultiline))"))
         XCTAssertTrue(source.contains(".accessibilityLabel(localizer.t(L.Main.urlInputAccessibility))"))
         XCTAssertTrue(source.contains(".help(localizer.t(L.Main.pasteAndParseHelp))"))
         XCTAssertTrue(source.contains("Text(localizer.t(L.Main.parse))"))
