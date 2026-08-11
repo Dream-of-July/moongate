@@ -51,6 +51,15 @@ public sealed class SettingsViewModel : ObservableObject
         _summaryAuthToken = current.SummaryAuthToken;
         _summaryModel = current.SummaryModel;
         _styleIndex = current.SubtitleStyle == SubtitleStyle.ChineseOnly ? 1 : 0;
+        _subtitleFontScaleIndex = current.SubtitleFontScale switch
+        {
+            SubtitleFontScale.Small => 0,
+            SubtitleFontScale.Large => 2,
+            SubtitleFontScale.ExtraLarge => 3,
+            _ => 1,
+        };
+        _subtitlePositionIndex = current.SubtitlePosition == SubtitlePosition.Top ? 1 : 0;
+        _subtitleColorIndex = current.SubtitleColor == SubtitleColor.Yellow ? 1 : 0;
         _languageIndex = current.AppLanguage switch { "zh-Hans" => 1, "zh-Hant" => 2, "en" => 3, _ => 0 };
         _targetLanguageIndex = current.TranslationTargetLanguage switch { "zh-Hant" => 1, "en" => 2, _ => 0 };
         _sourceLanguageIndex = AppSettings.NormalizePreferredSourceLanguage(current.PreferredSourceLanguage) switch
@@ -538,6 +547,18 @@ public sealed class SettingsViewModel : ObservableObject
     private int _styleIndex;
     /// <summary>0 = 双语（原文 + 中文），1 = 仅中文。</summary>
     public int StyleIndex { get => _styleIndex; set => SetProperty(ref _styleIndex, value); }
+
+    private int _subtitleFontScaleIndex;
+    /// <summary>烧录字幕字号：0 = 小，1 = 标准，2 = 大，3 = 特大。</summary>
+    public int SubtitleFontScaleIndex { get => _subtitleFontScaleIndex; set => SetProperty(ref _subtitleFontScaleIndex, value); }
+
+    private int _subtitlePositionIndex;
+    /// <summary>烧录字幕位置：0 = 底部，1 = 顶部。</summary>
+    public int SubtitlePositionIndex { get => _subtitlePositionIndex; set => SetProperty(ref _subtitlePositionIndex, value); }
+
+    private int _subtitleColorIndex;
+    /// <summary>烧录字幕颜色：0 = 白色，1 = 黄色。</summary>
+    public int SubtitleColorIndex { get => _subtitleColorIndex; set => SetProperty(ref _subtitleColorIndex, value); }
 
     private int _languageIndex;
     /// <summary>界面语言：0 = 跟随系统（auto），1 = 简体中文，2 = 繁體中文，3 = English。点「完成」后生效。</summary>
@@ -1323,6 +1344,15 @@ public sealed class SettingsViewModel : ObservableObject
         SummaryModel = SummaryModel,
         SummaryAuthToken = SummaryAuthToken,
         SubtitleStyle = StyleIndex == 1 ? SubtitleStyle.ChineseOnly : SubtitleStyle.Bilingual,
+        SubtitleFontScale = SubtitleFontScaleIndex switch
+        {
+            0 => SubtitleFontScale.Small,
+            2 => SubtitleFontScale.Large,
+            3 => SubtitleFontScale.ExtraLarge,
+            _ => SubtitleFontScale.Standard,
+        },
+        SubtitlePosition = SubtitlePositionIndex == 1 ? SubtitlePosition.Top : SubtitlePosition.Bottom,
+        SubtitleColor = SubtitleColorIndex == 1 ? SubtitleColor.Yellow : SubtitleColor.White,
         MaxBurnHeight = LimitBurnTo1080 ? 1080 : null,
         EncodeBackend = _encodeBackend,
         BurnAlwaysH264 = BurnAlwaysH264,

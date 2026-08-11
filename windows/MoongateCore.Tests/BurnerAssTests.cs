@@ -17,6 +17,48 @@ public class AssGenerationTests
         Assert.Contains(",2,20,20,20,1", ass);  // Alignment 2 + 自动布局最小边距 MarginL/R 20 + MarginV 20
     }
 
+    /// <summary>默认参数（无外观定制）：白色 PrimaryColour + Alignment 2，与现状一致。</summary>
+    [Fact]
+    public void MakeAss_Defaults_MatchCurrentAppearance()
+    {
+        var ass = FFmpegBurner.MakeAss([Cue("你好")], fontName: FFmpegBurner.WindowsFontName);
+        Assert.Contains($"Style: ZH,{FFmpegBurner.WindowsFontName},15,&H00FFFFFF,", ass);
+        Assert.Contains(",1,1,0,2,20,20,20,1", ass);  // Alignment 段仍为 2（底部）
+    }
+
+    /// <summary>字号倍率作用于基准字号；描边/alpha 不变。</summary>
+    [Fact]
+    public void MakeAss_FontScale_ScalesBaseSize()
+    {
+        var ass = FFmpegBurner.MakeAss(
+            [Cue("你好")], fontName: FFmpegBurner.WindowsFontName, fontScale: 1.5);
+        // 15 * 1.5 = 22.5 → round away from zero = 23（extraLarge）。
+        Assert.Contains($"Style: ZH,{FFmpegBurner.WindowsFontName},23,", ass);
+        // 描边黑（OutlineColour &H00000000）+ 背景 alpha（&H7F000000）不变。
+        Assert.Contains("&H00000000,&H7F000000,", ass);
+    }
+
+    /// <summary>顶部位置：Alignment 段变 8；其余字段不变。</summary>
+    [Fact]
+    public void MakeAss_TopPosition_UsesAlignment8()
+    {
+        var ass = FFmpegBurner.MakeAss(
+            [Cue("你好")], fontName: FFmpegBurner.WindowsFontName, alignment: 8);
+        Assert.Contains(",1,1,0,8,20,20,20,1", ass);
+        Assert.DoesNotContain(",1,1,0,2,20,20,20,1", ass);
+    }
+
+    /// <summary>黄色：PrimaryColour 的 RGB 部分换成 00FFFF；保持 &H00 alpha 前缀；描边黑不变。</summary>
+    [Fact]
+    public void MakeAss_YellowColor_ReplacesPrimaryRgbOnly()
+    {
+        var ass = FFmpegBurner.MakeAss(
+            [Cue("你好")], fontName: FFmpegBurner.WindowsFontName, primaryColorBgrHex: "00FFFF");
+        Assert.Contains(",15,&H0000FFFF,&H00FFFFFF,&H00000000,", ass);
+        // 描边黑（第三个颜色）保持不变。
+        Assert.Contains("&H00000000,&H7F000000,", ass);
+    }
+
     /// <summary>竖屏 9:16：坐标系收窄、字号边距整体缩小，原文 80% 字号（6）+ 80% 不透明度。</summary>
     [Fact]
     public void Header_PortraitAspect_ShrinksLayoutAndSmallFont()
@@ -505,6 +547,34 @@ public class EncoderSelectionTests
 
         Assert.Equal("aac", chain[0][1]);
         Assert.Equal("copy", chain[1][1]);
+    }
+
+    // SRT 兜底路径（parseSRT 返回空时）也应应用字幕外观设置，与 macOS 对齐。
+    [Fact]
+    public void SrtForceStyleFallback_AppliesAppearanceSettings()
+    {
+        // 大号(1.24)+顶部(8)+黄色(00FFFF)：force_style 带缩放字号、Alignment=8、黄色 PrimaryColour。
+        var filter = FFmpegBurner.SrtForceStyleFilter(1.24, 8, "00FFFF");
+        Assert.Contains("FontSize=19", filter); // 15 * 1.24 = 18.6 → 19
+        Assert.Contains("Alignment=8", filter);
+        Assert.Contains("PrimaryColour=&H0000FFFF", filter);
+    }
+
+    [Fact]
+    public void SrtForceStyleFallback_DefaultsMatchLegacy()
+    {
+        var filter = FFmpegBurner.SrtForceStyleFilter(1.0, 2, "FFFFFF");
+        Assert.Contains("FontSize=15", filter);
+        Assert.Contains("Alignment=2", filter);
+        Assert.Contains("PrimaryColour=&H00FFFFFF", filter);
+    }
+
+    [Fact]
+    public void SrtForceStyleFallback_ClampsInvalidScale()
+    {
+        // 非法倍率（0）回落 1.0，字号仍 15。
+        var filter = FFmpegBurner.SrtForceStyleFilter(0, 2, "FFFFFF");
+        Assert.Contains("FontSize=15", filter);
     }
 
 }

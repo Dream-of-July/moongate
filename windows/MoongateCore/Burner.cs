@@ -310,6 +310,9 @@ public sealed class FFmpegBurner : ISubtitleBurner
         EncodeBackend backend = EncodeBackend.Auto,
         bool alwaysH264 = false,
         string? outputTag = null,
+        double fontScale = 1.0,
+        int alignment = 2,
+        string primaryColorBgrHex = "FFFFFF",
         CancellationToken ct = default)
     {
         var ffmpeg = Locate("ffmpeg") ?? throw MoongateException.BinaryNotFound("ffmpeg");
@@ -347,10 +350,9 @@ public sealed class FFmpegBurner : ISubtitleBurner
             string subtitleFilter;
             if (cues.Count == 0)
             {
-                // 解析不出来就按原样走 SRT + force_style 的老路
+                // 解析不出来就按原样走 SRT + force_style 的老路。外观设置也带上（见 SrtForceStyleFilter）。
                 File.Copy(subtitle, Path.Combine(tempDir, "subs.srt"));
-                subtitleFilter = "subtitles=subs.srt:force_style="
-                    + $"'FontName={ChineseFontName},FontSize=15,Outline=1,Shadow=0,MarginV=20'";
+                subtitleFilter = SrtForceStyleFilter(fontScale, alignment, primaryColorBgrHex);
             }
             else
             {
@@ -358,7 +360,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
                 var aspect = probe is { Width: { } w, Height: { } h } && w > 0 && h > 0
                     ? (double)w / h
                     : 16.0 / 9.0;
-                var ass = MakeAss(cues, aspect);
+                var ass = MakeAss(cues, aspect, fontScale: fontScale, alignment: alignment, primaryColorBgrHex: primaryColorBgrHex);
                 await File.WriteAllTextAsync(Path.Combine(tempDir, "subs.ass"), ass, ct).ConfigureAwait(false);
                 subtitleFilter = "subtitles=subs.ass";
             }
@@ -698,14 +700,17 @@ public sealed class FFmpegBurner : ISubtitleBurner
         /// <summary>原文（拉丁文字）行按词预换行容量（字符数）；null 表示不预换行。</summary>
         public int? LatinWrapCapacity { get; }
 
-        public AssLayout(double aspect)
+        public AssLayout(double aspect, double fontScale = 1.0)
         {
             var safeAspect = double.IsFinite(aspect) && aspect > 0.1 ? Math.Min(aspect, 4.0) : 16.0 / 9.0;
             // 脚本坐标系与视频同比例（取偶数），横向边距/字号的单位才不会被拉伸
             PlayResX = Math.Max(120, (int)Math.Round(288.0 * safeAspect / 2, MidpointRounding.AwayFromZero) * 2);
-            ChineseSize = safeAspect >= 1
+            var baseChineseSize = safeAspect >= 1
                 ? ChineseFontSize
                 : Math.Max(8, (int)Math.Round(ChineseFontSize * Math.Sqrt(safeAspect / (16.0 / 9.0)), MidpointRounding.AwayFromZero));
+            // 用户档位字号缩放：与 aspect 自适应缩放相乘，再做下限保护（至少 8pt），与 macOS 一致。
+            var safeFontScale = double.IsFinite(fontScale) && fontScale > 0 ? fontScale : 1.0;
+            ChineseSize = Math.Max(8, (int)Math.Round(baseChineseSize * safeFontScale, MidpointRounding.AwayFromZero));
             // 原文字号永远是译文的 80%（不分语言）。
             OriginalSize = Math.Max(6, (int)Math.Round(ChineseSize * OriginalSizeRatio, MidpointRounding.AwayFromZero));
             // 自动布局：左右只留一个最小边距（约画面 4%），只有真放不下才换行。
@@ -722,14 +727,42 @@ public sealed class FFmpegBurner : ISubtitleBurner
     }
 
     /// <summary>
+    /// SRT 解析不出 cue 时的兜底 ffmpeg 字幕滤镜（subtitles=subs.srt:force_style=...）。
+    /// 把用户的字幕外观设置带上——字号按倍率缩放（基准 15，下限 8，非有限/非正回落 1.0）、
+    /// Alignment 用位置、PrimaryColour 用颜色（&H00 前缀 + BGR）。抽成纯函数以便单测，
+    /// 与 macOS 的 srtForceStyleFilter 对齐，防止这条罕见路径再次静默丢弃外观设置。
+    /// </summary>
+    internal static string SrtForceStyleFilter(double fontScale, int alignment, string primaryColorBgrHex)
+    {
+        var safeScale = double.IsFinite(fontScale) && fontScale > 0 ? fontScale : 1.0;
+        var forcedSize = Math.Max(8, (int)Math.Round(15 * safeScale, MidpointRounding.AwayFromZero));
+        return "subtitles=subs.srt:force_style="
+            + $"'FontName={ChineseFontName},FontSize={forcedSize},"
+            + $"PrimaryColour=&H00{primaryColorBgrHex},Alignment={alignment},"
+            + "Outline=1,Shadow=0,MarginV=20'";
+    }
+
+    /// <summary>
     /// 把 SRT 字幕转成 ASS：双语条目（含中日韩文字的行 + 不含的行）中日韩行用正常字号排上面，
     /// 其余行（原文）用更小字号排下面；普通条目整条统一字号。
     /// aspect = 视频宽/高；fontName 供测试注入，null 用平台默认。
     /// </summary>
-    internal static string MakeAss(IReadOnlyList<SubtitleCue> cues, double aspect = 16.0 / 9.0, string? fontName = null)
+    /// <summary>
+    /// 把 SRT 字幕转成 ASS：双语条目（含中日韩文字的行 + 不含的行）中日韩行用正常字号排上面，
+    /// 其余行（原文）用更小字号排下面；普通条目整条统一字号。
+    /// aspect = 视频宽/高；fontName 供测试注入，null 用平台默认。
+    /// fontScale/alignment/primaryColorBgrHex 控制外观（字号倍率 / 垂直位置 / 译文颜色），默认值 = 现状。
+    /// </summary>
+    internal static string MakeAss(
+        IReadOnlyList<SubtitleCue> cues,
+        double aspect = 16.0 / 9.0,
+        string? fontName = null,
+        double fontScale = 1.0,
+        int alignment = 2,
+        string primaryColorBgrHex = "FFFFFF")
     {
         var font = fontName ?? ChineseFontName;
-        var layout = new AssLayout(aspect);
+        var layout = new AssLayout(aspect, fontScale);
         var dialogues = new List<string>();
         foreach (var cue in cues)
         {
@@ -784,7 +817,7 @@ public sealed class FFmpegBurner : ISubtitleBurner
 
             [V4+ Styles]
             Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-            Style: ZH,{font},{layout.ChineseSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,2,{layout.MarginH},{layout.MarginH},{layout.MarginV},1
+            Style: ZH,{font},{layout.ChineseSize},&H00{primaryColorBgrHex},&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,{alignment},{layout.MarginH},{layout.MarginH},{layout.MarginV},1
 
             [Events]
             Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

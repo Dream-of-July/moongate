@@ -305,6 +305,12 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(rowBody.contains("arrow.down.circle"))
         XCTAssertTrue(rowBody.contains("\"trash\""))
         XCTAssertTrue(rowBody.contains("role: .destructive"))
+        // 图标按钮（trash/下载）是纯图标，help 只给鼠标悬停提示，VoiceOver 需要 accessibilityLabel 才能读出名字。
+        // 删除是破坏性操作，缺 label 会让 VoiceOver 用户听到一个没有名字的按钮。守护删除/下载都带 label。
+        XCTAssertTrue(rowBody.contains(".accessibilityLabel(localizer.t(L.Settings.localASRDeleteModel))"),
+                      "删除模型（纯图标 trash）必须带 accessibilityLabel，help 不足以让 VoiceOver 读出名字。")
+        XCTAssertTrue(rowBody.contains(".accessibilityLabel(localizer.t(L.Settings.localASRDownloadModel))"),
+                      "下载模型（纯图标）应带 accessibilityLabel。")
         XCTAssertFalse(rowBody.contains("RoundedRectangle(cornerRadius: 8"))
         XCTAssertFalse(source.contains("\"textformat\""))
         XCTAssertTrue(source.contains("\"text.bubble.fill\""))
@@ -313,6 +319,9 @@ final class MacOSSettingsBoundaryTests: XCTestCase {
         XCTAssertTrue(importedRowBody.contains("localizer.t(L.Settings.localASRImportedModelBadge)"))
         XCTAssertTrue(importedRowBody.contains("deleteImportedLocalASRModel()"))
         XCTAssertTrue(importedRowBody.contains("localizer.t(L.Settings.localASRImportedModelAccessibility"))
+        // 导入模型行的删除按钮同为纯图标 trash，同样必须带 accessibilityLabel（破坏性操作）。
+        XCTAssertTrue(importedRowBody.contains(".accessibilityLabel(localizer.t(L.Settings.localASRDeleteImportedModel))"),
+                      "删除导入模型（纯图标 trash）必须带 accessibilityLabel。")
         XCTAssertFalse(importedRowBody.contains("RoundedRectangle(cornerRadius: 8"))
 
         let capabilityBody = try XCTUnwrap(functionBody(named: "modelCapabilityLabel", in: source))

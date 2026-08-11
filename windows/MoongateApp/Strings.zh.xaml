@@ -332,6 +332,17 @@
     <sys:String x:Key="L.Settings.StyleLabel">译文字幕样式</sys:String>
     <sys:String x:Key="L.Settings.StyleBilingual">双语（原文 + 译文）</sys:String>
     <sys:String x:Key="L.Settings.StyleChineseOnly">仅译文</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeLabel">字幕大小</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeSmall">小</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeStandard">标准</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeLarge">大</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeExtraLarge">特大</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionLabel">字幕位置</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionBottom">底部</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionTop">顶部</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorLabel">字幕颜色</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorWhite">白色</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorYellow">黄色</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">烧录画质</sys:String>
     <sys:String x:Key="L.Settings.EncodeBackend">编码方式</sys:String>
     <sys:String x:Key="L.Settings.EncodeAuto">自动</sys:String>

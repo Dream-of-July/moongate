@@ -207,6 +207,10 @@ final class ViewModel: ObservableObject {
     private var retryAction: (@MainActor () -> Void)?
     /// 设置窗里点了「登录 ××」：先收起设置 sheet，再由其 onDismiss 弹出登录窗
     private var pendingLoginSite: String?
+    /// 队列中登录类失败项触发的登录：登录成功后据此重试该站点全部失败项。nil 表示非队列触发。
+    private var pendingQueueLoginSite: String?
+    /// Ready 页字幕提示触发的登录：登录成功后据此清缓存并重新解析该 URL，以拿到平台字幕。
+    private var pendingReadyReanalyzeURL: String?
     /// 设置窗里点了「配置依赖」：先收起设置 sheet，再由其 onDismiss 弹出依赖配置窗
     private var pendingDependencySetup = false
     /// 首次进入主界面时只做一次依赖体检，避免 sheet 被反复弹起。
@@ -374,8 +378,10 @@ final class ViewModel: ObservableObject {
 
     /// App 管理的下载根目录。设置页的存储清理只允许操作这个目录，不能扫描整个 Downloads。
     static var appDownloadsDirectory: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Moongate", isDirectory: true)
+        // 极少数沙箱/无 Downloads 目录的环境下 urls(for:) 可能为空，回退到家目录下 Downloads，避免越界崩溃。
+        let base = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+        return base.appendingPathComponent("Moongate", isDirectory: true)
     }
 
     /// 下载目的地：所有 v0.8 产物都放在 Downloads/Moongate 下；多文件任务再按视频标题建子文件夹。
@@ -417,6 +423,22 @@ final class ViewModel: ObservableObject {
             urls.append(token)
         }
         return urls
+    }
+
+    /// 三栏原型「添加任务」入口：从一段文本提取一或多个链接，按默认设置（最高画质、
+    /// 当前字幕模式）自动入队，不经 ready 配置页。复用批量自动入队引擎；对单个链接也走
+    /// 同一路径（直接入队，不进入单流程的 choosing/ready 阶段）。空输入或无有效链接时
+    /// 设 enqueueNotice 提示并返回。
+    func addTasks(from text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isParsing else { return }
+        hydrateCredentials()
+        let urls = Self.extractURLs(from: trimmed)
+        guard !urls.isEmpty else {
+            enqueueNotice = CoreL10n.t(L.Main.invalidURL)
+            return
+        }
+        processBatch(urls)
     }
 
     // 每个字符既非空白、也不是下一条链接的开头（负向前瞻保证相接的链接被切开）。
@@ -461,7 +483,8 @@ final class ViewModel: ObservableObject {
                             durationText: info.durationText, thumbnailURL: info.thumbnailURL,
                             uploader: info.uploader, detectedLanguageCode: info.detectedLanguageCode,
                             description: info.description,
-                            formats: info.formats, subtitles: info.subtitles
+                            formats: info.formats, subtitles: info.subtitles,
+                            platformSubtitleHint: info.platformSubtitleHint
                         )
                     }
                     guard let formatID = info.formats.first?.id else {
@@ -604,7 +627,8 @@ final class ViewModel: ObservableObject {
                         durationText: info.durationText, thumbnailURL: info.thumbnailURL,
                         uploader: info.uploader, detectedLanguageCode: info.detectedLanguageCode,
                         description: info.description,
-                        formats: info.formats, subtitles: info.subtitles
+                        formats: info.formats, subtitles: info.subtitles,
+                        platformSubtitleHint: info.platformSubtitleHint
                     )
                 }
                 guard token == self.session else { return }
@@ -1590,18 +1614,68 @@ final class ViewModel: ObservableObject {
         loginSite = site
     }
 
+    /// 队列中某个登录类失败项点「登录」：打开对应站点登录窗，登录成功后自动重试该站点全部失败项。
+    func openLoginForQueueItem(site: String, loginURL: URL?) {
+        pendingQueueLoginSite = site
+        loginStartURL = loginURL
+        loginSite = site
+    }
+
+    /// Ready 页字幕提示点「登录」：打开该站点登录窗，登录成功后清缓存并重新解析以拿到平台字幕。
+    func openLoginForPlatformSubtitleHint(_ hint: PlatformSubtitleHint) {
+        guard case .ready(let info) = stage else { return }
+        pendingReadyReanalyzeURL = info.sourceURL
+        loginStartURL = URL(string: info.sourceURL)
+        loginSite = hint.loginSite
+    }
+
     /// 登录窗导出 cookies 成功后调用：关窗并自动重试上次失败的操作。
     func loginCompleted() {
         loginSite = nil
         loginStartURL = nil
+        // 队列登录类失败：重试该站点全部失败项（下载阶段的登录失败走这条路）。
+        if let site = pendingQueueLoginSite {
+            pendingQueueLoginSite = nil
+            queue.retryFailedNeedingLogin(site: site)
+        }
+        // Ready 页字幕提示登录：清缓存 + 重新解析，拿到登录后才可见的平台字幕。
+        if let url = pendingReadyReanalyzeURL {
+            pendingReadyReanalyzeURL = nil
+            reanalyzeCurrentReady(url: url)
+        }
         if case .failed = stage, let action = retryAction {
             action()
+        }
+    }
+
+    /// 登录后重新解析当前 Ready 页视频：先失效缓存，再重跑 analyze 刷新字幕列表。
+    private func reanalyzeCurrentReady(url: String) {
+        guard case .ready = stage else { return }
+        session += 1
+        let token = session
+        stage = .analyzing
+        parseTask?.cancel()
+        parseTask = Task {
+            self.engine.invalidateInfoCache(for: url)
+            do {
+                let info = try await self.engine.analyze(url: url)
+                guard token == self.session else { return }
+                self.selectedFormatID = info.formats.first?.id
+                self.restoreDownloadOptions(for: info)
+                self.resetSummary()
+                self.stage = .ready(info)
+            } catch {
+                guard token == self.session else { return }
+                self.fail(error) { [weak self] in self?.reanalyzeCurrentReady(url: url) }
+            }
         }
     }
 
     func cancelLogin() {
         loginSite = nil
         loginStartURL = nil
+        pendingQueueLoginSite = nil
+        pendingReadyReanalyzeURL = nil
     }
 
     // MARK: - 私有

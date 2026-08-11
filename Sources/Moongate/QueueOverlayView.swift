@@ -10,6 +10,7 @@ struct QueueOverlayView: View {
     @ObservedObject var queue: QueueManager
     @Binding var expanded: Bool
     var onConfigureLocalASR: () -> Void = {}
+    var onLogin: (_ site: String, _ loginURL: URL?) -> Void = { _, _ in }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var localizer: Localizer
 
@@ -21,12 +22,18 @@ struct QueueOverlayView: View {
                         expanded = false
                     } onConfigureLocalASR: {
                         onConfigureLocalASR()
+                    } onLogin: { site, loginURL in
+                        onLogin(site, loginURL)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.regularMaterial)
+                    // Esc 收起展开的队列浮层：与 App 内其它可关闭面板（sheet/取消）一致的键盘惯例，
+                    // 键盘用户不必 Tab 到收起按钮。收起动作与 chevron 按钮同走 expanded=false。
+                    .onExitCommand { expanded = false }
                     .transition(overlayTransition)
                 } else {
                     handle
+                        // 14：小把手离内容区右下角的悬浮边距，off-grid，无对应语义 token，保留字面量。
                         .padding([.bottom, .trailing], 14)
                         .transition(overlayTransition)
                 }
@@ -93,7 +100,7 @@ struct QueueOverlayView: View {
         Button {
             expanded = true
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.md) {
                 ProgressRingView(progress: overallProgress, finished: openCount == 0)
                 Text(handleLabel)
                     .font(.callout)
@@ -101,11 +108,13 @@ struct QueueOverlayView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
+            // 14：胶囊左右内边距，off-grid，无对应语义 token，保留字面量。
             .padding(.horizontal, 14)
+            // 9：胶囊上下内边距，off-grid，无对应语义 token，保留字面量。
             .padding(.vertical, 9)
             .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
-            .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+            .overlay(Capsule().strokeBorder(.quaternary, lineWidth: Stroke.hairline))
+            .shadow(color: .black.opacity(0.14), radius: 8, y: 2)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

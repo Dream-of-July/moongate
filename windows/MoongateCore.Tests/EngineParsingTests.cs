@@ -435,6 +435,48 @@ public class StderrSummaryTests
     }
 
     [Fact]
+    public void FriendlyDownloadReason_DiskFull_GivesFreeSpaceHint()
+    {
+        foreach (var marker in new[]
+        {
+            "ERROR: unable to write data: [Errno 28] No space left on device",
+            "OSError: There is not enough space on the disk. (WinError 112)",
+            "ffmpeg: Disk quota exceeded",
+        })
+        {
+            var reason = YtDlpEngine.FriendlyDownloadReason(marker);
+            Assert.Contains("磁盘空间不足", reason);
+            Assert.DoesNotContain("下载过程中出现错误", reason);
+        }
+    }
+
+    [Fact]
+    public void FriendlyDownloadReason_WritePermission_GivesOutputFolderHint()
+    {
+        foreach (var marker in new[]
+        {
+            "ERROR: unable to open file for writing: [Errno 13] Permission denied",
+            "OSError: [Errno 30] Read-only file system",
+            "IOError: Access is denied. (WinError 5)",
+            "The process cannot access the file because it is being used by another process",
+        })
+        {
+            var reason = YtDlpEngine.FriendlyDownloadReason(marker);
+            Assert.True(reason.Contains("换一个输出文件夹") || reason.Contains("只读或没有权限"),
+                $"写入失败应引导改输出文件夹，实际：{reason}");
+            Assert.DoesNotContain("下载过程中出现错误", reason);
+        }
+    }
+
+    /// <summary>网络错误（Errno 61 连接拒绝）不应被误判为磁盘/权限。</summary>
+    [Fact]
+    public void FriendlyDownloadReason_NetworkErrno_NotMisclassified()
+    {
+        var reason = YtDlpEngine.FriendlyDownloadReason("ERROR: [Errno 61] Connection refused");
+        Assert.Contains("网络连接不稳定", reason);
+    }
+
+    [Fact]
     public void FriendlyDownloadReason_CertificateTrustError_GivesCertificateHint()
     {
         var reason = YtDlpEngine.FriendlyDownloadReason(
@@ -1169,5 +1211,78 @@ public class BuildVideoInfoTests
         Assert.Equal("en", YtDlpEngine.LangCodeOfSubtitle("/tmp/Video [abc].en.srt"));
         Assert.Equal("zh-hans", YtDlpEngine.LangCodeOfSubtitle("/tmp/Video [abc].zh-Hans.srt"));
         Assert.Null(YtDlpEngine.LangCodeOfSubtitle("/tmp/video.srt"));
+    }
+}
+
+/// <summary>取消/失败后临时文件清理（CleanupTemporaryFiles）行为测试，与 macOS DownloadTempCleanupTests
+/// 对等。安全属性：只删本视频的 .part/.ytdl/.part-Frag，不碰产物与他视频。此前无测试。</summary>
+public class DownloadTempCleanupTests : IDisposable
+{
+    private readonly string _dir;
+
+    public DownloadTempCleanupTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), $"moongate-tempcleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_dir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, true); } catch { /* 忽略 */ }
+    }
+
+    private void Touch(string name) => File.WriteAllText(Path.Combine(_dir, name), "x");
+    private bool Exists(string name) => File.Exists(Path.Combine(_dir, name));
+
+    [Fact]
+    public void RemovesOnlyMatchingVideoTempFiles()
+    {
+        Touch("Clip [abc123].mp4.part");
+        Touch("Clip [abc123].f137.mp4.ytdl");
+        Touch("Clip [abc123].mp4.part-Frag12");
+        Touch("Clip [abc123].mp4");
+        Touch("Clip [abc123].en.srt");
+
+        YtDlpEngine.CleanupTemporaryFiles(_dir, "abc123");
+
+        Assert.False(Exists("Clip [abc123].mp4.part"));
+        Assert.False(Exists("Clip [abc123].f137.mp4.ytdl"));
+        Assert.False(Exists("Clip [abc123].mp4.part-Frag12"));
+        Assert.True(Exists("Clip [abc123].mp4"));
+        Assert.True(Exists("Clip [abc123].en.srt"));
+    }
+
+    [Fact]
+    public void DoesNotTouchOtherVideosTempFiles()
+    {
+        Touch("A [abc123].mp4.part");
+        Touch("B [xyz789].mp4.part");
+        Touch("C [xyz789].mp4.ytdl");
+
+        YtDlpEngine.CleanupTemporaryFiles(_dir, "abc123");
+
+        Assert.False(Exists("A [abc123].mp4.part"));
+        Assert.True(Exists("B [xyz789].mp4.part"));
+        Assert.True(Exists("C [xyz789].mp4.ytdl"));
+    }
+
+    [Fact]
+    public void MissingDirectoryIsNoOp()
+    {
+        var missing = Path.Combine(_dir, "does-not-exist");
+        YtDlpEngine.CleanupTemporaryFiles(missing, "abc123");
+        Assert.True(Directory.Exists(_dir));
+    }
+
+    [Fact]
+    public void NoMatchingFilesLeavesEverythingIntact()
+    {
+        Touch("Other [zzz000].mp4.part");
+        Touch("Clip [abc123].mp4");
+
+        YtDlpEngine.CleanupTemporaryFiles(_dir, "abc123");
+
+        Assert.True(Exists("Other [zzz000].mp4.part"));
+        Assert.True(Exists("Clip [abc123].mp4"));
     }
 }

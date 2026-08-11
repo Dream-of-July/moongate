@@ -1052,4 +1052,19 @@ public class WindowsSettingsSurfaceTests
             Assert.Contains("x:Key=\"L.Settings.LocalASRImportFailed\"", resource);
         }
     }
+
+    // 三语 xaml 资源键集必须完全一致——防止某语言漏一个 key（运行时会 fallback 到 key 名或显示空白，
+    // 而非编译期报错）。等价于 macOS 侧 LocalizerTests 的键集守护。
+    [Fact]
+    public void WindowsStringResourcesHaveIdenticalKeysAcrossLanguages()
+    {
+        var en = ResourceKeys(Read("windows", "MoongateApp", "Strings.en.xaml"));
+        var zh = ResourceKeys(Read("windows", "MoongateApp", "Strings.zh.xaml"));
+        var zhHant = ResourceKeys(Read("windows", "MoongateApp", "Strings.zh-Hant.xaml"));
+
+        Assert.Empty(en.Except(zh));
+        Assert.Empty(zh.Except(en));
+        Assert.Empty(en.Except(zhHant));
+        Assert.Empty(zhHant.Except(en));
+    }
 }

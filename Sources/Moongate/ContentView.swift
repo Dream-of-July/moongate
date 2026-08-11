@@ -14,8 +14,16 @@ struct ContentView: View {
     @FocusState private var urlFieldFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// 尊重「减弱动态效果」——空状态出现动效在开启该项时禁用（HIG: reduce-motion）。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 空状态首帧的轻量出现动效（opacity + 微 scale），仅在未减弱动态效果时启用。
+    @State private var emptyStateAppeared = false
     /// 「更多选项」展开态持久化——HIG：别让用户每次重建视图都丢失展开状态（与源语言高级码 disclosure 一致）。
     @AppStorage("ready.subtitleMoreOptionsExpanded") private var subtitleMoreOptionsExpanded = false
+    /// 实验性「备忘录式三栏布局」原型开关（默认关闭）。开启后走 SplitLayoutView，
+    /// 关闭时完全等价于原有界面。手动开启：在 App 里执行
+    /// `defaults write <bundleID> experimental.splitLayout -bool YES` 后重启，或在调试构建里改此默认值。
+    @AppStorage("experimental.splitLayout") private var useSplitLayout = false
 
     init(model: ViewModel) {
         self.model = model
@@ -23,6 +31,15 @@ struct ContentView: View {
     }
 
     var body: some View {
+        if useSplitLayout {
+            SplitLayoutView(model: model)
+        } else {
+            legacyBody
+        }
+    }
+
+    /// 现有主界面（原封不动，仅从 `body` 抽出以便被实验布局开关包一层条件）。
+    private var legacyBody: some View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, 20)
@@ -36,7 +53,10 @@ struct ContentView: View {
                 QueueOverlayView(
                     queue: model.queue,
                     expanded: $model.queueExpanded,
-                    onConfigureLocalASR: { model.openLocalASRSettings() }
+                    onConfigureLocalASR: { model.openLocalASRSettings() },
+                    onLogin: { site, loginURL in
+                        model.openLoginForQueueItem(site: site, loginURL: loginURL)
+                    }
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -216,43 +236,83 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: Spacing.emptyStack) {
+            // 装饰性图标：hierarchical 渲染让下箭头与圆环形成柔和层次，比纯 tertiary 更有质感。
+            // 语义上 arrow.down.circle 直接对应「粘贴链接→下载」，保留不换。
             Image(systemName: "arrow.down.circle")
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(localizer.t(L.Main.idleTitle))
-                .font(.callout)
+                .font(.system(size: 54, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
-            Text(localizer.t(L.Main.idleSubtitle))
+                .accessibilityHidden(true)
+            VStack(spacing: Spacing.sm) {
+                // 主文案权重更强、颜色更实，与副文案拉开层级（size + weight + color 三重区分）。
+                Text(localizer.t(L.Main.idleTitle))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                Text(localizer.t(L.Main.idleSubtitle))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            // 支持平台提示：极克制的一行小字，暗示能力边界又不喧宾夺主。
+            Text(localizer.t(L.Main.idleSupportedSites))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.top, Spacing.xxs)
         }
+        .padding(.horizontal, Spacing.xxxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .opacity(emptyStateAppeared ? 1 : 0)
+        .scaleEffect(emptyStateAppeared ? 1 : 0.98)
+        .onAppear {
+            guard !emptyStateAppeared else { return }
+            if reduceMotion {
+                emptyStateAppeared = true
+            } else {
+                withAnimation(.easeOut(duration: 0.28)) {
+                    emptyStateAppeared = true
+                }
+            }
+        }
     }
 
     private var loadingState: some View {
-        VStack(spacing: 14) {
+        // 与 emptyState 同一套纵向节奏（emptyStack=14）与三级文案层级：
+        // 进度指示 → 主状态文案（稍强权重、实色）→ 副提示（caption、tertiary）。
+        VStack(spacing: Spacing.emptyStack) {
             ProgressView()
                 .controlSize(.large)
                 .accessibilityLabel(model.batchStatusText ?? localizer.t(L.Main.loadingAccessibility))
-            Text(model.batchStatusText ?? localizer.t(L.Main.loading))
-                .foregroundStyle(.secondary)
-            if model.batchStatusText != nil {
-                Text(localizer.t(L.Main.batchAutoQueueHint))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            VStack(spacing: Spacing.sm) {
+                // 主状态文案：向 emptyState 主文案看齐，用 title3 半粗 + 实色，从原本的平铺 secondary 提为主层级。
+                Text(model.batchStatusText ?? localizer.t(L.Main.loading))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                if model.batchStatusText != nil {
+                    // 批量自动排队副提示：caption + tertiary，作为第三级信息克制呈现。
+                    Text(localizer.t(L.Main.batchAutoQueueHint))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
             }
             Button(localizer.t(L.Common.cancel)) {
                 model.cancelParse()
             }
             .buttonStyle(.bordered)
+            .padding(.top, Spacing.xxs)
         }
+        .padding(.horizontal, Spacing.xxxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func choosingState(_ candidates: [VideoCandidate]) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.rowGutter) {
                 Text(localizer.t(L.Main.videoCount, candidates.count))
                     .font(.headline)
                 VStack(spacing: 0) {
@@ -270,21 +330,25 @@ struct ContentView: View {
                 }
                 .background(cardBackground)
             }
-            .frame(maxWidth: 500)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            .frame(maxWidth: Layout.readableContentWidth)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.bottom, Spacing.xxl)
             .frame(maxWidth: .infinity)
         }
     }
 
     private func candidateRow(_ candidate: VideoCandidate) -> some View {
-        HStack(spacing: 10) {
+        // 与信息卡 / 队列行统一：图标 hierarchical 渲染、标题 .body、detail caption+secondary、
+        // 「标题—副文」行距用 rowTitleGap(5)，与 infoCard 同一节奏。
+        HStack(spacing: Spacing.rowGutter) {
             Image(systemName: icon(for: candidate.kind))
                 .font(.system(size: 16))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(candidate.title)
+                    .font(.body)
                     .lineLimit(2)
                     .help(candidate.title)
                 if let detail = candidate.detail {
@@ -293,13 +357,13 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: Spacing.md)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.rowGutter)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(candidate.title)
@@ -315,10 +379,41 @@ struct ContentView: View {
         }
     }
 
+    /// 平台字幕存在性提示条：yt-dlp 没返回字幕、但探针发现平台其实有字幕（多为未登录）。
+    /// 引导用户登录以取用平台字幕，替代默认的 AI 识别。
+    @ViewBuilder
+    private func platformSubtitleHintBanner(_ hint: PlatformSubtitleHint) -> some View {
+        let languages = hint.languageCodes
+            .map { LanguageCatalog.displayName(for: $0) }
+            .joined(separator: "、")
+        let messageKey = hint.hasHumanSubtitle
+            ? L.Ready.platformSubtitleHintHuman
+            : L.Ready.platformSubtitleHintAI
+        HStack(alignment: .top, spacing: Spacing.rowGutter) {
+            Image(systemName: "captions.bubble")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                Text(localizer.t(messageKey, languages))
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    model.openLoginForPlatformSubtitleHint(hint)
+                } label: {
+                    Label(localizer.t(L.Ready.platformSubtitleHintLogin), systemImage: "person.crop.circle.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Spacing.lg)
+        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: Radius.card))
+    }
+
     private func readyState(_ info: VideoInfo) -> some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: Spacing.xl) {
                     if model.canReturnToList {
                         Button {
                             model.backToList()
@@ -335,23 +430,37 @@ struct ContentView: View {
                         formatRows(info)
                     }
                     outputOptionsSection(info)
+                    if let hint = info.platformSubtitleHint {
+                        platformSubtitleHintBanner(hint)
+                    }
                     let subtitleState = model.readySubtitleState(for: info)
                     section(localizer.t(L.Ready.subtitlesSection)) {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: Spacing.md) {
                             subtitleOutputRows(info, state: subtitleState)
                             if subtitleState.needsSubtitleSource {
-                                Divider().padding(.horizontal, 12)
+                                Divider().padding(.horizontal, Spacing.lg)
                                 subtitleSourceRows(info, state: subtitleState)
+                            }
+                            // 仅烧录模式下字幕外观（大小/位置/颜色）才生效——就地给一个跳转设置的入口，
+                            // 省得用户为调外观翻找设置窗口（复用 openSettings(paneID:) 深链到「字幕」分区）。
+                            if subtitleState.intent.requiresBurnIn {
+                                Divider().padding(.horizontal, Spacing.lg)
+                                Button(localizer.t(L.Ready.adjustSubtitleStyle)) {
+                                    model.openSettings(paneID: "subtitles")
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .padding(.horizontal, Spacing.lg)
                             }
                         }
                     }
                 }
-                .frame(maxWidth: 500)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
+                .frame(maxWidth: Layout.readableContentWidth)
+                .padding(.horizontal, Spacing.xxl)
+                .padding(.bottom, Spacing.md)
                 .frame(maxWidth: .infinity)
             }
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.sm) {
                 Button {
                     Task {
                         await model.startDownload()
@@ -375,9 +484,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: 500)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .frame(maxWidth: Layout.readableContentWidth)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.vertical, 14) // off-grid：底部主操作区纵向留白，保留现值 14（无对应 token）
         }
     }
 
@@ -437,10 +546,10 @@ struct ContentView: View {
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }()
         section(localizer.t(L.Ready.outputOptionsSection)) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.rowGutter) {
                 if hdrAvailable {
                     Toggle(isOn: $model.preferHDR) {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Spacing.xxs) {
                             Text("HDR")
                             Text(localizer.t(L.Ready.hdrHint))
                                 .font(.caption)
@@ -450,7 +559,7 @@ struct ContentView: View {
                 }
                 HStack {
                     Text(localizer.t(L.Ready.outputFormat))
-                    Spacer(minLength: 8)
+                    Spacer(minLength: Spacing.md)
                     Picker(localizer.t(L.Ready.outputFormat), selection: $model.selectedOutputFormat) {
                         ForEach(OutputFormat.allCases, id: \.rawValue) { fmt in
                             Text(fmt == .original ? originalFormatLabel(sourceLabel) : fmt.displayName).tag(fmt)
@@ -467,7 +576,7 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(12)
+            .padding(Spacing.lg)
         }
     }
 
@@ -946,7 +1055,7 @@ struct ContentView: View {
     private func subtitleOutputRows(_ info: VideoInfo, state: ReadySubtitleState) -> some View {
         let hasSubtitleSelected = state.selectedTrack != nil
         let readiness = model.translationReadinessForCurrentSettings()
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: Spacing.md) {
             Picker(localizer.t(L.Ready.subtitleOutputSection), selection: subtitleIntentBinding(for: info)) {
                 ForEach(SubtitleIntent.allCases, id: \.rawValue) { intent in
                     Text(subtitleIntentLabel(intent)).tag(intent)
@@ -988,7 +1097,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1140,11 +1249,14 @@ struct ContentView: View {
             ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
         return ScrollView {
-            VStack(spacing: 16) {
+            VStack(spacing: Spacing.xl) {
+                // 错误图标：hierarchical 渲染与 emptyState 图标同一手法，让三角形与感叹号形成柔和层次；
+                // orange 语义色保留（区别于空状态的中性 secondary，明确传达「出错」）。
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 40))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.orange)
-                    .padding(.top, 40)
+                    .padding(.top, 40) // 顶部呼吸留白，off-grid 且无对应 token，保留现值不缩窄
                 Text(headline)
                     .font(.headline)
                     .multilineTextAlignment(.center)
@@ -1158,11 +1270,11 @@ struct ContentView: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
+                            .padding(.top, Spacing.xs)
                     }
                     .frame(maxWidth: 420)
                 }
-                HStack(spacing: 10) {
+                HStack(spacing: Spacing.rowGutter) {
                     if model.failedNeedsDependency {
                         Button(localizer.t(L.Dependency.setupMissing)) {
                             model.showDependencySetup = true
@@ -1201,8 +1313,8 @@ struct ContentView: View {
                 }
                 .controlSize(.large)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.bottom, Spacing.xxl)
             .frame(maxWidth: .infinity)
         }
     }
@@ -1213,7 +1325,7 @@ struct ContentView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             Text(title)
                 .font(.headline)
             VStack(spacing: 0, content: content)
@@ -1231,28 +1343,15 @@ struct ContentView: View {
                 onSummarize: { model.summarizeCurrentVideo() },
                 onCancel: { model.resetSummary() }
             )
-            .padding(12)
+            .padding(Spacing.lg)
         }
     }
 
     private func infoCard(_ info: VideoInfo) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            AsyncImage(url: info.thumbnailURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Rectangle()
-                        .fill(.quaternary)
-                        .overlay(
-                            Image(systemName: "film")
-                                .foregroundStyle(.tertiary)
-                        )
-                }
-            }
-            .frame(width: 160, height: 90)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .top, spacing: Spacing.lg) {
+            VideoThumbnail(url: info.thumbnailURL, cornerRadius: Radius.thumbnailCard)
+                .frame(width: Thumbnail.cardWidth, height: Thumbnail.cardHeight)
+            VStack(alignment: .leading, spacing: Spacing.rowTitleGap) {
                 Text(info.title)
                     .font(.headline)
                     .lineLimit(2)
@@ -1264,18 +1363,25 @@ struct ContentView: View {
                     Text(meta)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        // 时长为等宽数字，避免不同数字宽度导致的横向跳动。
+                        .monospacedDigit()
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardBackground)
     }
 
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .fill(.quaternary.opacity(0.55))
+            // 叠一层极细描边，强化卡片与背景的边界——light/dark 下都更「立得住」。
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: Stroke.hairline)
+            )
     }
 }
 
@@ -1432,6 +1538,7 @@ private enum OnboardingStep: String, CaseIterable, Identifiable {
 private struct OnboardingView: View {
     @ObservedObject var model: ViewModel
     @EnvironmentObject private var localizer: Localizer
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appLanguage: AppLanguage
     @State private var translationTargetLanguage: String
     @State private var useLocalTranslation = true
@@ -1457,8 +1564,9 @@ private struct OnboardingView: View {
     }
 
     var body: some View {
+        // spacing 18：分步引导各区块的纵向节奏，off-grid（介于 xl=16 与 xxl=20），保留现值
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {   // 6 → sm：标题—副标题两级行距
                 Text(localizer.t(L.Onboarding.title))
                     .font(.title2.weight(.semibold))
                 Text(localizer.t(L.Onboarding.subtitle))
@@ -1477,7 +1585,7 @@ private struct OnboardingView: View {
 
             onboardingFooter
         }
-        .padding(24)
+        .padding(24)   // sheet 内容边距，off-grid（无对应 token，介于 xxl=20 与 xxxl=32），保留现值
         .frame(width: 520)
         .onDisappear {
             localizer.setLanguage(AppLanguage(rawValue: model.settings.appLanguage) ?? .auto)
@@ -1485,17 +1593,51 @@ private struct OnboardingView: View {
     }
 
     private var onboardingStepHeader: some View {
-        HStack(spacing: 8) {
+        // 当前步在 allCases 中的序号，用于区分「已完成 / 当前 / 待办」三态
+        let currentIndex = OnboardingStep.allCases.firstIndex(of: selectedStep) ?? 0
+        return HStack(spacing: Spacing.md) {   // 8 → md：分步指示器按钮组节奏
             ForEach(OnboardingStep.allCases) { step in
-                Button {
-                    selectedStep = step
-                } label: {
-                    Text(step.title(localizer))
-                        .font(.caption.weight(step == selectedStep ? .semibold : .regular))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+                onboardingStepButton(step, currentIndex: currentIndex)
             }
+        }
+    }
+
+    // 分步指示器单个按钮：当前步用 accent 实底（.borderedProminent）+ 半粗字重双重强调；
+    // 已完成步显示对勾并保持 accent 前景；待办步用次级色，形成清晰的进度层级。
+    @ViewBuilder
+    private func onboardingStepButton(_ step: OnboardingStep, currentIndex: Int) -> some View {
+        let stepIndex = OnboardingStep.allCases.firstIndex(of: step) ?? 0
+        let isSelected = step == selectedStep
+        let isCompleted = stepIndex < currentIndex
+
+        let label = HStack(spacing: Spacing.xs) {   // 4 → xs：对勾与标题的紧凑间距
+            if isCompleted {
+                Image(systemName: "checkmark.circle.fill")
+                    .imageScale(.small)
+            }
+            Text(step.title(localizer))
+                .font(.caption.weight(isSelected ? .semibold : .regular))
+        }
+        .frame(maxWidth: .infinity)
+
+        // 当前步与其余步使用不同 buttonStyle（类型不同），用 if/else 让 ViewBuilder 正确擦除
+        if isSelected {
+            Button { selectStep(step) } label: { label }
+                .buttonStyle(.borderedProminent)
+                .tint(.accentColor)
+        } else {
+            Button { selectStep(step) } label: { label }
+                .buttonStyle(.bordered)
+                .tint(isCompleted ? .accentColor : .secondary)
+        }
+    }
+
+    // 保持原有状态机：仅赋值 selectedStep；尊重减弱动效偏好
+    private func selectStep(_ step: OnboardingStep) {
+        if reduceMotion {
+            selectedStep = step
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) { selectedStep = step }
         }
     }
 
@@ -1659,7 +1801,7 @@ private struct OnboardingView: View {
     }
 
     private var readinessStepContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Spacing.rowGutter) {   // 10 → rowGutter：就绪清单行距
             Text(localizer.t(L.Onboarding.readinessSummary))
                 .font(.headline)
             readinessRow(localizer.t(L.Onboarding.appLanguage), appLanguageLabel(appLanguage))
@@ -1678,7 +1820,7 @@ private struct OnboardingView: View {
                 onboardingSubtitleSourceSummary
             )
         }
-        .padding(12)
+        .padding(Spacing.lg)   // 12 → lg：就绪清单内边距
     }
 
     private var onboardingSubtitleSourceSummary: String {
@@ -1691,7 +1833,7 @@ private struct OnboardingView: View {
     }
 
     private func readinessRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.md) {   // 8 → md：标签—值行内节奏
             Text(label)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -1754,7 +1896,7 @@ private struct OnboardingView: View {
         let steps = OnboardingStep.allCases
         guard let index = steps.firstIndex(of: selectedStep) else { return }
         let nextIndex = min(max(index + offset, 0), steps.count - 1)
-        selectedStep = steps[nextIndex]
+        selectStep(steps[nextIndex])
     }
 
     private func onboardingSettingsForRequest() -> AppSettings {

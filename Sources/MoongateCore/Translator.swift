@@ -3213,19 +3213,18 @@ public struct ConfiguredTranslator: ContextualSubtitleTranslator {
         }
 
         var translatedLines = try await translateAllCues(advice: advice)
-        var translationQuality = TranslationOutputQualityGate.assess(
+        let translationQuality = TranslationOutputQualityGate.assess(
             lines: translatedLines.map { $0.text },
             sourceLanguageCode: context.sourceLanguage,
             targetLanguageCode: context.targetLanguage
         )
         if Self.shouldRetrySourceLanguageLeakage(translationQuality, context: context) {
+            // 源语言泄漏时用更强的 advice 重译一次；重译结果直接采用。
+            // 注意：不再对重译结果做二次质量评估——其 Verdict 目前无任何消费方（既不回贴队列、
+            // 也不触发再次重试），保留它只会是被丢弃的死计算。是否把「重译后仍质量偏低」作为
+            // 用户可见提示，是需产品决策的 timingWarning 类触发面变更，非本层自动完成。
             translatedLines = try await translateAllCues(
                 advice: Self.sourceLeakageRetryAdvice(base: advice, context: context)
-            )
-            translationQuality = TranslationOutputQualityGate.assess(
-                lines: translatedLines.map { $0.text },
-                sourceLanguageCode: context.sourceLanguage,
-                targetLanguageCode: context.targetLanguage
             )
         }
 

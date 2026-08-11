@@ -508,6 +508,58 @@ final class HDRSupportTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(maxrate, 1800)
     }
 
+    func testNormalizedVideoCodecAliases() {
+        // ffprobe 会给出各种 codec 串；归一化必须把别名映射到统一名，否则编码器/码率决策会错分类。
+        for raw in ["hevc", "h265", "hev1", "hvc1", "HEVC", "hev1.1.6.L93"] {
+            XCTAssertEqual(FFmpegBurner.normalizedVideoCodec(raw), "hevc", "\(raw) 应归一为 hevc")
+        }
+        for raw in ["avc", "avc1", "h264", "H264"] {
+            XCTAssertEqual(FFmpegBurner.normalizedVideoCodec(raw), "h264", "\(raw) 应归一为 h264")
+        }
+        XCTAssertEqual(FFmpegBurner.normalizedVideoCodec("av01"), "av1")
+        XCTAssertEqual(FFmpegBurner.normalizedVideoCodec("vp09"), "vp9")
+        XCTAssertNil(FFmpegBurner.normalizedVideoCodec(""))
+        XCTAssertNil(FFmpegBurner.normalizedVideoCodec(nil))
+        // 未知 codec 原样透传（小写、取首段）。
+        XCTAssertEqual(FFmpegBurner.normalizedVideoCodec("mpeg4"), "mpeg4")
+    }
+
+    func testMaxrateCapsAtTierRegardlessOfHugeSource() {
+        // 1080p tier = 6000K。即便源码率极高（20Mbps）× 扩张系数，也必须被 tier 封顶，防止转码产物膨胀。
+        let maxrate = FFmpegBurner.maxrateK(
+            sourceBitRateBPS: 20_000_000,
+            sourceHeight: 1080,
+            targetHeight: 1080,
+            sourceCodec: "h264",
+            outputCodec: "h264"
+        )
+        XCTAssertEqual(maxrate, 6000, "1080p 应被 tier 6000K 封顶")
+    }
+
+    func testMaxrateFallsBackToTierWhenSourceBitrateUnknown() {
+        // 无源码率信息 → 用该分辨率 tier 值（不猜、不放飞）。720p tier = 3000K。
+        let maxrate = FFmpegBurner.maxrateK(
+            sourceBitRateBPS: nil,
+            sourceHeight: 720,
+            targetHeight: 720,
+            sourceCodec: "av1",
+            outputCodec: "h264"
+        )
+        XCTAssertEqual(maxrate, 3000, "无源码率时应回落到 720p tier 3000K")
+    }
+
+    func testMaxrateAppliesCodecExpansionBetweenFloorAndTier() {
+        // av1→h264 扩张 4×。源 1000K × 4 = 4000K，落在 1080p floor 与 tier(6000) 之间 → 取 4000（体现扩张）。
+        let maxrate = FFmpegBurner.maxrateK(
+            sourceBitRateBPS: 1_000_000,
+            sourceHeight: 1080,
+            targetHeight: 1080,
+            sourceCodec: "av1",
+            outputCodec: "h264"
+        )
+        XCTAssertEqual(maxrate, 4000, "av1→h264 应对源码率施加 4× 扩张（1000K→4000K）")
+    }
+
     func testHEVCSoftwareNoScaleIsPureCRF() {
         let args = FFmpegBurner.sdrHEVCVideoArgs(maxrateK: nil)
         XCTAssertFalse(args.contains("-maxrate"))

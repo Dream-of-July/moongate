@@ -576,6 +576,34 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 )
             )
         }
+        // Bilibili 充电专属 / 大会员 / 付费内容：yt-dlp 常报 87007/87008 或含「充电」「大会员」。
+        // 需登录（且账号有权限）才能下载，因此引导到登录流程而非通用失败文案。
+        if isBilibiliHost(host),
+           lowerStderr.contains("87007") || lowerStderr.contains("87008")
+            || stderr.contains("充电") || stderr.contains("付费") || stderr.contains("大会员") {
+            return siteCookieRequired(
+                site: "bilibili.com",
+                reason: CoreL10n.text(
+                    en: "This Bilibili video is exclusive to the creator's chargers or premium members. Sign in with an account that has access, then retry.",
+                    zhHans: "该视频是 UP 主的充电专属或大会员内容。请登录有观看权限的账号后重试。",
+                    zhHant: "該影片是 UP 主的充電專屬或大會員內容。請登入有觀看權限的帳號後重試。"
+                )
+            )
+        }
+        // Bilibili 的 403 在未登录时多为需要会话（SESSDATA）才能取流；已登录则多为防盗链/地区限制。
+        // 未登录时引导登录，已登录时保留通用防盗链/地区文案（返回 nil 走 friendlyDownloadReason）。
+        if isBilibiliHost(host),
+           !hasCookies,
+           summarizeStderr(stderr).contains("HTTP Error 403") {
+            return siteCookieRequired(
+                site: "bilibili.com",
+                reason: CoreL10n.text(
+                    en: "Bilibili denied the request (403). Signing in usually resolves this; open the page here and save the site cookies, then retry.",
+                    zhHans: "哔哩哔哩拒绝了请求（403）。通常登录后即可解决：请在这里打开页面并保存站点验证信息后重试。",
+                    zhHant: "嗶哩嗶哩拒絕了請求（403）。通常登入後即可解決：請在這裡打開頁面並儲存站點驗證資訊後重試。"
+                )
+            )
+        }
         // YouTube 的 403 实质是 PO token / 未登录，登录 cookies 是正解；其他站点的 403 保持防盗链文案。
         // 只看最后一条 ERROR 行，避免中间分片的瞬时 403 被误判成需要登录。
         if isYouTubeHost(host), summarizeStderr(stderr).contains("HTTP Error 403") {
@@ -631,6 +659,16 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         isNativeExtractorHost(host)
     }
 
+    /// 测试用：暴露下载失败文案分类，验证磁盘满/写权限/网络/403/通用各走对应的可行动中文提示。
+    static func _testFriendlyDownloadReason(stderrTail: String) -> String {
+        friendlyDownloadReason(stderrTail: stderrTail)
+    }
+
+    /// 测试用：暴露取消后的临时文件清理，验证只删本视频的 .part/.ytdl/.part-Frag，不碰产物与他视频。
+    static func _testCleanupTemporaryFiles(in directory: URL, videoID: String) {
+        cleanupTemporaryFiles(in: directory, videoID: videoID)
+    }
+
     // MARK: 信息缓存
 
     /// 缓存条数上限：单条 YouTube -J JSON 可达 1-2MB，引擎与 App 同寿命，
@@ -653,6 +691,17 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             }
         }
         infoCache[url] = info
+        cacheLock.unlock()
+    }
+
+    /// 使某个 URL 的解析缓存失效（如登录后需要重新解析以拿到平台字幕）。
+    public func invalidateInfoCache(for url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        cacheLock.lock()
+        infoCache.removeValue(forKey: trimmed)
+        infoCacheOrder.removeAll { $0 == trimmed }
+        hlsSubtitleCache.removeValue(forKey: trimmed)
+        hlsCacheOrder.removeAll { $0 == trimmed }
         cacheLock.unlock()
     }
 
@@ -980,6 +1029,21 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
         let description = (json["description"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Bilibili 未登录时 yt-dlp 拿不到字幕列表。若本地没解析到任何平台字幕，
+        // 用公开接口探测该视频是否其实带字幕，带上则在 Ready 页提示登录（不阻塞、失败即忽略）。
+        var platformSubtitleHint: PlatformSubtitleHint?
+        if subtitles.isEmpty,
+           let host = URL(string: sourceURL)?.host.map({ $0.lowercased() }),
+           Self.isBilibiliHost(host),
+           !Self.hasCookies(for: sourceURL),
+           let probed = await BilibiliSubtitleProbe.probe(urlString: sourceURL) {
+            platformSubtitleHint = PlatformSubtitleHint(
+                loginSite: "bilibili.com",
+                languageCodes: probed.languageCodes,
+                hasHumanSubtitle: probed.hasHumanSubtitle
+            )
+        }
+
         return VideoInfo(
             sourceURL: sourceURL,
             videoID: videoID,
@@ -990,7 +1054,8 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
             detectedLanguageCode: json["language"] as? String,
             description: (description?.isEmpty == false) ? description : nil,
             formats: formats,
-            subtitles: subtitles
+            subtitles: subtitles,
+            platformSubtitleHint: platformSubtitleHint
         )
     }
 
@@ -1555,11 +1620,48 @@ public final class YtDlpEngine: DownloadEngine, @unchecked Sendable {
                 zhHant: "網路連線不穩或被中斷。若該站點在你的網路中受限，請確認代理/VPN 已開啟且正常，再點「重試」。"
             ) + "\n" + rawLine
         }
+        if isLikelyDiskFullError(stderrTail) {
+            return CoreL10n.text(
+                en: "Your disk ran out of space while saving the video. Free up space (the Downloads/Moongate folder holds finished videos) and click Retry.",
+                zhHans: "保存视频时磁盘空间不足。请清理磁盘后再点「重试」（下载产物在「下载/Moongate」文件夹里）。",
+                zhHant: "儲存影片時磁碟空間不足。請清理磁碟後再點「重試」（下載產物在「下載/Moongate」資料夾裡）。"
+            ) + "\n" + rawLine
+        }
+        if isLikelyWritePermissionError(stderrTail) {
+            return CoreL10n.text(
+                en: "Moongate could not write to the download folder — it may be read-only or lack permission (for example a locked volume or an iCloud-optimized location). Pick another output folder in Settings, then click Retry.",
+                zhHans: "无法写入下载文件夹——可能是只读或没有权限（例如被锁定的卷、iCloud「优化存储」位置）。请在设置里换一个输出文件夹，再点「重试」。",
+                zhHant: "無法寫入下載資料夾——可能是唯讀或沒有權限（例如被鎖定的卷、iCloud「最佳化儲存」位置）。請在設定裡換一個輸出資料夾，再點「重試」。"
+            ) + "\n" + rawLine
+        }
         return CoreL10n.text(
             en: "An error occurred during download.",
             zhHans: "下载过程中出现错误。",
             zhHant: "下載過程中發生錯誤。"
         ) + "\n" + rawLine
+    }
+
+    /// 识别磁盘空间不足（yt-dlp/ffmpeg 写盘失败）——真实用户环境边界的高频场景。
+    private static func isLikelyDiskFullError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let markers = [
+            "no space left on device", "errno 28", "enospc",
+            "disk quota exceeded", "errno 122", "not enough space",
+        ]
+        return markers.contains { lower.contains($0) }
+    }
+
+    /// 识别输出目录不可写 / 权限拒绝 / 只读卷（含 iCloud 优化存储、锁定卷等）。
+    /// 注意：排在网络/磁盘判断之后，避免与网络类错误误撞（网络错误先被 isLikelyNetworkError 拦截）。
+    /// 只保留明确的文件系统写入标志，不用裸 "errno 1"（EPERM 过宽，会误伤无关子进程错误）。
+    private static func isLikelyWritePermissionError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let markers = [
+            "permission denied", "errno 13", "eacces",
+            "read-only file system", "errno 30", "erofs",
+            "unable to open file for writing", "unable to create directory",
+        ]
+        return markers.contains { lower.contains($0) }
     }
 
     /// 识别与网络/代理相关的子进程错误（用于给中国大陆用户更有针对性的提示）。

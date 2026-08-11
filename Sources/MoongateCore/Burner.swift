@@ -145,6 +145,9 @@ public struct FFmpegBurner: SubtitleBurner {
         alwaysH264: Bool = false,
         control: TaskControlToken?,
         outputTag: String? = nil,
+        subtitleFontScale: Double = 1.0,
+        subtitleAlignment: Int = 2,
+        subtitleColorBGRHex: String = "FFFFFF",
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         guard let ffmpeg = Self.locate("ffmpeg") else {
@@ -213,10 +216,13 @@ public struct FFmpegBurner: SubtitleBurner {
             let cues = parseSRT(srtText)
             let subtitleFilter: String
             if cues.isEmpty {
-                // 解析不出来就按原样走 SRT + force_style 的老路
+                // 解析不出来就按原样走 SRT + force_style 的老路。外观设置也带上（见 srtForceStyleFilter）。
                 try fm.copyItem(at: subtitle, to: tempDir.appendingPathComponent("subs.srt"))
-                subtitleFilter = "subtitles=subs.srt:force_style="
-                    + "'FontName=\(Self.chineseFontName),FontSize=15,Outline=1,Shadow=0,MarginV=20'"
+                subtitleFilter = Self.srtForceStyleFilter(
+                    fontScale: subtitleFontScale,
+                    alignment: subtitleAlignment,
+                    primaryColorBGRHex: subtitleColorBGRHex
+                )
             } else {
                 // 字幕坐标系/字号按视频长宽比自适应（缩放不改变比例，用源尺寸即可）
                 let aspect: Double = {
@@ -225,7 +231,7 @@ public struct FFmpegBurner: SubtitleBurner {
                     }
                     return Double(w) / Double(h)
                 }()
-                let ass = Self.makeASS(cues: cues, aspect: aspect)
+                let ass = Self.makeASS(cues: cues, aspect: aspect, fontScale: subtitleFontScale, alignment: subtitleAlignment, primaryColorBGRHex: subtitleColorBGRHex)
                 try ass.write(
                     to: tempDir.appendingPathComponent("subs.ass"),
                     atomically: true, encoding: .utf8
@@ -361,12 +367,10 @@ public struct FFmpegBurner: SubtitleBurner {
         let stem = video.deletingPathExtension().lastPathComponent
         let directory = video.deletingLastPathComponent()
         let tag = outputTag ?? CoreL10n.t(L.Queue.subtitleVersionTag)
-        var destination = directory.appendingPathComponent("\(stem)\(tag).mp4")
-        var serial = 2
-        while fm.fileExists(atPath: destination.path) {
-            destination = directory.appendingPathComponent("\(stem)\(tag) \(serial).mp4")
-            serial += 1
-        }
+        // 空格分隔以保留「<原名>（字幕版） 2.mp4」的既有观感（与 -<n> 的 sidecar 命名有意不同）。
+        let destination = UniqueFilename.url(
+            in: directory, stem: "\(stem)\(tag)", ext: "mp4", separator: " "
+        )
         do {
             try fm.moveItem(at: produced, to: destination)
         } catch {
@@ -889,16 +893,20 @@ public struct FFmpegBurner: SubtitleBurner {
         /// 原文（英文等拉丁文字）行按词预换行容量（字符数）；nil 表示不预换行。
         let latinWrapCapacity: Int?
 
-        init(aspect: Double) {
+        init(aspect: Double, fontScale: Double = 1.0) {
             let safeAspect = aspect.isFinite && aspect > 0.1 ? min(aspect, 4.0) : 16.0 / 9.0
             // 脚本坐标系与视频同比例（取偶数），横向边距/字号的单位才不会被拉伸
             playResX = max(120, Int((288.0 * safeAspect / 2).rounded()) * 2)
+            let baseChineseSize: Int
             if safeAspect >= 1 {
-                chineseSize = Self.baseChinese
+                baseChineseSize = Self.baseChinese
             } else {
                 let scale = (safeAspect / (16.0 / 9.0)).squareRoot()
-                chineseSize = max(8, Int((Double(Self.baseChinese) * scale).rounded()))
+                baseChineseSize = max(8, Int((Double(Self.baseChinese) * scale).rounded()))
             }
+            // 用户档位字号缩放：与 aspect 自适应缩放相乘，再做下限保护（至少 8pt）。
+            let safeFontScale = fontScale.isFinite && fontScale > 0 ? fontScale : 1.0
+            chineseSize = max(8, Int((Double(baseChineseSize) * safeFontScale).rounded()))
             // 原文字号永远是译文的 80%（不分语言）。
             originalSize = max(6, Int((Double(chineseSize) * Self.originalSizeRatio).rounded()))
             // 自动布局：左右只留一个最小边距（约画面 2.5%），不再按「舒适阅读宽度」强行收窄。
@@ -922,10 +930,23 @@ public struct FFmpegBurner: SubtitleBurner {
         private static let originalSizeRatio = FFmpegBurner.originalSizeRatio
     }
 
+    /// SRT 解析不出 cue 时的兜底 ffmpeg 字幕滤镜（`subtitles=subs.srt:force_style=...`）。
+    /// 把用户的字幕外观设置带上——字号按倍率缩放（基准 15，下限 8，非有限/非正回落 1.0）、
+    /// Alignment 用位置、PrimaryColour 用颜色（ASS 的 &H00 前缀 + BGR）。抽成纯函数以便单测，
+    /// 防止这条罕见路径再次静默丢弃外观设置（对齐 Windows 端兜底行为）。
+    static func srtForceStyleFilter(fontScale: Double, alignment: Int, primaryColorBGRHex: String) -> String {
+        let safeScale = fontScale.isFinite && fontScale > 0 ? fontScale : 1.0
+        let forcedSize = max(8, Int((15.0 * safeScale).rounded()))
+        return "subtitles=subs.srt:force_style="
+            + "'FontName=\(chineseFontName),FontSize=\(forcedSize),"
+            + "PrimaryColour=&H00\(primaryColorBGRHex),Alignment=\(alignment),"
+            + "Outline=1,Shadow=0,MarginV=20'"
+    }
+
     /// 把 SRT 字幕转成 ASS：双语条目（首行含中日韩文字、其余行不含）首行用正常字号，
     /// 其余行（原文）用更小字号；普通条目整条统一字号。aspect = 视频宽/高。
-    static func makeASS(cues: [SubtitleCue], aspect: Double = 16.0 / 9.0) -> String {
-        let layout = ASSLayout(aspect: aspect)
+    static func makeASS(cues: [SubtitleCue], aspect: Double = 16.0 / 9.0, fontScale: Double = 1.0, alignment: Int = 2, primaryColorBGRHex: String = "FFFFFF") -> String {
+        let layout = ASSLayout(aspect: aspect, fontScale: fontScale)
         var dialogues: [String] = []
         for cue in cues {
             guard let start = assTimestamp(cue.start), let end = assTimestamp(cue.end) else {
@@ -975,7 +996,7 @@ public struct FFmpegBurner: SubtitleBurner {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H\(chineseAlphaHex)FFFFFF,&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,2,\(layout.marginH),\(layout.marginH),\(layout.marginV),1
+        Style: ZH,\(chineseFontName),\(layout.chineseSize),&H\(chineseAlphaHex)\(primaryColorBGRHex),&H00FFFFFF,&H00000000,&H7F000000,0,0,0,0,100,100,0,0,1,1,0,\(alignment),\(layout.marginH),\(layout.marginH),\(layout.marginV),1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

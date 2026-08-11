@@ -54,6 +54,11 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             "iconButton should expose the supplied hint to assistive technologies."
         )
         XCTAssertTrue(
+            iconButtonBody.contains(".accessibilityLabel(help)"),
+            "iconButton is icon-only — it MUST carry an accessibilityLabel, or VoiceOver reads nothing. "
+            + "The label is more critical than the hint; guard it explicitly."
+        )
+        XCTAssertTrue(
             source.contains("help: localizer.t(L.Queue.remove), hint: localizer.t(L.Queue.removeHint)"),
             "Remove actions should explain that downloaded files are not deleted."
         )
@@ -73,6 +78,20 @@ final class MacOSQueueBoundaryTests: XCTestCase {
             source.contains("isLocalASRRetryReady ? L.Queue.retryWithLocalASRHint : L.Queue.retryWithLocalASRConfigureHint"),
             "Local ASR retry should explain whether it will rerun immediately or open configuration first."
         )
+    }
+
+    /// 展开的队列浮层是一个铺满的可关闭面板：除了 chevron 收起按钮，还必须能用 Esc 收起
+    /// （与 App 内 sheet/取消的键盘惯例一致），否则纯键盘用户被迫 Tab 到收起按钮。
+    /// 守护 onExitCommand 挂在展开分支且与 chevron 同走 expanded=false。
+    func testExpandedQueueOverlayDismissesWithEscape() throws {
+        let source = try queueOverlaySource()
+        XCTAssertTrue(
+            source.contains(".onExitCommand { expanded = false }"),
+            "展开的队列浮层应支持 Esc 收起（onExitCommand → expanded = false），与其它可关闭面板的键盘惯例一致。"
+        )
+        // 收起按钮回调仍在（Esc 是补充而非替代 chevron）。
+        XCTAssertTrue(source.contains("expanded = false"),
+                      "chevron 收起回调应保留，Esc 与它同一动作。")
     }
 
     func testCompletedQueueItemCanRetryWithLocalASRWithoutRedownloading() throws {

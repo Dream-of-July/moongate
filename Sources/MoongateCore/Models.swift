@@ -358,6 +358,22 @@ public struct SubtitleLanguageChoice: Identifiable, Hashable, Sendable {
     }
 }
 
+/// 平台字幕存在性提示（见 VideoInfo.platformSubtitleHint）。
+public struct PlatformSubtitleHint: Sendable, Equatable {
+    /// 需要登录的站点 host（如 "bilibili.com"），供 Ready 页登录按钮使用。
+    public let loginSite: String
+    /// 探测到的字幕语言（规范化码，如 "zh-Hans"），可能为空。
+    public let languageCodes: [String]
+    /// 是否含人工字幕（用于区分「有中文字幕」与「有 AI 字幕」的文案）。
+    public let hasHumanSubtitle: Bool
+
+    public init(loginSite: String, languageCodes: [String], hasHumanSubtitle: Bool) {
+        self.loginSite = loginSite
+        self.languageCodes = languageCodes
+        self.hasHumanSubtitle = hasHumanSubtitle
+    }
+}
+
 public struct VideoInfo: Sendable {
     public let sourceURL: String
     /// yt-dlp 信息里的视频 id（用于定位产出文件）
@@ -375,13 +391,17 @@ public struct VideoInfo: Sendable {
     public let formats: [FormatChoice]
     /// 真实字幕在前、自动字幕在后；可能为空
     public let subtitles: [SubtitleChoice]
+    /// 平台字幕存在性提示：yt-dlp 没返回字幕、但探针发现平台其实有字幕（多为未登录导致）。
+    /// nil 表示无提示。用于 Ready 页引导用户登录以取用平台字幕。
+    public let platformSubtitleHint: PlatformSubtitleHint?
 
     public init(
         sourceURL: String, videoID: String, title: String,
         durationText: String?, thumbnailURL: URL?, uploader: String?,
         detectedLanguageCode: String? = nil,
         description: String? = nil,
-        formats: [FormatChoice], subtitles: [SubtitleChoice]
+        formats: [FormatChoice], subtitles: [SubtitleChoice],
+        platformSubtitleHint: PlatformSubtitleHint? = nil
     ) {
         self.sourceURL = sourceURL
         self.videoID = videoID
@@ -396,6 +416,7 @@ public struct VideoInfo: Sendable {
         self.description = description
         self.formats = formats
         self.subtitles = subtitles
+        self.platformSubtitleHint = platformSubtitleHint
     }
 }
 
@@ -555,10 +576,42 @@ public struct DownloadResult: Sendable {
 
 /// 烧录/输出字幕的样式
 public enum SubtitleStyle: String, Codable, Sendable {
-    /// 原文在上、中文在下
+    /// 双语：译文在上（正常字号），原文在下（80% 字号 + 80% 不透明度）。
+    /// 见 Burner.makeASS / Translator 的实际排版。
     case bilingual
     /// 仅中文
     case chineseOnly
+}
+
+/// 烧录字幕整体字号缩放档位（作用于双语两级字号的基准）。
+public enum SubtitleFontScale: String, Codable, Sendable, CaseIterable {
+    case small, standard, large, extraLarge
+    /// 相对标准字号的缩放倍率。
+    public var multiplier: Double {
+        switch self {
+        case .small: return 0.82
+        case .standard: return 1.0
+        case .large: return 1.24
+        case .extraLarge: return 1.5
+        }
+    }
+}
+
+/// 烧录字幕的垂直位置。作用于 ASS Style 的 Alignment（2=底部居中，8=顶部居中）。
+public enum SubtitlePosition: String, Codable, Sendable, CaseIterable {
+    case bottom, top
+    /// ASS Alignment 值（numpad 布局：2=底部居中，8=顶部居中）。
+    public var assAlignment: Int { self == .bottom ? 2 : 8 }
+}
+
+/// 烧录字幕译文颜色。作用于 ASS Style 的 PrimaryColour（译文与原文统一色），
+/// 黑色描边始终不变以保可读性。白=当前默认（现状），黄=深色画面上更醒目的 CJK 常见偏好。
+/// 分层约束：本枚举位于 Core，只提供 ASS 颜色值；预览用的 SwiftUI.Color 映射放在 UI 层。
+public enum SubtitleColor: String, Codable, Sendable, CaseIterable {
+    case white, yellow
+    /// ASS PrimaryColour 的 RGB 部分（ASS 用 BGR 字节序，十六进制，不含 alpha 与 &H 前缀）。
+    /// 白=FFFFFF；黄=RGB(255,255,0)→BGR 字节 00(B) FF(G) FF(R)→"00FFFF"。
+    public var assBGRHex: String { self == .white ? "FFFFFF" : "00FFFF" }
 }
 
 /// 细粒度源字幕片段。YouTube VTT 自动字幕常带词级时间戳，清洗器用它来判断字幕真正应在何时出现/消失。
@@ -707,6 +760,9 @@ public protocol SubtitleBurner: Sendable {
         alwaysH264: Bool,
         control: TaskControlToken?,
         outputTag: String?,
+        subtitleFontScale: Double,
+        subtitleAlignment: Int,
+        subtitleColorBGRHex: String,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL
 }
@@ -719,12 +775,19 @@ public extension SubtitleBurner {
         backend: EncodeBackend = .auto,
         alwaysH264: Bool = false,
         control: TaskControlToken?,
+        outputTag: String? = nil,
+        subtitleFontScale: Double = 1.0,
+        subtitleAlignment: Int = 2,
+        subtitleColorBGRHex: String = "FFFFFF",
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try await burn(
             video: video, subtitle: subtitle,
             maxHeight: maxHeight, backend: backend, alwaysH264: alwaysH264,
-            control: control, outputTag: nil,
+            control: control, outputTag: outputTag,
+            subtitleFontScale: subtitleFontScale,
+            subtitleAlignment: subtitleAlignment,
+            subtitleColorBGRHex: subtitleColorBGRHex,
             progress: progress
         )
     }
@@ -738,6 +801,9 @@ public extension SubtitleBurner {
             video: video, subtitle: subtitle,
             maxHeight: nil, backend: .auto, alwaysH264: false,
             control: nil, outputTag: nil,
+            subtitleFontScale: 1.0,
+            subtitleAlignment: 2,
+            subtitleColorBGRHex: "FFFFFF",
             progress: progress
         )
     }
@@ -775,6 +841,9 @@ public protocol DownloadEngine: Sendable {
         preferredLanguages: [String],
         control: TaskControlToken?
     ) async throws -> String?
+
+    /// 可选：使某个 URL 的解析缓存失效（如登录后需重新解析以拿到平台字幕）。默认 no-op。
+    func invalidateInfoCache(for url: String)
 }
 
 public extension DownloadEngine {
@@ -793,4 +862,7 @@ public extension DownloadEngine {
     ) async throws -> String? {
         nil
     }
+
+    /// 默认 no-op：无缓存的引擎（mock/iOS）无需失效。
+    func invalidateInfoCache(for url: String) {}
 }

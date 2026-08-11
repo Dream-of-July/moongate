@@ -204,6 +204,35 @@
                         </ComboBox>
                     </DockPanel>
                 </Border>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.SubtitleSizeLabel}" Width="96" VerticalAlignment="Center"/>
+                        <ComboBox SelectedIndex="{Binding SubtitleFontScaleIndex}" AutomationProperties.Name="{DynamicResource L.Settings.SubtitleSizeLabel}">
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleSizeSmall}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleSizeStandard}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleSizeLarge}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleSizeExtraLarge}"/>
+                        </ComboBox>
+                    </DockPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.SubtitlePositionLabel}" Width="96" VerticalAlignment="Center"/>
+                        <ComboBox SelectedIndex="{Binding SubtitlePositionIndex}" AutomationProperties.Name="{DynamicResource L.Settings.SubtitlePositionLabel}">
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitlePositionBottom}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitlePositionTop}"/>
+                        </ComboBox>
+                    </DockPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Padding="12" Margin="0,8,0,0">
+                    <DockPanel>
+                        <TextBlock Text="{DynamicResource L.Settings.SubtitleColorLabel}" Width="96" VerticalAlignment="Center"/>
+                        <ComboBox SelectedIndex="{Binding SubtitleColorIndex}" AutomationProperties.Name="{DynamicResource L.Settings.SubtitleColorLabel}">
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleColorWhite}"/>
+                            <ComboBoxItem Content="{DynamicResource L.Settings.SubtitleColorYellow}"/>
+                        </ComboBox>
+                    </DockPanel>
+                </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

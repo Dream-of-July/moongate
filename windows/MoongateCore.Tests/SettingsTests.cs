@@ -349,6 +349,66 @@ public class SettingsTests
         Assert.False(settings.BurnAlwaysH264);
     }
 
+    /// <summary>三个烧录外观设置 round-trip；键名/值字符串必须与 macOS 端一致。</summary>
+    [Fact]
+    public void SubtitleAppearance_RoundTripsThroughJson()
+    {
+        var settings = new AppSettings
+        {
+            SubtitleFontScale = SubtitleFontScale.ExtraLarge,
+            SubtitlePosition = SubtitlePosition.Top,
+            SubtitleColor = SubtitleColor.Yellow,
+        };
+        var json = settings.ToJson();
+        // 键名与值字符串跨平台一致（与 macOS settings.json 互通的核心约束）。
+        Assert.Contains("\"subtitleFontScale\": \"extraLarge\"", json);
+        Assert.Contains("\"subtitlePosition\": \"top\"", json);
+        Assert.Contains("\"subtitleColor\": \"yellow\"", json);
+
+        var back = AppSettings.FromJson(json);
+        Assert.Equal(SubtitleFontScale.ExtraLarge, back.SubtitleFontScale);
+        Assert.Equal(SubtitlePosition.Top, back.SubtitlePosition);
+        Assert.Equal(SubtitleColor.Yellow, back.SubtitleColor);
+    }
+
+    /// <summary>缺键回退默认（现状），保证老配置零变化。</summary>
+    [Fact]
+    public void SubtitleAppearance_MissingKeys_DefaultToCurrentBehavior()
+    {
+        var settings = AppSettings.FromJson("""{"translationModel": "claude"}""");
+        Assert.Equal(SubtitleFontScale.Standard, settings.SubtitleFontScale);
+        Assert.Equal(SubtitlePosition.Bottom, settings.SubtitlePosition);
+        Assert.Equal(SubtitleColor.White, settings.SubtitleColor);
+    }
+
+    /// <summary>macOS 写的各档位值 Windows 能正确解码（互通验证）。</summary>
+    [Theory]
+    [InlineData("small", SubtitleFontScale.Small)]
+    [InlineData("standard", SubtitleFontScale.Standard)]
+    [InlineData("large", SubtitleFontScale.Large)]
+    [InlineData("extraLarge", SubtitleFontScale.ExtraLarge)]
+    public void SubtitleFontScale_DecodesMacOsValues(string raw, SubtitleFontScale expected)
+    {
+        var settings = AppSettings.FromJson($$"""{"subtitleFontScale": "{{raw}}"}""");
+        Assert.Equal(expected, settings.SubtitleFontScale);
+    }
+
+    /// <summary>三个换算属性的映射值正确（倍率 / Alignment / BGR）。</summary>
+    [Fact]
+    public void SubtitleAppearance_ConversionMappings()
+    {
+        Assert.Equal(0.82, SubtitleFontScale.Small.Multiplier(), 3);
+        Assert.Equal(1.0, SubtitleFontScale.Standard.Multiplier(), 3);
+        Assert.Equal(1.24, SubtitleFontScale.Large.Multiplier(), 3);
+        Assert.Equal(1.5, SubtitleFontScale.ExtraLarge.Multiplier(), 3);
+
+        Assert.Equal(2, SubtitlePosition.Bottom.AssAlignment());
+        Assert.Equal(8, SubtitlePosition.Top.AssAlignment());
+
+        Assert.Equal("FFFFFF", SubtitleColor.White.AssBgrHex());
+        Assert.Equal("00FFFF", SubtitleColor.Yellow.AssBgrHex());
+    }
+
     [Fact]
     public void VideoProxy_RoundTripsAndNormalizes()
     {

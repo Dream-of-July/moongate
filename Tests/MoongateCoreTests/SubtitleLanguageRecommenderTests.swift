@@ -196,6 +196,12 @@ final class SubtitleLanguageRecommenderTests: XCTestCase {
         XCTAssertEqual(LanguageCatalog.normalize("iw"), "he")
         XCTAssertEqual(LanguageCatalog.normalize("in"), "id")
         XCTAssertEqual(LanguageCatalog.normalize("si"), "si")
+        // Bilibili AI 字幕码：ai- 前缀只是生成方式标记，真正语言在后缀，须剥掉再规范化。
+        XCTAssertEqual(LanguageCatalog.normalize("ai-zh"), "zh-Hans")
+        XCTAssertEqual(LanguageCatalog.normalize("ai-en"), "en")
+        XCTAssertEqual(LanguageCatalog.normalize("ai-ja"), "ja")
+        // 边界：孤立 "ai" 不剥（无后缀），保持原样，避免误吞真实语言。
+        XCTAssertEqual(LanguageCatalog.normalize("ai"), "ai")
 
         XCTAssertFalse(LanguageCatalog.isRareLanguage("en"))
         XCTAssertTrue(LanguageCatalog.isRareLanguage("si"))

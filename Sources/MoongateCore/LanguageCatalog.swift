@@ -53,7 +53,12 @@ public enum LanguageCatalog {
         guard let code else { return "" }
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        let folded = trimmed.lowercased()
+        var folded = trimmed.lowercased()
+        // Bilibili 的 AI 字幕码是 "ai-zh"/"ai-en"，其中 "ai" 只是生成方式标记，真正的语言在后缀。
+        // 不剥掉的话按 "-" 切分会得到伪语言 "ai"，导致中文 AI 字幕永远匹配不上中文源语言而被跳过走 ASR。
+        if folded.hasPrefix("ai-"), folded.count > 3 {
+            folded = String(folded.dropFirst(3))
+        }
         if let mapped = aliasNormalization[folded] { return mapped }
         if folded.hasPrefix("zh-") {
             return folded.contains("hant") || folded.contains("-tw") || folded.contains("-hk") ? "zh-Hant" : "zh-Hans"

@@ -641,6 +641,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(localizer.t(L.Settings.localASRDeleteModel))
+                    .accessibilityLabel(localizer.t(L.Settings.localASRDeleteModel))
                 }
             } else if entry.installState == .badHash {
                 Button(localizer.t(L.Settings.localASRSetupRepair)) {
@@ -735,6 +736,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(localizer.t(L.Settings.localASRDeleteImportedModel))
+                    .accessibilityLabel(localizer.t(L.Settings.localASRDeleteImportedModel))
                 }
             }
             .padding(.vertical, 7)
@@ -1464,17 +1466,9 @@ struct SettingsView: View {
     }
 
     private func uniqueImportedModelDestination(directoryURL: URL, fileName: String) -> URL {
-        let fm = FileManager.default
         let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         let ext = URL(fileURLWithPath: fileName).pathExtension
-        var candidate = directoryURL.appendingPathComponent(fileName, isDirectory: false)
-        var index = 2
-        while fm.fileExists(atPath: candidate.path) {
-            let nextName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
-            candidate = directoryURL.appendingPathComponent(nextName, isDirectory: false)
-            index += 1
-        }
-        return candidate
+        return UniqueFilename.url(in: directoryURL, stem: base, ext: ext)
     }
 
     private func importedLocalASRModelID(for url: URL) -> String {
@@ -2857,6 +2851,37 @@ struct SettingsView: View {
                 Text(localizer.t(L.Settings.subtitleStyleBilingual)).tag(SubtitleStyle.bilingual)
                 Text(localizer.t(L.Settings.subtitleStyleChineseOnly)).tag(SubtitleStyle.chineseOnly)
             }
+            Picker(localizer.t(L.Settings.subtitleFontScale), selection: $draft.subtitleFontScale) {
+                Text(localizer.t(L.Settings.subtitleFontScaleSmall)).tag(SubtitleFontScale.small)
+                Text(localizer.t(L.Settings.subtitleFontScaleStandard)).tag(SubtitleFontScale.standard)
+                Text(localizer.t(L.Settings.subtitleFontScaleLarge)).tag(SubtitleFontScale.large)
+                Text(localizer.t(L.Settings.subtitleFontScaleExtraLarge)).tag(SubtitleFontScale.extraLarge)
+            }
+            Picker(localizer.t(L.Settings.subtitlePosition), selection: $draft.subtitlePosition) {
+                Text(localizer.t(L.Settings.subtitlePositionBottom)).tag(SubtitlePosition.bottom)
+                Text(localizer.t(L.Settings.subtitlePositionTop)).tag(SubtitlePosition.top)
+            }
+            Picker(localizer.t(L.Settings.subtitleColor), selection: $draft.subtitleColor) {
+                Text(localizer.t(L.Settings.subtitleColorWhite)).tag(SubtitleColor.white)
+                Text(localizer.t(L.Settings.subtitleColorYellow)).tag(SubtitleColor.yellow)
+            }
+
+            // 实时预览：随上面四项设置即时重绘。纯视觉模拟，不调用烧录逻辑。
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                Label(localizer.t(L.Settings.subtitlePreview), systemImage: "eye")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                SubtitleStylePreview(
+                    style: draft.subtitleStyle,
+                    fontScale: draft.subtitleFontScale,
+                    position: draft.subtitlePosition,
+                    textColor: draft.subtitleColor == .white ? .white : .yellow,
+                    sampleTranslated: localizer.t(L.Settings.subtitlePreviewSampleTranslated),
+                    sampleSource: localizer.t(L.Settings.subtitlePreviewSampleSource),
+                    accessibilityLabelText: localizer.t(L.Settings.subtitlePreview)
+                )
+            }
+            .padding(.top, Spacing.xs)
         }
     }
 
@@ -2886,18 +2911,19 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle(
-                    localizer.t(L.Settings.scaleHD1080),
-                    isOn: Binding(
-                        get: { draft.maxBurnHeight != nil },
-                        set: { draft.maxBurnHeight = $0 ? 1080 : nil }
-                    )
+            // 与上面两组「控件行 + 说明行」保持同一原生栅格节奏：Toggle 独占一行，
+            // 说明作为其下方的兄弟行，字体层级与换行行为和前两组统一。
+            Toggle(
+                localizer.t(L.Settings.scaleHD1080),
+                isOn: Binding(
+                    get: { draft.maxBurnHeight != nil },
+                    set: { draft.maxBurnHeight = $0 ? 1080 : nil }
                 )
-                Text(localizer.t(L.Settings.scaleHD1080Help))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
+            Text(localizer.t(L.Settings.scaleHD1080Help))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -3172,5 +3198,110 @@ struct APIConfigEditor: View {
     private static func reason(_ error: Error) -> String {
         if case MoongateError.translateFailed(let detail) = error { return detail }
         return error.localizedDescription
+    }
+}
+
+// MARK: - 字幕样式实时预览
+
+/// 字幕样式预览卡：模拟一块 16:9 视频画面，按当前三项烧录设置渲染示例双语字幕。
+/// 纯视觉模拟——不调用任何烧录逻辑，只读传入的三个枚举值。
+/// 字号为「相对示意」：真实烧录按视频分辨率用 ASS 单位换算，这里只体现四档字号（小/标准/大/特大）
+/// 与双语两级、位置差异的相对关系，不追求像素级还原。
+private struct SubtitleStylePreview: View {
+    let style: SubtitleStyle
+    let fontScale: SubtitleFontScale
+    let position: SubtitlePosition
+    /// 译文颜色（原文继承同色 + 80% 不透明度）。白=现状默认，黄=深色画面更醒目。
+    /// 由父视图在 UI 层把 Core 的 SubtitleColor 映射为 SwiftUI.Color 传入（Core 不 import SwiftUI）。
+    let textColor: Color
+    let sampleTranslated: String
+    let sampleSource: String
+    /// 无障碍标签：预览是纯视觉示意，VoiceOver 应把整块念作单一「预览」元素，
+    /// 而非逐字读装饰性示例字幕（那是噪音）。文案由父视图传入（已本地化）。
+    let accessibilityLabelText: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // 预览专有常量（仅用于视觉示意，与烧录像素无关）。
+    private let previewBaseFontSize: CGFloat = 15   // 译文行基准字号
+    private let sourceScaleRatio: CGFloat = 0.8     // 原文相对译文 80%（与烧录一致的相对关系）
+    private let previewMaxWidth: CGFloat = 360       // 预览区最大宽度
+
+    /// 译文行字号 = 基准 × 档位倍率。
+    private var translatedFontSize: CGFloat {
+        previewBaseFontSize * CGFloat(fontScale.multiplier)
+    }
+
+    /// 原文行字号 = 译文行 × 80%。
+    private var sourceFontSize: CGFloat {
+        translatedFontSize * sourceScaleRatio
+    }
+
+    /// 字幕在预览区内的垂直对齐（底部 / 顶部）。
+    private var verticalAlignment: Alignment {
+        position == .bottom ? .bottom : .top
+    }
+
+    var body: some View {
+        ZStack(alignment: verticalAlignment) {
+            videoBackdrop
+            subtitleStack
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.xl)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .frame(maxWidth: previewMaxWidth)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: Stroke.hairline)
+        )
+        // 切换字号 / 位置 / 样式时轻微过渡；尊重「减弱动态效果」。
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: fontScale)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: position)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: style)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: textColor)
+        // 纯视觉预览：合并为单一无障碍元素并给出「预览」标签，避免 VoiceOver 把示例字幕当内容念。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabelText)
+    }
+
+    /// 模拟视频画面：中性深色渐变 + 极淡的 film 占位符，暗示这是一块视频画面。
+    private var videoBackdrop: some View {
+        LinearGradient(
+            colors: [Color(white: 0.22), Color(white: 0.12)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .overlay(
+            Image(systemName: "film")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(.white.opacity(0.06))
+        )
+    }
+
+    /// 字幕文本堆叠：双语两行 / 仅中文一行。译文在上、原文在下（与烧录顺序一致）。
+    private var subtitleStack: some View {
+        VStack(spacing: Spacing.xxs) {
+            Text(sampleTranslated)
+                .font(.system(size: translatedFontSize, weight: .semibold))
+                .foregroundStyle(textColor)
+                .subtitleLegibility()
+            if style == .bilingual {
+                Text(sampleSource)
+                    .font(.system(size: sourceFontSize, weight: .regular))
+                    .foregroundStyle(textColor.opacity(0.8))  // 原文 80% 不透明度，与烧录一致
+                    .subtitleLegibility()
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+}
+
+private extension View {
+    /// 深色背景上的字幕可读性：轻微黑色阴影模拟烧录的黑边描边。
+    func subtitleLegibility() -> some View {
+        self.shadow(color: .black.opacity(0.6), radius: 1, x: 0, y: 0)
     }
 }

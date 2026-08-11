@@ -161,4 +161,159 @@ final class BurnerAssTests: XCTestCase {
         XCTAssertTrue(styleLine.contains("&H0AFFFFFF"), "译文填充应为 96% 不透明（&H0AFFFFFF）：\(styleLine)")
         XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明（&H00000000）：\(styleLine)")
     }
+
+    // MARK: - 用户可调字幕位置
+
+    func testSubtitlePositionAssAlignmentValues() {
+        XCTAssertEqual(SubtitlePosition.bottom.assAlignment, 2, "底部应映射到 ASS Alignment=2（底部居中）")
+        XCTAssertEqual(SubtitlePosition.top.assAlignment, 8, "顶部应映射到 ASS Alignment=8（顶部居中）")
+    }
+
+    func testMakeASSDefaultAlignmentIsBottom() {
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ])
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        // Alignment 列前缀为 BorderStyle,Outline,Shadow = 1,1,0，故底部对齐应出现 ,1,0,2,
+        XCTAssertTrue(styleLine.contains(",1,0,2,"), "默认应为底部对齐 Alignment=2：\(styleLine)")
+    }
+
+    func testMakeASSTopAlignmentEmitsAlignmentEight() {
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ], alignment: 8)
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        XCTAssertTrue(styleLine.contains(",1,0,8,"), "顶部对齐应为 Alignment=8：\(styleLine)")
+        XCTAssertFalse(styleLine.contains(",1,0,2,"), "顶部对齐不应残留 Alignment=2：\(styleLine)")
+    }
+
+    // MARK: - 用户可调字号缩放
+
+    func testSubtitleFontScaleMultipliersAreMonotonic() {
+        XCTAssertLessThan(SubtitleFontScale.small.multiplier, SubtitleFontScale.standard.multiplier)
+        XCTAssertEqual(SubtitleFontScale.standard.multiplier, 1.0, accuracy: 1e-9)
+        XCTAssertLessThan(SubtitleFontScale.standard.multiplier, SubtitleFontScale.large.multiplier)
+        XCTAssertLessThan(SubtitleFontScale.large.multiplier, SubtitleFontScale.extraLarge.multiplier)
+    }
+
+    func testFontScaleMonotonicallyChangesLayoutSizes() {
+        let aspect = 16.0 / 9.0
+        let small = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.small.multiplier)
+        let standard = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.standard.multiplier)
+        let large = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.large.multiplier)
+        let extraLarge = FFmpegBurner.ASSLayout(aspect: aspect, fontScale: SubtitleFontScale.extraLarge.multiplier)
+
+        // 译文字号随档位单调递增
+        XCTAssertLessThan(small.chineseSize, standard.chineseSize)
+        XCTAssertLessThan(standard.chineseSize, large.chineseSize)
+        XCTAssertLessThan(large.chineseSize, extraLarge.chineseSize)
+
+        // standard 与不传 fontScale（默认 1.0）完全等价：老用户行为不变
+        XCTAssertEqual(standard.chineseSize, FFmpegBurner.ASSLayout(aspect: aspect).chineseSize)
+        XCTAssertEqual(standard.originalSize, FFmpegBurner.ASSLayout(aspect: aspect).originalSize)
+
+        // 原文字号也随档位单调递增（保持 80% 比例衍生）
+        XCTAssertLessThanOrEqual(small.originalSize, standard.originalSize)
+        XCTAssertLessThan(standard.originalSize, extraLarge.originalSize)
+    }
+
+    func testFontScaleLowerBoundProtection() {
+        // 竖屏 + 极小倍率仍受下限保护（译文 >= 8，原文 >= 6）。
+        let layout = FFmpegBurner.ASSLayout(aspect: 9.0 / 16.0, fontScale: 0.01)
+        XCTAssertGreaterThanOrEqual(layout.chineseSize, 8)
+        XCTAssertGreaterThanOrEqual(layout.originalSize, 6)
+        // 非法倍率（0 / 非有限）回退为 1.0，与 standard 一致。
+        XCTAssertEqual(
+            FFmpegBurner.ASSLayout(aspect: 16.0 / 9.0, fontScale: 0).chineseSize,
+            FFmpegBurner.ASSLayout(aspect: 16.0 / 9.0).chineseSize
+        )
+    }
+
+    // MARK: - 用户可调字幕颜色
+
+    func testSubtitleColorAssBGRHexValues() {
+        // 白=FFFFFF；黄=RGB(255,255,0)→ASS BGR 字节序 00FFFF。
+        XCTAssertEqual(SubtitleColor.white.assBGRHex, "FFFFFF", "白色 BGR 应为 FFFFFF")
+        XCTAssertEqual(SubtitleColor.yellow.assBGRHex, "00FFFF", "黄色 RGB(255,255,0) → BGR 应为 00FFFF")
+    }
+
+    func testMakeASSYellowChangesPrimaryColourRGBOnly() {
+        // 传入黄色 BGR：PrimaryColour 的 RGB 变黄，但译文 alpha（chineseAlphaHex）与黑色描边不受影响。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ], primaryColorBGRHex: "00FFFF")
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        // PrimaryColour = &H + alpha(0A) + 黄色 BGR(00FFFF)。
+        XCTAssertTrue(styleLine.contains("&H0A00FFFF"), "黄色译文填充应为 &H0A00FFFF（alpha 保留 + 黄 BGR）：\(styleLine)")
+        // 未变：不应残留白色 PrimaryColour。
+        XCTAssertFalse(styleLine.contains("&H0AFFFFFF"), "黄色时不应再出现白色 PrimaryColour：\(styleLine)")
+        // 黑色描边仍不透明（OutlineColour &H00000000）。
+        XCTAssertTrue(styleLine.contains("&H00000000"), "黑色描边应保持不透明 &H00000000：\(styleLine)")
+    }
+
+    func testMakeASSBilingualSourceLineInheritsColorViaAlphaOnly() {
+        // 双语条目的原文行只用 {\fs..\alpha..} 覆盖字号/透明度，不硬编码颜色 → 颜色继承 Style 的
+        // PrimaryColour。黄色时译文与原文都应是黄色（无 \c / \1c 覆盖会把原文行拉回白色）。
+        // 这条防回归：若有人给原文行加了 \c 颜色覆盖，黄色字幕的原文行会静默变白。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "你好世界\nhello world")
+        ], primaryColorBGRHex: "00FFFF")
+        guard let dialogue = ass.split(separator: "\n").first(where: { $0.hasPrefix("Dialogue:") }).map(String.init) else {
+            return XCTFail("应有 Dialogue 行：\(ass)")
+        }
+        // 原文行的行内覆盖块应只含 \fs 与 \alpha，不含颜色覆盖 \c / \1c。
+        XCTAssertTrue(dialogue.contains("\\alpha&H"), "双语原文行应有 \\alpha 透明度覆盖：\(dialogue)")
+        XCTAssertFalse(dialogue.contains("\\c&H"), "原文行不应硬编码颜色覆盖 \\c（否则不继承黄色）：\(dialogue)")
+        XCTAssertFalse(dialogue.contains("\\1c&H"), "原文行不应硬编码颜色覆盖 \\1c：\(dialogue)")
+    }
+
+    func testMakeASSDefaultColorStaysWhiteForBackwardCompatibility() {
+        // 不传颜色（默认）：Style 行仍为白色 &H0AFFFFFF，老用户零变化。
+        let ass = FFmpegBurner.makeASS(cues: [
+            SubtitleCue(index: 1, start: "00:00:01,000", end: "00:00:02,500", text: "测试")
+        ])
+        guard let styleLine = ass.split(separator: "\n").first(where: { $0.hasPrefix("Style: ZH,") }).map(String.init) else {
+            return XCTFail("应有 ZH 样式行：\(ass)")
+        }
+        XCTAssertTrue(styleLine.contains("&H0AFFFFFF"), "默认应保持白色译文填充 &H0AFFFFFF：\(styleLine)")
+    }
+
+    // MARK: - SRT 兜底路径（parseSRT 返回空时）也应应用字幕外观设置
+
+    func testSRTForceStyleFallbackAppliesAppearanceSettings() {
+        // 大号(1.24)+顶部(8)+黄色(00FFFF)：force_style 应带上缩放字号、Alignment=8、黄色 PrimaryColour。
+        let filter = FFmpegBurner.srtForceStyleFilter(
+            fontScale: SubtitleFontScale.large.multiplier,
+            alignment: SubtitlePosition.top.assAlignment,
+            primaryColorBGRHex: SubtitleColor.yellow.assBGRHex
+        )
+        // 15 * 1.24 = 18.6 → 19。
+        XCTAssertTrue(filter.contains("FontSize=19"), "大号应把基准 15 缩放到 19：\(filter)")
+        XCTAssertTrue(filter.contains("Alignment=8"), "顶部应为 Alignment=8：\(filter)")
+        XCTAssertTrue(filter.contains("PrimaryColour=&H0000FFFF"), "黄色应为 &H00 + 00FFFF：\(filter)")
+    }
+
+    func testSRTForceStyleFallbackDefaultsMatchLegacy() {
+        // 默认（标准/底部/白色）：应等价于旧硬编码 FontSize=15、Alignment=2、白色。
+        let filter = FFmpegBurner.srtForceStyleFilter(
+            fontScale: SubtitleFontScale.standard.multiplier,
+            alignment: SubtitlePosition.bottom.assAlignment,
+            primaryColorBGRHex: SubtitleColor.white.assBGRHex
+        )
+        XCTAssertTrue(filter.contains("FontSize=15"), "标准应保持 15pt：\(filter)")
+        XCTAssertTrue(filter.contains("Alignment=2"), "底部应为 Alignment=2：\(filter)")
+        XCTAssertTrue(filter.contains("PrimaryColour=&H00FFFFFF"), "白色 PrimaryColour：\(filter)")
+    }
+
+    func testSRTForceStyleFallbackClampsInvalidScale() {
+        // 非法倍率（0）回落 1.0，字号仍为 15，不会得到 0 或负数。
+        let filter = FFmpegBurner.srtForceStyleFilter(fontScale: 0, alignment: 2, primaryColorBGRHex: "FFFFFF")
+        XCTAssertTrue(filter.contains("FontSize=15"), "非法倍率应回落 1.0 → 15pt：\(filter)")
+    }
 }

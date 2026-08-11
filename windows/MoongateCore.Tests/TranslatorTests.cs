@@ -1904,9 +1904,70 @@ public class ConfiguredTranslatorTests : IDisposable
         }
     }
 
-    /// <summary>译文缺失任意行 → 对缺失行逐行补齐，仍失败则回退原文，整体不归零。</summary>
+    /// <summary>输出超限（stop_reason=max_tokens）时整块对半递归拆分：30 条整块触顶，两个 15 条半块
+    /// 成功，30 条全回贴无丢条。与 macOS testChunkSplitsInHalfWhenOutputLimitReached 对等。</summary>
     [Fact]
-    public async Task Translate_MissingLines_FallsBackWithoutFailingWholeTranslation()
+    public async Task Translate_OutputLimitReached_SplitsChunkInHalf()
+    {
+        var cues = Enumerable.Range(1, 30).Select(i => new SubtitleCue(
+            i, SrtTools.SecondsToSrtTime(i * 10), SrtTools.SecondsToSrtTime(i * 10 + 2), $"Line {i}."));
+        var srt = WriteSrt("long-outputlimit.en.srt", cues);
+
+        var sawFullChunk = 0;
+        var handler = new FakeHttpHandler();
+        handler.Responder = captured =>
+        {
+            using var doc = JsonDocument.Parse(captured.Body);
+            var content = doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+            var lineCount = content.Split('\n').Length;
+            if (lineCount == 30)
+            {
+                Interlocked.Increment(ref sawFullChunk);
+                // 整块触顶：空正文 + max_tokens 停止原因 → 逼迫对半拆。
+                return FakeHttpHandler.Json(200, AnthropicReply("", "max_tokens"));
+            }
+            return FakeHttpHandler.Json(200, AnthropicReply(TranslateAllLines(captured.Body)));
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(30, result.Count);
+        for (var i = 0; i < 30; i++)
+        {
+            Assert.Equal($"中{i + 1}", result[i].Text);
+        }
+        Assert.True(sawFullChunk >= 1, "应至少尝试过整块并触发拆分");
+    }
+
+    /// <summary>输出超限且无法再拆（块太小、二分不到 >=8）时：Windows 侧走逐行补漏并回退原文，
+    /// 整体完成而非抛错——与 macOS「抛 outputLimitReached」是**有意记录的行为分歧**（见 §14）。
+    /// Windows 的降级更宽容（不整体失败）；本测试锁定该实际行为，避免无意改动。</summary>
+    [Fact]
+    public async Task Translate_UnsplittableOutputLimit_FallsBackToSourcePerLine()
+    {
+        var srt = WriteSrt("tiny.en.srt", new[]
+        {
+            new SubtitleCue(1, "00:00:01,000", "00:00:02,000", "Alpha."),
+            new SubtitleCue(2, "00:00:03,000", "00:00:04,000", "Bravo."),
+            new SubtitleCue(3, "00:00:05,000", "00:00:06,000", "Charlie."),
+        });
+        // 整块与逐行补漏请求都触顶（空正文 + max_tokens）→ 每行回退原文。
+        var handler = new FakeHttpHandler
+        {
+            Responder = _ => FakeHttpHandler.Json(200, AnthropicReply("", "max_tokens")),
+        };
+        var translator = new ConfiguredTranslator(Settings, handler);
+
+        var output = await translator.TranslateAsync(srt, SubtitleStyle.ChineseOnly, null, _ => { });
+
+        var result = SrtTools.ParseSrt(File.ReadAllText(output));
+        Assert.Equal(new[] { "Alpha.", "Bravo.", "Charlie." }, result.Select(c => c.Text).ToArray());
+    }
+
+    /// <summary>译文缺失任意行 → 对缺失行逐行补齐，仍失败则回退原文，整体不归零。</summary>
+    [Fact]    public async Task Translate_MissingLines_FallsBackWithoutFailingWholeTranslation()
     {
         var cues = Enumerable.Range(1, 3).Select(i => new SubtitleCue(
             i, SrtTools.SecondsToSrtTime(i * 10), SrtTools.SecondsToSrtTime(i * 10 + 2), $"Sentence {i}."));

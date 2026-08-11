@@ -34,7 +34,7 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
 
         let installButton = try XCTUnwrap(sourceSlice(
             from: "installer.install()",
-            to: ".padding(20)",
+            to: ".padding(Spacing.xxl)",
             in: sheetBody
         ))
         XCTAssertTrue(installButton.contains("installer.install()"))
@@ -95,7 +95,7 @@ final class MacOSDependencyBoundaryTests: XCTestCase {
         let source = try dependencySetupSource()
         let sheetBody = try XCTUnwrap(functionBody(prefix: "var body", in: source))
 
-        let rowStart = try XCTUnwrap(sheetBody.range(of: "HStack(spacing: 10)"))
+        let rowStart = try XCTUnwrap(sheetBody.range(of: "HStack(spacing: Spacing.rowGutter)"))
         let rowEnd = try XCTUnwrap(sheetBody[rowStart.lowerBound...].range(
             of: "if component.id != installer.components.last?.id"
         ))

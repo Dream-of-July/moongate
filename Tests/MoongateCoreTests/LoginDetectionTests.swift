@@ -72,6 +72,47 @@ final class LoginDetectionTests: XCTestCase {
         }
     }
 
+    func testBilibiliChargingExclusiveVideoNeedsLogin() {
+        // 充电专属：yt-dlp 报 87007/87008 或含「充电」，需登录有权限账号。
+        for stderr in [
+            "ERROR: [BiliBili] BV1: 87007: 该视频为充电专属视频",
+            "ERROR: [BiliBili] BV1: 充电专属内容，无法下载",
+        ] {
+            let error = YtDlpEngine._testLoginRequired(
+                stderr: stderr,
+                url: "https://www.bilibili.com/video/BV1",
+                hasCookies: false
+            )
+            XCTAssertTrue(isSiteCookieRequired(error), stderr)
+            if case .siteCookieRequired(let site, _, _) = error {
+                XCTAssertEqual(site, "bilibili.com")
+            }
+        }
+    }
+
+    func testBilibili403WithoutCookiesPromptsLogin() {
+        // 未登录时 B 站 403 多为需要会话才能取流，引导登录。
+        let error = YtDlpEngine._testLoginRequired(
+            stderr: "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            url: "https://www.bilibili.com/video/BV1",
+            hasCookies: false
+        )
+        XCTAssertTrue(isSiteCookieRequired(error))
+        if case .siteCookieRequired(let site, _, _) = error {
+            XCTAssertEqual(site, "bilibili.com")
+        }
+    }
+
+    func testBilibili403WithCookiesDoesNotForceLogin() {
+        // 已登录时 403 多为防盗链/地区限制，不再强制引导登录（保留通用文案）。
+        let error = YtDlpEngine._testLoginRequired(
+            stderr: "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            url: "https://www.bilibili.com/video/BV1",
+            hasCookies: true
+        )
+        XCTAssertFalse(isSiteCookieRequired(error))
+    }
+
     func testBilibili412WithSavedCookiesKeepsRiskControlHint() {
         let stderr = "ERROR: [BiliBili] BV1: Unable to download JSON metadata: HTTP Error 412: Precondition Failed"
         let loginError = YtDlpEngine._testLoginRequired(

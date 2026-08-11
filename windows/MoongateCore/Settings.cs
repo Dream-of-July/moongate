@@ -101,6 +101,12 @@ public sealed record AppSettings
     public string SummaryAuthToken { get; init; } = "";
     /// <summary>烧录字幕样式。</summary>
     public SubtitleStyle SubtitleStyle { get; init; } = SubtitleStyle.Bilingual;
+    /// <summary>烧录字幕整体字号档位（作用于双语两级字号的基准）。默认 Standard = 现状。</summary>
+    public SubtitleFontScale SubtitleFontScale { get; init; } = SubtitleFontScale.Standard;
+    /// <summary>烧录字幕垂直位置（底部/顶部）。默认 Bottom = 现状。</summary>
+    public SubtitlePosition SubtitlePosition { get; init; } = SubtitlePosition.Bottom;
+    /// <summary>烧录字幕译文颜色（白/黄）。默认 White = 现状。</summary>
+    public SubtitleColor SubtitleColor { get; init; } = SubtitleColor.White;
     /// <summary>
     /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小）。
     /// null = 保持源分辨率。默认保持源分辨率，避免 4K 选择被静默压到 1080。
@@ -373,6 +379,10 @@ public sealed record AppSettings
             "chineseOnly" => SubtitleStyle.ChineseOnly,
             _ => SubtitleStyle.Bilingual,
         };
+        // 三个烧录外观设置：缺键回退默认（Standard/Bottom/White），保证老配置与 macOS 配置互通。
+        var subtitleFontScale = SubtitleAppearanceExtensions.ToSubtitleFontScale(StringField(root, "subtitleFontScale"));
+        var subtitlePosition = SubtitleAppearanceExtensions.ToSubtitlePosition(StringField(root, "subtitlePosition"));
+        var subtitleColor = SubtitleAppearanceExtensions.ToSubtitleColor(StringField(root, "subtitleColor"));
         // 旧版 settings.json 没有 maxBurnHeight 键：缺失时保持源分辨率，避免 4K 选择被静默压到 1080。
         int? maxBurnHeight = null;
         if (root.TryGetProperty("maxBurnHeight", out var heightValue))
@@ -472,6 +482,9 @@ public sealed record AppSettings
             SummaryModel = summaryModel,
             SummaryAuthToken = summaryToken,
             SubtitleStyle = style,
+            SubtitleFontScale = subtitleFontScale,
+            SubtitlePosition = subtitlePosition,
+            SubtitleColor = subtitleColor,
             MaxBurnHeight = maxBurnHeight,
             MaxConcurrentDownloads = Math.Clamp(IntField(root, "maxConcurrentDownloads") ?? 3, 1, 5),
             MaxConcurrentBurns = Math.Clamp(IntField(root, "maxConcurrentBurns") ?? 2, 1, 3),
@@ -529,6 +542,9 @@ public sealed record AppSettings
             ["summaryModel"] = SingleLineField(SummaryModel),
             ["summaryAuthToken"] = SummaryAuthToken,
             ["subtitleStyle"] = SubtitleStyle == SubtitleStyle.ChineseOnly ? "chineseOnly" : "bilingual",
+            ["subtitleFontScale"] = SubtitleFontScale.RawValue(),
+            ["subtitlePosition"] = SubtitlePosition.RawValue(),
+            ["subtitleColor"] = SubtitleColor.RawValue(),
             ["maxBurnHeight"] = MaxBurnHeight,
             ["maxConcurrentDownloads"] = MaxConcurrentDownloads,
             ["maxConcurrentBurns"] = MaxConcurrentBurns,

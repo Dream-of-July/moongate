@@ -332,6 +332,17 @@
     <sys:String x:Key="L.Settings.StyleLabel">Translated subtitle style</sys:String>
     <sys:String x:Key="L.Settings.StyleBilingual">Bilingual (original + translation)</sys:String>
     <sys:String x:Key="L.Settings.StyleChineseOnly">Translation only</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeLabel">Subtitle size</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeSmall">Small</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeStandard">Standard</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeLarge">Large</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleSizeExtraLarge">Extra large</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionLabel">Subtitle position</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionBottom">Bottom</sys:String>
+    <sys:String x:Key="L.Settings.SubtitlePositionTop">Top</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorLabel">Subtitle color</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorWhite">White</sys:String>
+    <sys:String x:Key="L.Settings.SubtitleColorYellow">Yellow</sys:String>
     <sys:String x:Key="L.Settings.BurnQuality">Burn-in quality</sys:String>
     <sys:String x:Key="L.Settings.EncodeBackend">Encoder</sys:String>
     <sys:String x:Key="L.Settings.EncodeAuto">Auto</sys:String>

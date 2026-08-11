@@ -46,6 +46,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     /// 烧录字幕样式
     public var subtitleStyle: SubtitleStyle
+    /// 烧录字幕整体字号缩放档位（standard=当前默认字号）。
+    public var subtitleFontScale: SubtitleFontScale
+    /// 烧录字幕的垂直位置（bottom=当前默认底部居中）。
+    public var subtitlePosition: SubtitlePosition
+    /// 烧录字幕译文颜色（white=当前默认白字，现状）。描边始终黑色不变。
+    public var subtitleColor: SubtitleColor
     /// 烧录时限制最大分辨率高度：源高于此值则缩放到此值（既快又小）。
     /// nil = 保持源分辨率。默认保持源分辨率，避免 4K 选择被静默压到 1080。
     public var maxBurnHeight: Int?
@@ -157,6 +163,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         summaryModel: String? = nil,
         summaryAuthToken: String? = nil,
         subtitleStyle: SubtitleStyle = .bilingual,
+        subtitleFontScale: SubtitleFontScale = .standard,
+        subtitlePosition: SubtitlePosition = .bottom,
+        subtitleColor: SubtitleColor = .white,
         maxBurnHeight: Int? = nil,
         maxConcurrentDownloads: Int = 3,
         maxConcurrentBurns: Int = 2,
@@ -212,6 +221,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.summaryModel = summaryModel.map(Self.normalizedSingleLineField) ?? (normalizedAIModel ?? normalizedTranslationModel)
         self.summaryAuthToken = summaryAuthToken ?? (aiAuthToken ?? translationAuthToken)
         self.subtitleStyle = subtitleStyle
+        self.subtitleFontScale = subtitleFontScale
+        self.subtitlePosition = subtitlePosition
+        self.subtitleColor = subtitleColor
         self.maxBurnHeight = maxBurnHeight
         self.maxConcurrentDownloads = maxConcurrentDownloads
         self.maxConcurrentBurns = maxConcurrentBurns
@@ -280,7 +292,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // MARK: 读写
 
     private enum CodingKeys: String, CodingKey {
-        case translationProvider, translationEngine, translationBaseURL, translationModel, translationAuthToken, subtitleStyle, maxBurnHeight
+        case translationProvider, translationEngine, translationBaseURL, translationModel, translationAuthToken, subtitleStyle, subtitleFontScale, subtitlePosition, subtitleColor, maxBurnHeight
         case maxConcurrentDownloads, maxConcurrentBurns
         case aiEngine, aiBaseURL, aiModel, aiAuthToken, translationFollowsDefault
         case summaryFollowsDefault, summaryEngine, summaryBaseURL, summaryModel, summaryAuthToken
@@ -337,6 +349,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         summaryAuthToken = try c.decodeIfPresent(String.self, forKey: .summaryAuthToken) ?? aiAuthToken
 
         subtitleStyle = try c.decodeIfPresent(SubtitleStyle.self, forKey: .subtitleStyle) ?? .bilingual
+        // 旧版 settings.json 没有这个键：缺省 .standard 保证老用户升级后字号不变（即当前 13pt）。
+        subtitleFontScale = try c.decodeIfPresent(SubtitleFontScale.self, forKey: .subtitleFontScale) ?? .standard
+        // 旧版 settings.json 没有这个键：缺省 .bottom 保证老用户升级后字幕位置不变（底部居中）。
+        subtitlePosition = try c.decodeIfPresent(SubtitlePosition.self, forKey: .subtitlePosition) ?? .bottom
+        subtitleColor = try c.decodeIfPresent(SubtitleColor.self, forKey: .subtitleColor) ?? .white
         // 旧版 settings.json 没有这个键：缺失时保持源分辨率，避免 4K 选择被静默压到 1080。
         if c.contains(.maxBurnHeight) {
             maxBurnHeight = try c.decodeIfPresent(Int.self, forKey: .maxBurnHeight)
@@ -433,6 +450,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(Self.normalizedSingleLineField(summaryModel), forKey: .summaryModel)
         try c.encode(summaryAuthToken, forKey: .summaryAuthToken)
         try c.encode(subtitleStyle, forKey: .subtitleStyle)
+        try c.encode(subtitleFontScale, forKey: .subtitleFontScale)
+        try c.encode(subtitlePosition, forKey: .subtitlePosition)
+        try c.encode(subtitleColor, forKey: .subtitleColor)
         if let maxBurnHeight {
             try c.encode(maxBurnHeight, forKey: .maxBurnHeight)
         } else {

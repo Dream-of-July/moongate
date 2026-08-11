@@ -826,7 +826,11 @@ public static class AsrTranscriptMapper
         {
             throw new WhisperCppRecognizerException(WhisperCppRecognizerError.EmptyTranscript);
         }
-        var output = LocalAsrSourceSrtPath(videoFile, transcript.LanguageCode);
+        // 命名关口校正：产物文件名的语言后缀必须反映转写内容的真实语言，而非可能被上游
+        // （yt-dlp 错报 language）污染的输入标签。这里只改命名，不动 cue 生成/时序/识别。
+        var cueText = string.Join("\n", cues.Select(cue => cue.Text));
+        var correctedLanguage = ScriptCorrectedLanguageCode(transcript.LanguageCode, cueText);
+        var output = LocalAsrSourceSrtPath(videoFile, correctedLanguage);
         Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
         File.WriteAllText(output, SrtTools.SerializeSrt(cues), Encoding.UTF8);
         return output;
@@ -836,6 +840,37 @@ public static class AsrTranscriptMapper
     {
         var trimmed = value.Trim();
         return trimmed.Length == 0 ? "und" : trimmed;
+    }
+
+    /// <summary>
+    /// 语言标签校正：产物命名前，若候选 languageCode 与字幕文本的真实脚本明显矛盾
+    /// （典型：yt-dlp 错报 language 导致标签是拉丁语系如 en，但内容其实是 CJK/日文/韩文），
+    /// 用文本检测到的脚本语言覆盖候选值。只在“强矛盾”时覆盖，其余情况原样返回（保守，避免误伤）。
+    /// 依据：语言标签污染 bug——文件名后缀必须反映内容真实语言，而非可能错误的输入元数据标签。
+    /// 与 macOS 端 scriptCorrectedLanguageCode 行为一致。
+    /// </summary>
+    public static string ScriptCorrectedLanguageCode(string candidate, string subtitleText)
+    {
+        var profile = ScriptDetector.Of(subtitleText);
+        // 文本太短不足以判定真实语言，保守不动，避免误伤。
+        if (profile.VisibleCount < 20) return candidate;
+
+        // 用项目统一的语言码规范化来判断候选属于哪一族，容忍 en-US/eng/zh-tw/jpn 等各种写法。
+        // 归一化结果为空（auto/空标签）时不属于任何 CJK 族，因此可被内容覆盖。
+        var normalizedCandidate = LanguageCatalog.Normalize(candidate);
+        var candidateIsJapanese = normalizedCandidate == "ja";
+        var candidateIsKorean = normalizedCandidate == "ko";
+        var candidateIsChineseFamily = normalizedCandidate is "zh-Hans" or "zh-Hant" or "yue";
+
+        // 含明显假名 → 日文。阈值取低（0.15），因日文正文常大量混用汉字，假名占比不会很高。
+        if (profile.KanaRatio >= 0.15) return candidateIsJapanese ? candidate : "ja";
+        // 谚文占可见字符多数 → 韩文。
+        if (profile.HangulRatio >= 0.4) return candidateIsKorean ? candidate : "ko";
+        // 纯汉字（无假名/谚文）占多数 → 中文。候选已是中文族则保留其细分（zh-Hant/yue 不降级），
+        // 否则回落到项目默认简体码 zh-Hans（与 LanguageCatalog.CommonLanguageCodes / 翻译目标默认一致）。
+        if (profile.CjkRatio >= 0.4) return candidateIsChineseFamily ? candidate : "zh-Hans";
+        // 内容主要是拉丁或其它脚本：候选可能本就正确，或我们无把握 → 不覆盖。
+        return candidate;
     }
 
 }
@@ -4056,12 +4091,39 @@ public sealed class SidecarLocalAsrSubtitleGenerator : ILocalAsrSubtitleGenerato
                 "Local precise recognition sidecar wrote an empty subtitle file."));
         }
         progress(new AsrProgress { Phase = AsrProgressPhase.SpeechRecognition, CompletedUnits = 1, TotalUnits = 1 });
+        // 命名关口校正：sidecar 识别行为不变（命令行仍传原 languageCode），但产物文件名的语言
+        // 后缀必须反映内容真实语言。若 raw 文本的真实脚本与输入标签强矛盾（如 en 标签+中文内容），
+        // 把已产出的文件重命名到正确后缀。重命名失败不让任务崩溃，回落用原名。
+        var finalOutput = output;
+        var finalLanguageCode = languageCode;
+        // 只取 cue 文本（剥掉序号/时间戳行），否则时间戳里的数字会稀释脚本占比、误判。
+        var cueText = string.Join("\n", SrtTools.ParseSrt(raw).Select(cue => cue.Text));
+        var correctedLanguage = AsrTranscriptMapper.ScriptCorrectedLanguageCode(languageCode, cueText);
+        if (correctedLanguage != languageCode)
+        {
+            var correctedOutput = AsrTranscriptMapper.LocalAsrSourceSrtPath(videoFile, correctedLanguage);
+            if (!string.Equals(correctedOutput, output, StringComparison.Ordinal))
+            {
+                try
+                {
+                    if (File.Exists(correctedOutput)) File.Delete(correctedOutput);
+                    File.Move(output, correctedOutput);
+                    finalOutput = correctedOutput;
+                    finalLanguageCode = correctedLanguage;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[LocalAsr] 语言后缀校正重命名失败({languageCode} -> {correctedLanguage})，回落用原名: {ex.Message}");
+                }
+            }
+        }
         var confidence = LocalAsrConfidence.AssessSubtitle(
             raw,
-            Path.GetFileName(output),
-            languageCode,
+            Path.GetFileName(finalOutput),
+            finalLanguageCode,
             languageCode);
-        return new GeneratedLocalAsrSource(output, confidence);
+        return new GeneratedLocalAsrSource(finalOutput, confidence);
     }
 
     private static string NormalizeSidecarLanguage(string value)

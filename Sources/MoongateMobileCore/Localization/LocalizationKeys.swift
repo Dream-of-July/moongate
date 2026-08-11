@@ -12,6 +12,10 @@ public enum L {
         public static let settingsMenu = "L.App.SettingsMenu"
         /// 设置窗口标题。
         public static let settingsWindowTitle = "L.App.SettingsWindowTitle"
+        /// 「新建下载」菜单命令（聚焦链接输入，Cmd+L）。
+        public static let newDownloadCommand = "L.App.NewDownloadCommand"
+        /// 「粘贴并解析」菜单命令（Cmd+Shift+V）。
+        public static let pasteAndParseCommand = "L.App.PasteAndParseCommand"
         public static let abortRunningTasks = "L.App.AbortRunningTasks"
         public static let abortPausedTasks = "L.App.AbortPausedTasks"
         public static let abortInformativeText = "L.App.AbortInformativeText"
@@ -46,6 +50,7 @@ public enum L {
         public static let parseCurrentHint = "L.Main.ParseCurrentHint"
         public static let idleTitle = "L.Main.IdleTitle"
         public static let idleSubtitle = "L.Main.IdleSubtitle"
+        public static let idleSupportedSites = "L.Main.IdleSupportedSites"
         public static let loadingAccessibility = "L.Main.LoadingAccessibility"
         public static let loading = "L.Main.Loading"
         public static let batchAutoQueueHint = "L.Main.BatchAutoQueueHint"
@@ -70,6 +75,10 @@ public enum L {
     public enum Ready {
         public static let formatSection = "L.Ready.FormatSection"
         public static let subtitlesSection = "L.Ready.SubtitlesSection"
+        // 平台字幕存在性提示（未登录时探测到平台有字幕）。
+        public static let platformSubtitleHintHuman = "L.Ready.PlatformSubtitleHintHuman"
+        public static let platformSubtitleHintAI = "L.Ready.PlatformSubtitleHintAI"
+        public static let platformSubtitleHintLogin = "L.Ready.PlatformSubtitleHintLogin"
         public static let subtitleProcessingSection = "L.Ready.SubtitleProcessingSection"
         public static let subtitleSourceSection = "L.Ready.SubtitleSourceSection"
         public static let subtitleOutputSection = "L.Ready.SubtitleOutputSection"
@@ -132,6 +141,7 @@ public enum L {
         public static let willBurnSubtitle = "L.Ready.WillBurnSubtitle"
         public static let willTranslateSubtitle = "L.Ready.WillTranslateSubtitle"
         public static let openSettings = "L.Ready.OpenSettings"
+        public static let adjustSubtitleStyle = "L.Ready.AdjustSubtitleStyle"
         public static let currentEngine = "L.Ready.CurrentEngine"
         public static let status = "L.Ready.Status"
         public static let primaryReason = "L.Ready.PrimaryReason"
@@ -323,6 +333,8 @@ public enum L {
         public static let removeHint = "L.Queue.RemoveHint"
         public static let retryTask = "L.Queue.RetryTask"
         public static let retryTaskHint = "L.Queue.RetryTaskHint"
+        public static let loginAndRetry = "L.Queue.LoginAndRetry"
+        public static let loginAndRetryHint = "L.Queue.LoginAndRetryHint"
         public static let waitingForDownloadSlot = "L.Queue.WaitingForDownloadSlot"
         public static let waitingForBurnSlot = "L.Queue.WaitingForBurnSlot"
         public static let waitingForTranslationSlot = "L.Queue.WaitingForTranslationSlot"
@@ -549,6 +561,20 @@ public enum L {
         public static let subtitleStyle = "L.Settings.SubtitleStyle"
         public static let subtitleStyleBilingual = "L.Settings.SubtitleStyleBilingual"
         public static let subtitleStyleChineseOnly = "L.Settings.SubtitleStyleChineseOnly"
+        public static let subtitleFontScale = "L.Settings.SubtitleFontScale"
+        public static let subtitleFontScaleSmall = "L.Settings.SubtitleFontScaleSmall"
+        public static let subtitleFontScaleStandard = "L.Settings.SubtitleFontScaleStandard"
+        public static let subtitleFontScaleLarge = "L.Settings.SubtitleFontScaleLarge"
+        public static let subtitleFontScaleExtraLarge = "L.Settings.SubtitleFontScaleExtraLarge"
+        public static let subtitlePosition = "L.Settings.SubtitlePosition"
+        public static let subtitlePositionBottom = "L.Settings.SubtitlePositionBottom"
+        public static let subtitlePositionTop = "L.Settings.SubtitlePositionTop"
+        public static let subtitleColor = "L.Settings.SubtitleColor"
+        public static let subtitleColorWhite = "L.Settings.SubtitleColorWhite"
+        public static let subtitleColorYellow = "L.Settings.SubtitleColorYellow"
+        public static let subtitlePreview = "L.Settings.SubtitlePreview"
+        public static let subtitlePreviewSampleTranslated = "L.Settings.SubtitlePreviewSampleTranslated"
+        public static let subtitlePreviewSampleSource = "L.Settings.SubtitlePreviewSampleSource"
         public static let burnSection = "L.Settings.BurnSection"
         public static let encodeBackend = "L.Settings.EncodeBackend"
         public static let burnEncoding = "L.Settings.BurnEncoding"
@@ -788,5 +814,23 @@ public enum L {
         public static let directMP4Link = "L.Core.DirectMP4Link"
         public static let youtubeVideoTitle = "L.Core.YouTubeVideoTitle"
         public static let vimeoVideoTitle = "L.Core.VimeoVideoTitle"
+    }
+
+    /// 实验性「备忘录式三栏布局」原型专用文案（feature flag 默认关闭）。
+    public enum SplitLayout {
+        public static let sidebarTitle = "L.SplitLayout.SidebarTitle"
+        public static let emptyListTitle = "L.SplitLayout.EmptyListTitle"
+        public static let emptyDetailTitle = "L.SplitLayout.EmptyDetailTitle"
+        public static let emptyDetailSubtitle = "L.SplitLayout.EmptyDetailSubtitle"
+        public static let addTask = "L.SplitLayout.AddTask"
+        public static let addTaskHint = "L.SplitLayout.AddTaskHint"
+        public static let addTaskSheetTitle = "L.SplitLayout.AddTaskSheetTitle"
+        public static let addSheetPlaceholder = "L.SplitLayout.AddSheetPlaceholder"
+        public static let addSheetHint = "L.SplitLayout.AddSheetHint"
+        public static let addSheetConfirm = "L.SplitLayout.AddSheetConfirm"
+        public static let play = "L.SplitLayout.Play"
+        public static let descriptionSection = "L.SplitLayout.DescriptionSection"
+        public static let sectionActive = "L.SplitLayout.SectionActive"
+        public static let sectionFinished = "L.SplitLayout.SectionFinished"
     }
 }

@@ -875,6 +875,9 @@ public sealed class QueueManager
                         backend: settings.EncodeBackend,
                         alwaysH264: settings.BurnAlwaysH264,
                         outputTag: L10n.T("（字幕版）", "（字幕版）", " (subtitled)"),
+                        fontScale: settings.SubtitleFontScale.Multiplier(),
+                        alignment: settings.SubtitlePosition.AssAlignment(),
+                        primaryColorBgrHex: settings.SubtitleColor.AssBgrHex(),
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
                     CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
@@ -964,6 +967,9 @@ public sealed class QueueManager
                         }),
                         backend: settings.EncodeBackend,
                         alwaysH264: settings.BurnAlwaysH264,
+                        fontScale: settings.SubtitleFontScale.Multiplier(),
+                        alignment: settings.SubtitlePosition.AssAlignment(),
+                        primaryColorBgrHex: settings.SubtitleColor.AssBgrHex(),
                         ct: ct).ConfigureAwait(false);
                     if (GenerationOf(id) != generation) return;
                     CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
@@ -1081,6 +1087,9 @@ public sealed class QueueManager
                     }),
                     backend: settings.EncodeBackend,
                     alwaysH264: settings.BurnAlwaysH264,
+                    fontScale: settings.SubtitleFontScale.Multiplier(),
+                    alignment: settings.SubtitlePosition.AssAlignment(),
+                    primaryColorBgrHex: settings.SubtitleColor.AssBgrHex(),
                     ct: ct).ConfigureAwait(false);
                 if (GenerationOf(id) != generation) return;
                 CompleteProgressPhase(id, generation, QueueProgressPhase.Burn);
@@ -2226,7 +2235,7 @@ public sealed class QueueManager
         return nextFiles;
     }
 
-    private static string ImportedSubtitleDestination(
+    internal static string ImportedSubtitleDestination(
         string directory,
         string languageCode,
         string extension)
